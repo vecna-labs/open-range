@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import openrange as OR
-from examples._office_demo import office_chatter_entries
 
 MANIFEST: dict[str, object] = {
     "world": {"goal": "find the admin flag in a vulnerable webapp"},
@@ -29,7 +28,6 @@ MANIFEST: dict[str, object] = {
             "count": 2,
             "config": {"cadence_ticks": 3, "paths": ["/openapi.json", "/"]},
         },
-        *office_chatter_entries(),
     ],
 }
 DEFAULT_RUN_ROOT = Path("or-runs/strands-eval")
