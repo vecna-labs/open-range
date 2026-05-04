@@ -46,17 +46,12 @@ class RunConfig:
     reset_dashboard: bool = True
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int | None = None
-    # AgentBackend handed to LLM-backed NPCs (those declaring
-    # ``requires_llm = True``). Pluggable: strands for tool dispatch,
-    # codex for tool-less / cheap testing, or any custom impl. If
-    # ``None`` and ``npc_llm_model`` is also unset, LLM-backed NPCs
-    # mark themselves broken at start with a clear "no backend
-    # configured" reason.
+    # Backend handed to NPCs with ``requires_llm = True``. Unset →
+    # those NPCs mark themselves broken with "no backend configured".
     npc_agent_backend: AgentBackend | None = None
-    # Convenience: a strands model id string. Auto-promotes to
-    # ``StrandsAgentBackend(model=npc_llm_model)`` when
-    # ``npc_agent_backend`` is unset. Mutually exclusive with the
-    # explicit form.
+    # Convenience shorthand — auto-promoted to
+    # ``StrandsAgentBackend(model=npc_llm_model)``. Mutually exclusive
+    # with ``npc_agent_backend``.
     npc_llm_model: str | None = None
 
 
@@ -91,10 +86,6 @@ class OpenRangeRun:
         self.config = (
             config if isinstance(config, RunConfig) else RunConfig(Path(config))
         )
-        # Validate mutual exclusivity up front rather than waiting for
-        # ``episode_service()`` to surface the conflict — the operator
-        # gets a clear error at the point of misconfiguration instead
-        # of midway through a run.
         if (
             self.config.npc_agent_backend is not None
             and self.config.npc_llm_model is not None

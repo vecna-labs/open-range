@@ -1,55 +1,21 @@
 """NPC contract and registry.
 
 An NPC is an autonomous actor that runs alongside the agent during an
-episode. Cyber NPCs make HTTP requests; a hypothetical trading NPC
-would place orders. The contract is domain-agnostic — NPCs receive the
-same ``interface`` dict the verifier and admission probe see, so they
-speak whatever the runtime backing exposes.
+episode, receiving the same ``interface`` mapping the verifier and
+admission probe see. Two shapes ship: ``NPC`` for scripted actors and
+``AgentNPC`` for LLM-backed loops with tools.
 
-Lifecycle:
-  - ``start(context)`` — once, when the episode starts (after the
-    runtime is up). NPCs typically capture the interface here.
-  - ``step(interface)`` — once per tick. NPCs decide whether to act
-    based on their own internal cadence (a cadence-2 NPC acts every
-    other tick).
-  - ``stop()`` — once, when the episode ends. NPCs should release any
-    resources they captured.
-
-Registration is via the ``openrange.npcs`` entry-point group (mirrors
-packs / builders). Entry-point values must resolve to a callable
-``(config: Mapping[str, object]) -> NPC`` — the registry constructs
-each NPC fresh per episode by calling the factory with the manifest
-entry's ``config`` mapping.
-
-Manifest schema:
+Manifest schema::
 
     npc:
       - type: cyber.browsing_user      # NPCRegistry id
-        count: 3                        # spawn N independent instances
-        config:
+        count: 3                        # default 1
+        config:                         # default {}
           cadence_ticks: 2
           paths: ["/search?q=alpha"]
 
-``count`` defaults to 1; ``config`` defaults to ``{}``.
-
-Two NPC shapes ship in core:
-
-* ``NPC`` — the bare ABC. Subclasses implement ``step`` against the
-  backing's interface. Use this for scripted NPCs (cron-job style:
-  cadence + a fixed action).
-* ``AgentNPC`` — an LLM-backed agent loop with a tool surface and a
-  persona. Subclasses define ``_build_tools(interface)`` and a system
-  prompt; the runtime supplies the model. The agent loop itself is
-  delegated to the optional ``strands-agents`` SDK so we don't
-  re-invent tool dispatch / streaming / cancellation.
-
-NPCs that opt into LLM access set ``requires_llm = True``. The
-episode runtime then injects an ``agent_backend`` key (an
-:class:`~openrange.agent_backend.AgentBackend` instance, or
-``None`` if the runtime wasn't configured with one) into the
-``context`` mapping passed to ``start()``. The backend is the seam
-between AgentNPCs and the LLM provider — strands, codex, or
-anything else implementing the protocol.
+Factories are registered via the ``openrange.npcs`` entry-point group;
+the registry builds each NPC fresh per episode.
 """
 
 from __future__ import annotations
@@ -70,29 +36,22 @@ NPCFactory = Callable[[Mapping[str, object]], "NPC"]
 
 
 class NPCError(OpenRangeError):
-    """Raised when an NPC cannot be resolved or constructed."""
+    pass
 
 
 class NPC(ABC):
-    """An autonomous actor that runs alongside the agent during an episode.
+    """Subclasses implement ``step``; ``start``/``stop`` are no-op hooks.
 
-    Subclasses implement ``step``. Default ``start`` and ``stop`` are
-    no-ops; override them when the NPC needs setup / teardown that
-    can't happen in ``__init__``.
+    Set ``requires_llm = True`` to receive an
+    :class:`~openrange.agent_backend.AgentBackend` under
+    ``context["agent_backend"]`` at ``start()`` (or ``None`` if the
+    runtime wasn't configured with one). NPCs that don't opt in pay
+    nothing.
 
-    Set ``requires_llm = True`` (class attribute) to opt into LLM
-    access — the episode runtime then includes an ``agent_backend``
-    key in the ``context`` mapping passed to ``start()`` (an
-    :class:`~openrange.agent_backend.AgentBackend`, or ``None`` if
-    the runtime wasn't configured with one). NPCs that don't opt in
-    pay nothing; the runtime never builds or charges for a model on
-    their behalf.
-
-    Broken-state contract: when an NPC cannot run (missing optional
-    dep, model unreachable, etc.) it sets ``self.broken_reason`` to a
-    human-readable string and short-circuits its ``step``. The episode
-    service polls ``broken_reason`` after each tick and surfaces the
-    transition to the dashboard so a silent NPC never goes unnoticed.
+    Broken-state: an NPC that cannot run sets ``self.broken_reason``
+    to a human-readable string and short-circuits ``step``. The
+    episode service polls it and surfaces the transition to the
+    dashboard so a silent NPC never goes unnoticed.
     """
 
     requires_llm: ClassVar[bool] = False
@@ -100,12 +59,8 @@ class NPC(ABC):
 
     @property
     def actor_id(self) -> str:
-        """Stable identifier for this NPC in dashboard events / logs.
-
-        Override (or set ``self._actor_id`` in ``__init__``) to give a
-        meaningful display name — by default the class name with a
-        short instance hash to disambiguate counts > 1.
-        """
+        # Override or set self._actor_id for a real display name; default
+        # is class name + short instance hash to disambiguate count > 1.
         explicit = getattr(self, "_actor_id", None)
         if isinstance(explicit, str) and explicit:
             return explicit
@@ -113,84 +68,35 @@ class NPC(ABC):
 
     @abstractmethod
     def step(self, interface: Mapping[str, Any]) -> None:
-        """One tick of action.
-
-        ``interface`` is the same mapping the verifier and admission
-        probe receive (e.g. ``{base_url, http_get, http_get_json}`` for
-        the HTTP backing). Implementations decide whether to act on
-        this tick based on their own internal cadence; failures should
-        be swallowed to keep the episode running.
-        """
+        """One tick. Decide whether to act based on internal cadence;
+        swallow failures so the episode keeps running."""
 
     def start(self, context: Mapping[str, Any]) -> None:
-        """Optional setup hook, called once when the episode starts.
-
-        ``context`` carries metadata about the running world — at
-        minimum ``{episode_id, snapshot_id, task_id, base_url}``. NPCs
-        with ``requires_llm = True`` additionally receive an
-        ``agent_backend`` key (an
-        :class:`~openrange.agent_backend.AgentBackend`, or ``None``).
-        All NPCs receive a ``record_action`` key — a callable
-        ``(action, *, target=None, observation=None) -> None`` that
-        publishes a dashboard event tagged with this NPC's
-        ``actor_id``. Use it to surface in-world actions (movement,
-        speech, observations) to the simulation viewer. Default:
-        no-op.
+        """Optional setup. ``context`` carries
+        ``{episode_id, snapshot_id, task_id, base_url, record_action}``;
+        NPCs with ``requires_llm = True`` also receive ``agent_backend``.
+        ``record_action(action, *, target=None, observation=None)``
+        publishes a dashboard event tagged with this NPC's ``actor_id``.
         """
         del context
 
     def stop(self) -> None:  # noqa: B027 — intentional default no-op
-        """Optional teardown hook, called once when the episode ends.
-
-        Default: no-op. Subclasses release resources here (close
-        connections, flush state, etc.).
-        """
+        pass
 
 
 class AgentNPC(NPC):
     """An NPC backed by an LLM agent loop with a tool surface.
 
-    Subclasses provide a persona (``system_prompt``) and a
-    ``_build_tools(interface)`` hook that returns tool callables bound
-    over the runtime backing's interface. The agent loop itself is
-    delegated to an :class:`~openrange.agent_backend.AgentBackend`
-    — usually
-    :class:`~openrange.agent_backend.StrandsAgentBackend`, which
-    wraps ``strands.Agent`` and handles tool dispatch + multi-turn +
-    streaming. Backends are pluggable: a tool-less NPC can use
-    :class:`~openrange.agent_backend.CodexAgentBackend` (driving
-    the same Codex CLI the builder uses) for cheap chatter, no
-    ``strands-agents`` install needed.
+    Subclasses provide a ``system_prompt`` and a ``_build_tools(interface)``
+    hook returning tool callables bound over the runtime backing.
+    Agent dispatch is delegated to an
+    :class:`~openrange.agent_backend.AgentBackend`; constructor-supplied
+    backends win over the runtime's ``context["agent_backend"]``.
 
-    The backend can be supplied at construction (typical for packs
-    that pin a specific provider) or by the runtime via
-    ``context["agent_backend"]`` at ``start()`` time (typical when
-    ``RunConfig.npc_agent_backend`` is set centrally). A
-    constructor-supplied backend always wins over the runtime's.
-
-    Cadence: like scripted NPCs, an ``AgentNPC`` does not invoke its
-    LLM every tick — it acts once every ``cadence_ticks`` ticks. The
-    LLM call is the expensive part; cadence is the budget knob.
-
-    Failure model:
-      * Initialization failure (backend preflight fails, no backend
-        configured, tool builder raises) marks the NPC permanently
-        broken on construction or first acting tick, logs one
-        ``WARNING`` to ``openrange.npc`` with the traceback, and
-        stops trying.
-      * Per-tick LLM failures (rate limits, timeouts) log at ``DEBUG``
-        and the NPC tries again next cadence window.
-
-    Subclasses override:
-
-    * ``_build_tools(interface)`` — required. Return a list of
-      callables the backend can dispatch. For ``StrandsAgentBackend``
-      these are typically ``@strands.tool``-decorated functions; the
-      decoration lives in the subclass so backend-free test doubles
-      stay clean.
-    * ``_user_prompt(interface)`` — optional. The message handed to
-      the agent on each acting tick. Default: a generic "act
-      consistently with your role" prompt.
+    Failure model: init failure (preflight, missing backend, tool
+    builder raises) marks the NPC permanently broken with one
+    ``WARNING``. Per-tick LLM failures log at ``DEBUG`` and retry next
+    cadence window.
     """
 
     requires_llm: ClassVar[bool] = True
@@ -213,13 +119,10 @@ class AgentNPC(NPC):
         self._cooldown = 0
         self._agent: Any = None
         self._broken = False
-        # Pre-flight at construction when we already have a backend so
-        # a missing SDK / binary is detectable as soon as the manifest
-        # is resolved into NPC objects — long before any episode tick.
-        # If the backend is runtime-supplied, the same preflight runs
-        # in ``start()`` once we have it. Either way, ``broken_reason``
-        # carries the explanation and ``EpisodeService`` surfaces it
-        # on the dashboard.
+        # Preflight at construction (when we have a backend already) so
+        # a missing SDK / binary surfaces as soon as the manifest
+        # resolves, not on the first acting tick. Runtime-supplied
+        # backends preflight in ``start()`` instead.
         if agent_backend is not None:
             try:
                 agent_backend.preflight()
@@ -230,10 +133,6 @@ class AgentNPC(NPC):
         if self._broken:
             return
         runtime_backend = context.get("agent_backend")
-        # Trust the runtime contract: anything put under ``agent_backend``
-        # is expected to satisfy the protocol. We don't isinstance-check
-        # — Protocols aren't ``@runtime_checkable`` by default and adding
-        # that would only confirm method presence, not signatures.
         if runtime_backend is not None:
             self._runtime_backend = runtime_backend
         backend = self._backend_override or self._runtime_backend
@@ -244,8 +143,6 @@ class AgentNPC(NPC):
                 "to the NPC constructor)",
             )
             return
-        # Preflight the runtime backend (constructor backends were
-        # already preflighted in __init__).
         if self._backend_override is None:
             try:
                 backend.preflight()
@@ -273,9 +170,7 @@ class AgentNPC(NPC):
         try:
             self._invoke_agent(self._user_prompt(interface))
         except Exception:
-            # Transient: rate limits, network blips, model timeouts.
-            # Log at DEBUG so verbose runs see them, but the default
-            # operator view stays clean.
+            # Transient (rate limits, timeouts) — DEBUG only; operator view stays clean.
             _log.debug(
                 "NPC %s tick failed; will retry next cadence window",
                 type(self).__name__,
@@ -337,14 +232,9 @@ class AgentNPC(NPC):
 class NPCRegistry:
     """Registry of NPC factories by id.
 
-    Factories are registered explicitly via ``register()`` or, on the
-    global ``NPCS`` instance, discovered via Python entry points in
-    the ``openrange.npcs`` group. Entry-point values must resolve to
-    a callable ``(config) -> NPC``.
-
-    ``autodiscover=False`` (the default) gives a clean slate suitable
-    for tests. The global ``NPCS = NPCRegistry(autodiscover=True)``
-    pulls in installed NPCs on first access.
+    ``autodiscover=False`` (default) gives tests a clean slate; the
+    global ``NPCS`` autodiscovers from the ``openrange.npcs`` entry-point
+    group on first access.
     """
 
     def __init__(self, *, autodiscover: bool = False) -> None:
