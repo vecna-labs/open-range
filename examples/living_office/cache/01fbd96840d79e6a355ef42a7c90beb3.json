@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Probe the web service to enumerate its response since no events are visible.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"curl -v http://svc-web/\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1016,
+  "latency_ms": 5179,
+  "prompt_tokens": 395,
+  "completion_tokens": 883
+}

@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"No visible events and all services healthy, so sleep to conserve actions.\", \"tool\": \"sleep\", \"args\": {}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1008,
+  "latency_ms": 3845,
+  "prompt_tokens": 416,
+  "completion_tokens": 759
+}

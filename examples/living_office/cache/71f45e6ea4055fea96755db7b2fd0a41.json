@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Probe the web service main page for reconnaissance since no events visible.\", \"tool\": \"api_request\", \"args\": {\"method\": \"GET\", \"url\": \"http://svc-web\", \"headers\": {}}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1010,
+  "latency_ms": 16504,
+  "prompt_tokens": 395,
+  "completion_tokens": 1003
+}

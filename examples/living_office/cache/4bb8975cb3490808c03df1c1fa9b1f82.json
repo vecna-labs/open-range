@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"No visible events, poll svc-siem for fresh telemetry.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"docker logs --tail 20 svc-siem\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1013,
+  "latency_ms": 9383,
+  "prompt_tokens": 416,
+  "completion_tokens": 1551
+}

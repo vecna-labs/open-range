@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Enumerate anonymous shares on the fileshare service.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"smbclient -L //svc-fileshare -N\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1014,
+  "latency_ms": 7810,
+  "prompt_tokens": 395,
+  "completion_tokens": 1060
+}

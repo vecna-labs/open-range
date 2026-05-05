@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"No visible events after 10 turns; probe svc-web service for reconnaissance.\", \"tool\": \"api_request\", \"args\": {\"url\": \"http://svc-web\", \"method\": \"GET\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1010,
+  "latency_ms": 10101,
+  "prompt_tokens": 395,
+  "completion_tokens": 1073
+}

@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Enumerate services running on the web host for further recon.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"nmap -sC -sV svc-web\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1016,
+  "latency_ms": 10117,
+  "prompt_tokens": 395,
+  "completion_tokens": 1296
+}

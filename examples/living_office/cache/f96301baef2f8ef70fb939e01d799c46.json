@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"No visible events, poll SIEM for fresh logs.\", \"tool\": \"shell_command\", \"args\": {\"service\": \"svc-siem\", \"command\": \"tail -n 20 /var/log/siem.log\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1004,
+  "latency_ms": 3684,
+  "prompt_tokens": 416,
+  "completion_tokens": 705
+}

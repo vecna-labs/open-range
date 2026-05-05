@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"No malicious events visible; poll SIEM for fresh telemetry.\", \"tool\": \"shell_command\", \"args\": {\"target\": \"svc-siem\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1015,
+  "latency_ms": 6283,
+  "prompt_tokens": 426,
+  "completion_tokens": 1158
+}

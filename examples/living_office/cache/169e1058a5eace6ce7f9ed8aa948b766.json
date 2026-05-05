@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Probe the web service via curl for reconnaissance.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"curl -v http://svc-web/\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1012,
+  "latency_ms": 6786,
+  "prompt_tokens": 395,
+  "completion_tokens": 1072
+}

@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Enumerate listening ports to identify pivot opportunities.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"ss -tulnp\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1018,
+  "latency_ms": 7886,
+  "prompt_tokens": 395,
+  "completion_tokens": 1239
+}

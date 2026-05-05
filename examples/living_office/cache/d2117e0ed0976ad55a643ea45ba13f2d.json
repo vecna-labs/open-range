@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Probe svc-web for server banner and basic info since no events visible.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"curl -s -I http://svc-web/\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1009,
+  "latency_ms": 7686,
+  "prompt_tokens": 395,
+  "completion_tokens": 1089
+}

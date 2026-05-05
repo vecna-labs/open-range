@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Recon local network to identify interfaces and reachable services.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"ip a\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1020,
+  "latency_ms": 5136,
+  "prompt_tokens": 395,
+  "completion_tokens": 829
+}

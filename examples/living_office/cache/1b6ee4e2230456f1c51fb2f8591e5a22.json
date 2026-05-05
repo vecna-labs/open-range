@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Enumerate listening ports to map local attack surface since no events visible.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"ss -tuln\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1012,
+  "latency_ms": 8393,
+  "prompt_tokens": 395,
+  "completion_tokens": 1001
+}

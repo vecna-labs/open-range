@@ -1,0 +1,1416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OpenRange — Living Office</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* Warm light editorial palette (Vecna grid, Smallville warmth) */
+    --bg-0:   #f7f2e6;   /* app outer */
+    --bg-1:   #fcf8ed;   /* cards */
+    --bg-2:   #f3ebd5;   /* subtle panel */
+    --bg-3:   #ebe1c6;   /* chips/inputs */
+    --bg-4:   #e2d6b5;   /* hover */
+    --bg-hov: rgba(29,26,20,0.04);
+
+    --ink-0:  #1d1a14;   /* deepest text */
+    --ink-1:  #3d3a30;
+    --ink-2:  #6a6352;
+    --ink-3:  #9c9379;
+
+    --accent:        #c79a18;   /* editorial sun */
+    --accent-soft:   rgba(199,154,24,0.12);
+    --green:         #4d8548;
+    --amber:         #c79a18;
+    --red:           #a64040;
+    --violet:        #7a5bae;
+
+    --border:        rgba(29,26,20,0.1);
+    --border-s:      rgba(29,26,20,0.05);
+
+    --f-display: 'Fraunces', 'Georgia', serif;
+    --f-ui:      'Inter', -apple-system, sans-serif;
+    --f-mono:    'JetBrains Mono', ui-monospace, monospace;
+
+    color-scheme: light;
+    font-family: var(--f-ui);
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg-0);
+    color: var(--ink-0);
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: 240px 1fr 280px;
+    grid-template-rows: 58px 1fr;
+    grid-template-areas:
+      "sidebar topbar  topbar"
+      "sidebar content meta";
+    height: 100vh;
+    min-height: 0;
+  }
+
+  /* Narrow-viewport nav toggle (hidden by default). Becomes visible in the
+     860px breakpoint when the sidebar collapses off-canvas. */
+  .nav-toggle {
+    display: none;
+    align-items: center; justify-content: center;
+    width: 34px; height: 34px;
+    border-radius: 4px;
+    border: 1.5px solid var(--ink-0);
+    background: var(--bg-1);
+    color: var(--ink-0);
+    font-family: var(--f-display);
+    font-size: 18px; line-height: 1;
+    cursor: pointer;
+    margin-right: 6px;
+    box-shadow: 2px 2px 0 var(--ink-0);
+  }
+  .nav-toggle:hover { background: var(--bg-4); }
+
+  /* ================ SIDEBAR ================ */
+  .sidebar {
+    grid-area: sidebar;
+    background: var(--bg-1);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 14px 12px;
+    overflow-y: auto;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 4px 8px 16px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 14px;
+  }
+  .brand-logo {
+    width: 24px; height: 24px;
+    background: var(--accent);
+    border: 1.5px solid var(--ink-0);
+    border-radius: 4px;
+    display: grid; place-items: center;
+    color: var(--ink-0); font-weight: 700; font-size: 13px;
+    font-family: var(--f-display);
+    box-shadow: 2px 2px 0 var(--ink-0);
+  }
+  .brand-name {
+    font-family: var(--f-display);
+    font-weight: 700; font-size: 16px;
+    letter-spacing: -0.015em; color: var(--ink-0);
+  }
+  .brand-search {
+    margin-left: auto;
+    width: 22px; height: 22px;
+    display: grid; place-items: center;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+
+  .nav-section {
+    margin-top: 14px;
+  }
+  .nav-label {
+    font-family: var(--f-ui);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 0 10px 6px 10px;
+    font-weight: 600;
+  }
+  .nav-item {
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-size: 13px;
+    color: var(--ink-1);
+    cursor: pointer;
+    margin-bottom: 1px;
+  }
+  .nav-item:hover { background: var(--bg-hov); color: var(--ink-0); }
+  .nav-item.active { background: var(--accent-soft); color: var(--ink-0); }
+  .nav-item .icon {
+    display: grid; place-items: center;
+    color: var(--ink-2);
+  }
+  .nav-item.active .icon { color: var(--accent); }
+  .nav-item .icon svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+  .nav-item .pill {
+    font-family: var(--f-mono);
+    font-size: 10px;
+    padding: 1px 7px;
+    border-radius: 10px;
+    background: var(--bg-4);
+    color: var(--ink-1);
+    font-weight: 500;
+  }
+  .nav-item .pill.live { color: var(--accent); }
+  .nav-item .pill.green { color: var(--green); }
+  .nav-item .pill.rose  { color: var(--red); }
+
+  .sidebar-footer {
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10.5px; color: var(--ink-2);
+    font-family: var(--f-mono);
+  }
+  .sidebar-footer .dot { width: 6px; height: 6px; background: var(--green); border-radius: 50%; }
+
+  /* ================ TOPBAR ================ */
+  .topbar {
+    grid-area: topbar;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 22px;
+    gap: 16px;
+  }
+  .crumb {
+    display: flex; align-items: baseline; gap: 10px;
+    font-size: 13.5px;
+  }
+  .crumb .back {
+    color: var(--ink-2);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .crumb .title {
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: 17px;
+    color: var(--ink-0);
+    letter-spacing: -0.012em;
+  }
+  .crumb .title em {
+    font-weight: 500;
+    font-style: italic;
+    color: var(--accent);
+    margin-left: 3px;
+  }
+  .crumb .status-pill {
+    font-family: var(--f-ui);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    padding: 2px 8px;
+    border-radius: 3px;
+    border: 1.5px solid var(--ink-0);
+    background: #c6e0b9;
+    color: var(--ink-0);
+    font-weight: 600;
+    box-shadow: 1.5px 1.5px 0 var(--ink-0);
+  }
+  .crumb .tag {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    color: var(--ink-1);
+    background: var(--bg-3);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  .topbar-spacer { flex: 1; }
+  .topbar-meta {
+    display: flex; gap: 8px; align-items: center;
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    color: var(--ink-2);
+  }
+  .topbar-meta .sep { color: var(--ink-3); }
+  .topbar-meta .val { color: var(--ink-0); font-weight: 500; }
+
+  .topbar-btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 12px;
+    border-radius: 3px;
+    background: var(--bg-1);
+    border: 1.5px solid var(--ink-0);
+    color: var(--ink-0);
+    font-family: var(--f-ui);
+    font-weight: 600; font-size: 12px;
+    cursor: pointer;
+    box-shadow: 2px 2px 0 var(--ink-0);
+    transition: transform .08s, box-shadow .08s;
+  }
+  .topbar-btn:hover { background: var(--bg-4); transform: translate(-1px,-1px); box-shadow: 3px 3px 0 var(--ink-0); }
+  .topbar-btn:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--ink-0); }
+  .topbar-btn.primary { background: var(--accent); color: var(--ink-0); }
+  .topbar-btn.primary:hover { background: #d7ab2c; }
+  .topbar-btn svg { width: 13px; height: 13px; }
+  .topbar-btn .dot { width: 7px; height: 7px; background: currentColor; border-radius: 50%; display: inline-block; }
+
+  /* ================ CONTENT ================ */
+  .content {
+    grid-area: content;
+    padding: 18px 22px 22px 22px;
+    overflow-y: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  /* Metric strip — data-driven. The JS populates 3-5 cards from scene_init;
+     auto-fill keeps any N fitting the row without hardcoded column count. */
+  .metric-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+  }
+  .metric-card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    box-shadow: inset 0 1px 0 rgba(252,248,237,0.9);
+    outline: none;
+    cursor: default;
+    transition: border-color .1s, transform .08s;
+  }
+  .metric-card:focus-visible {
+    border-color: var(--accent);
+    box-shadow: inset 0 1px 0 rgba(252,248,237,0.9), 0 0 0 2px var(--accent-soft);
+  }
+  .metric-card .label {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 10px; color: var(--ink-2);
+    margin-bottom: 6px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .metric-card .label .live-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 3px rgba(77,133,72,0.18);
+  }
+  .metric-card .label .live-dot.offline { background: var(--ink-3); box-shadow: none; }
+  .metric-card .value {
+    font-family: var(--f-display);
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--ink-0);
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    word-break: break-word;
+  }
+  .metric-card .sub { font-size: 11px; color: var(--ink-2); margin-top: 3px; font-family: var(--f-mono); }
+  .metric-card .value.cool  { color: var(--accent); }
+  .metric-card .value.offline { color: var(--ink-3); }
+
+  /* Legacy metric styles kept for any hidden-DOM remnants referenced by scene.js */
+  .metric .value.rose  { color: var(--red); }
+  .metric .value.cool  { color: var(--accent); }
+  .metric .value.green { color: var(--green); }
+
+  /* Zone chip strip — pure-display derived from scene_init.zones */
+  .zone-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 7px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    align-items: center;
+  }
+  .zone-strip:empty { display: none; }
+  .zone-strip .zone-strip-label {
+    font-size: 9.5px; letter-spacing: 0.18em;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-right: 2px;
+  }
+  .zone-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    color: var(--ink-1);
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+  .zone-chip .zone-name {
+    color: var(--ink-0);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .zone-chip .zone-count {
+    color: var(--ink-2);
+  }
+
+  /* Scene takes the bulk of the content area */
+  .scene-wrap {
+    flex: 1 1 auto;
+    min-height: 540px;
+    position: relative;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .scene-wrap canvas {
+    display: block;
+    width: 100% !important; height: 100% !important;
+    position: absolute; inset: 0;
+  }
+
+  .labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .nametag {
+    position: absolute;
+    transform: translate(-50%, -100%);
+    padding: 2px 7px;
+    font-family: var(--f-ui);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--ink-0);
+    background: rgba(252,248,237,0.94);
+    border: 1.5px solid var(--ink-0);
+    border-radius: 3px;
+    white-space: nowrap;
+    box-shadow: 2px 2px 0 var(--ink-0);
+  }
+  .nametag.engineer { background: #c8dcf1; }
+  .nametag.sales    { background: #f5d97a; }
+  .nametag.finance  { background: #f1b5b5; }
+  .nametag.it_admin { background: #d4c3eb; }
+  .nametag.red      { background: var(--red); color: var(--bg-1); }
+  .nametag.blue     { background: #6395c5; color: var(--bg-1); }
+  .nametag.service  { background: #b5d9a9; }
+  .nametag.zone {
+    font-family: var(--f-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+    background: rgba(252,248,237,0.7);
+    border: 1px dashed var(--ink-3);
+    box-shadow: none;
+    padding: 1px 8px;
+  }
+
+  .callout {
+    position: absolute;
+    transform: translate(-50%, -100%);
+    min-width: 180px;
+    max-width: 280px;
+    background: var(--bg-1);
+    border: 2px solid var(--ink-0);
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 4px 4px 0 var(--ink-0);
+    animation: pop .25s ease-out;
+  }
+  .callout .title-bar {
+    background: var(--accent);
+    border-bottom: 2px solid var(--ink-0);
+    padding: 4px 10px;
+    font-family: var(--f-display);
+    font-weight: 700; font-style: italic;
+    font-size: 12.5px;
+    color: var(--ink-0);
+  }
+  .callout.email .title-bar { background: var(--accent); }
+  .callout.chat  .title-bar { background: #b6d6f0; }
+  .callout.reaction .title-bar { background: var(--red); color: var(--bg-1); }
+  .callout .body {
+    padding: 7px 10px 9px 10px;
+    font-family: var(--f-ui);
+    font-size: 12px; color: var(--ink-1); line-height: 1.4;
+  }
+  .callout .body .who {
+    font-weight: 700; color: var(--ink-0); margin-right: 3px;
+  }
+  .callout .tail {
+    position: absolute; left: 24px; bottom: -10px;
+    width: 0; height: 0;
+    border-left: 8px solid transparent; border-right: 8px solid transparent;
+    border-top: 10px solid var(--ink-0);
+  }
+  .callout .tail::after {
+    content: ''; position: absolute; left: -6px; top: -10px;
+    border-left: 6px solid transparent; border-right: 6px solid transparent;
+    border-top: 8px solid var(--bg-1);
+  }
+  .callout.email    { border-left-color: var(--amber); }
+  .callout.reaction { border-left-color: var(--red); }
+  @keyframes pop { from { opacity: 0; transform: translate(-50%, -88%) scale(0.95); } to { opacity: 1; transform: translate(-50%, -100%) scale(1); } }
+
+  /* Operating-context / Live stream cards below the scene */
+  .panel-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .panel {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+  }
+  .panel-head {
+    display: flex; align-items: baseline; gap: 10px;
+    font-family: var(--f-display);
+    font-weight: 700;
+    font-size: 13.5px;
+    color: var(--ink-0);
+    letter-spacing: -0.004em;
+    padding-bottom: 7px;
+    border-bottom: 1.5px solid var(--ink-0);
+  }
+  .panel-head .extra {
+    font-family: var(--f-mono); font-weight: 400;
+    font-style: normal;
+  }
+  .panel-head .extra { margin-left: auto; color: var(--ink-2); letter-spacing: 0.04em; text-transform: none; font-family: var(--f-mono); font-size: 10px; }
+
+  .kv-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    padding: 3px 0;
+    align-items: baseline;
+  }
+  .kv-row .k { font-size: 11.5px; color: var(--ink-2); }
+  .kv-row .v { font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-0); }
+  .kv-row .v.rose { color: var(--red); }
+  .kv-row .v.cool { color: var(--accent); }
+  .kv-row .v.green { color: var(--green); }
+
+  .bar {
+    height: 3px;
+    background: var(--bg-3);
+    overflow: hidden;
+    border-radius: 2px;
+    margin-top: 4px;
+    position: relative;
+  }
+  .bar > span {
+    display: block; height: 100%;
+    background: var(--green);
+    transition: width .3s ease-out;
+  }
+  .bar.red  > span { background: var(--red); }
+  .bar.blue > span { background: var(--accent); }
+
+  .thought {
+    padding: 7px 0;
+    border-top: 1px solid var(--border-s);
+    font-size: 12px;
+    color: var(--ink-1);
+    line-height: 1.5;
+  }
+  .thought:first-child { border-top: 0; padding-top: 0; }
+  .thought .actor {
+    font-family: var(--f-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 8px;
+    font-weight: 600;
+  }
+  .thought.red  .actor { color: var(--red); background: rgba(224,94,94,0.1); border: 1px solid rgba(224,94,94,0.3); }
+  .thought.blue .actor { color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(106,168,255,0.3); }
+  .thought .act { font-family: var(--f-mono); font-size: 11px; color: var(--ink-2); }
+  .thought .body { margin-top: 2px; color: var(--ink-0); font-size: 12px; }
+
+  /* ================ META COLUMN (right) ================ */
+  .meta {
+    grid-area: meta;
+    background: var(--bg-1);
+    border-left: 1px solid var(--border);
+    padding: 16px 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-height: 0;
+  }
+  .meta-section {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .meta-section .label {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 600;
+  }
+  .meta-row {
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .meta-row .k {
+    font-size: 10.5px; letter-spacing: 0.1em; color: var(--ink-3);
+    text-transform: uppercase; font-weight: 500;
+  }
+  .meta-row .v {
+    font-family: var(--f-mono); font-size: 12px; color: var(--ink-0);
+    word-break: break-all;
+  }
+  .meta-row .v.cool { color: var(--accent); }
+  .meta-row .v.offline { color: var(--ink-3); opacity: 0.7; }
+
+  .obj {
+    display: grid; grid-template-columns: 50px 1fr; gap: 8px; align-items: baseline;
+    padding: 7px 0;
+    border-top: 1px solid var(--border-s);
+  }
+  .obj:first-child { border-top: 0; }
+  .obj .side {
+    font-family: var(--f-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 3px;
+    text-align: center;
+  }
+  .obj.red  .side { color: var(--red);    background: rgba(224,94,94,0.1);  border: 1px solid rgba(224,94,94,0.3); }
+  .obj.blue .side { color: var(--accent); background: var(--accent-soft);    border: 1px solid rgba(106,168,255,0.3); }
+  .obj.grn  .side { color: var(--green);  background: rgba(95,201,122,0.1); border: 1px solid rgba(95,201,122,0.3); }
+  .obj .preds {
+    font-family: var(--f-mono); font-size: 11px; color: var(--ink-1); line-height: 1.5;
+  }
+  .obj .preds code {
+    font-size: 10.5px; color: var(--ink-0);
+    background: var(--bg-3);
+    padding: 1px 5px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+
+  /* Lineage */
+  .lineage-node {
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    border-radius: 5px;
+    margin-bottom: 5px;
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    color: var(--ink-1);
+    position: relative;
+  }
+  .lineage-node.child { margin-left: 14px; }
+  .lineage-node.admitted { border-left: 3px solid var(--green); }
+  .lineage-node.proposed { border-left: 3px solid var(--amber); }
+  .lineage-node.rejected { border-left: 3px solid var(--red); background: rgba(224,94,94,0.04); }
+  .lineage-node .head {
+    display: flex; justify-content: space-between; gap: 8px;
+  }
+  .lineage-node .id { color: var(--ink-0); font-weight: 600; font-size: 11px; }
+  .lineage-node .verdict {
+    font-size: 9px; letter-spacing: 0.12em; padding: 1px 6px; border-radius: 3px;
+    text-transform: uppercase; font-weight: 600;
+  }
+  .lineage-node.admitted .verdict { background: rgba(95,201,122,0.1); color: var(--green); border: 1px solid rgba(95,201,122,0.3); }
+  .lineage-node.proposed .verdict { background: rgba(232,180,90,0.1); color: var(--amber); border: 1px solid rgba(232,180,90,0.3); }
+  .lineage-node.rejected .verdict { background: rgba(224,94,94,0.1); color: var(--red); border: 1px solid rgba(224,94,94,0.3); }
+  .lineage-node .ops {
+    display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px;
+  }
+  .lineage-node .op {
+    font-size: 9.5px; padding: 1px 5px;
+    background: var(--bg-3); border: 1px solid var(--border);
+    border-radius: 3px; color: var(--ink-1);
+  }
+  .lineage-node .reason {
+    margin-top: 4px; font-size: 10px; color: var(--red); line-height: 1.4;
+  }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px;
+    border-radius: 5px;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    color: var(--ink-0);
+    font-family: var(--f-ui); font-weight: 500; font-size: 11.5px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--bg-4); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn.small { padding: 5px 9px; font-size: 11px; }
+
+  /* Ticker drawer (hidden by default) */
+  .ticker-drawer {
+    position: absolute;
+    left: 240px; right: 280px; bottom: 0;
+    max-height: 200px;
+    background: var(--bg-1);
+    border-top: 1px solid var(--border);
+    display: none;
+    padding: 12px 22px;
+    overflow-y: auto;
+    z-index: 50;
+    box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+  }
+  .ticker-drawer.show { display: block; }
+  .ticker-drawer .ticker-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 8px;
+    font-size: 10.5px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--ink-3); font-weight: 600;
+  }
+  .ticker {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    line-height: 1.6;
+    columns: 2;
+    column-gap: 30px;
+    color: var(--ink-1);
+  }
+  .tr {
+    break-inside: avoid;
+    display: grid;
+    grid-template-columns: 50px 14px 1fr;
+    gap: 8px;
+    padding: 1px 0;
+  }
+  .tr .t { color: var(--ink-3); font-size: 10px; }
+  .tr .mark { text-align: center; }
+  .tr.red .mark { color: var(--red); }
+  .tr.blue .mark { color: var(--accent); }
+  .tr.green .mark { color: var(--green); }
+  .tr.event .mark { color: var(--amber); }
+  .tr.speech { font-style: italic; }
+  .tr.speech .mark { color: var(--amber); font-style: normal; }
+
+  /* Timeline pinned along the scene bottom */
+  .timeline {
+    position: absolute;
+    left: 12px; right: 12px; bottom: 8px;
+    height: 14px;
+    pointer-events: none;
+    z-index: 5;
+  }
+  .timeline .axis {
+    position: absolute; left: 0; right: 0; top: 6px;
+    height: 1px; background: var(--border);
+  }
+  .timeline .mark {
+    position: absolute; top: 3px;
+    width: 1.5px; height: 8px;
+    background: var(--ink-2);
+  }
+  .timeline .mark.red    { background: var(--red); }
+  .timeline .mark.blue   { background: var(--accent); }
+  .timeline .mark.event  { background: var(--amber); height: 11px; top: 2px; }
+  .timeline .mark.speech { background: var(--violet); top: 5px; height: 4px; }
+  .timeline .cursor {
+    position: absolute; top: -1px; bottom: -4px;
+    width: 2px; background: var(--accent);
+    transform: translateX(-50%);
+    transition: left .3s ease-out;
+  }
+
+  /* ============ Roster row ============ */
+  .person {
+    display: grid; grid-template-columns: 22px 1fr auto;
+    gap: 9px; align-items: center;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    position: relative;
+  }
+  .person:hover { background: var(--bg-hov); }
+  .person .sprite {
+    width: 18px; height: 22px;
+    display: flex; align-items: flex-end; justify-content: center;
+    position: relative;
+  }
+  .person .sprite::before {
+    content: ""; position: absolute; top: 3px;
+    width: 10px; height: 10px; background: var(--skin, #e8c9a8);
+    border: 1.5px solid var(--ink-0); border-radius: 50%;
+  }
+  .person .sprite::after {
+    content: ""; width: 14px; height: 12px; border: 1.5px solid var(--ink-0);
+    border-radius: 3px 3px 1px 1px; background: var(--c, var(--ink-2));
+  }
+  .person .sprite.engineer::after { background: #3d7aad; }
+  .person .sprite.sales::after    { background: #c9881c; }
+  .person .sprite.finance::after  { background: #a64040; }
+  .person .sprite.it_admin::after { background: #7a5bae; }
+  .person-body { min-width: 0; }
+  .person-name {
+    font-family: var(--f-ui);
+    font-weight: 600;
+    font-size: 12.5px;
+    color: var(--ink-0);
+    display: flex; align-items: center; gap: 5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .person-name .speak-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    background: transparent;
+    transition: background .15s;
+  }
+  .person.speaking .speak-dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 3px rgba(199,154,24,0.25);
+    animation: speakpulse 1.3s ease-in-out infinite;
+  }
+  @keyframes speakpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .person-title {
+    font-family: var(--f-mono);
+    font-size: 10px; color: var(--ink-2);
+  }
+  .person-loc {
+    font-family: var(--f-mono);
+    font-size: 9.5px; letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  .focus-flash {
+    animation: flash 1.1s ease-out;
+    border-radius: 6px;
+  }
+  @keyframes flash {
+    0%   { box-shadow: 0 0 0 0 rgba(199,154,24,0.0); }
+    20%  { box-shadow: 0 0 0 6px rgba(199,154,24,0.35); }
+    100% { box-shadow: 0 0 0 0 rgba(199,154,24,0); }
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.12); }
+
+  /* ================ ROSTER: grouped + overflow ================ */
+  #roster {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: calc(100vh - 360px);
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) transparent;
+  }
+  #roster::-webkit-scrollbar { width: 7px; }
+  #roster::-webkit-scrollbar-track {
+    background: var(--bg-2);
+    border-radius: 3px;
+  }
+  #roster::-webkit-scrollbar-thumb {
+    background: rgba(199,154,24,0.55);
+    border-radius: 3px;
+    border: 1px solid var(--bg-1);
+  }
+  #roster::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
+  }
+
+  .roster-group { display: block; margin: 0; }
+  .roster-group + .roster-group { margin-top: 4px; }
+  .roster-group > summary {
+    list-style: none;
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: 12px 1fr auto;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 8px;
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    font-weight: 600;
+    border-radius: 3px;
+    user-select: none;
+  }
+  .roster-group > summary::-webkit-details-marker { display: none; }
+  .roster-group > summary::before {
+    content: '▸';
+    color: var(--accent);
+    font-size: 9px;
+    transition: transform .12s;
+    display: inline-block;
+    transform-origin: center;
+  }
+  .roster-group[open] > summary::before {
+    transform: rotate(90deg);
+  }
+  .roster-group > summary:hover { background: var(--bg-hov); color: var(--ink-0); }
+  .roster-group .roster-count {
+    font-family: var(--f-mono);
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 9px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+  .roster-group .roster-items {
+    display: flex; flex-direction: column; gap: 1px;
+    margin: 3px 0 4px 6px;
+    padding-left: 6px;
+    border-left: 1px solid var(--border);
+  }
+
+  /* ================ RESPONSIVE BREAKPOINTS ================ */
+  /* At 1400px the meta column gets tight — shrink and trim content padding. */
+  @media (max-width: 1400px) {
+    .app { grid-template-columns: 220px 1fr 240px; }
+    .meta { padding: 14px 14px; gap: 14px; }
+    .content { padding: 14px 16px 16px 16px; gap: 14px; }
+    .scene-wrap { min-height: 380px; }
+    .ticker-drawer { left: 220px; right: 240px; }
+    #roster { max-height: calc(100vh - 320px); }
+  }
+
+  /* At 1180px stack the meta column below the scene so both have breathing room. */
+  @media (max-width: 1180px) {
+    .app {
+      grid-template-columns: 220px 1fr;
+      grid-template-rows: 58px 1fr;
+      grid-template-areas:
+        "sidebar topbar"
+        "sidebar content";
+    }
+    .meta {
+      grid-area: auto;
+      border-left: 0;
+      border-top: 1px solid var(--border);
+      width: 100%;
+      padding: 14px 16px;
+    }
+    .content {
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .content > .meta { order: 99; }
+    .ticker-drawer { left: 220px; right: 0; }
+    #roster { max-height: 280px; }
+  }
+
+  /* At 860px collapse the sidebar off-canvas; reveal the nav-toggle in the topbar. */
+  @media (max-width: 860px) {
+    .app {
+      grid-template-columns: 1fr;
+      grid-template-rows: 58px 1fr;
+      grid-template-areas:
+        "topbar"
+        "content";
+    }
+    .sidebar {
+      position: fixed;
+      top: 0; bottom: 0; left: 0;
+      width: 240px;
+      z-index: 120;
+      transform: translateX(-100%);
+      transition: transform .18s ease-out;
+      box-shadow: 4px 0 18px rgba(0,0,0,0.12);
+    }
+    .sidebar.open { transform: translateX(0); }
+    .nav-toggle { display: inline-flex; }
+    .topbar { padding: 0 12px; }
+    .crumb .title { font-size: 15px; }
+    .crumb .tag, .crumb .status-pill { display: none; }
+    .topbar-meta { display: none; }
+    .ticker-drawer { left: 0; right: 0; }
+    .content { padding: 10px 12px 14px 12px; }
+    .metric-strip { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+    #roster { max-height: 240px; }
+  }
+
+  /* --- LLM traces panel --- */
+  .traces-body { max-height: 260px; overflow-y: auto; font-family: var(--f-mono); font-size: 11px; }
+  .trace-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; padding: 4px 6px; border-bottom: 1px solid var(--border-s); align-items: baseline; }
+  .trace-row:hover { background: var(--accent-soft); }
+  .trace-preview { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .trace-lat { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .trace-tok { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .traces-totals-wrap { font-size: 11px; color: var(--ink-2); font-family: var(--f-mono); }
+  #panel-traces { display: flex; flex-direction: column; gap: 8px; }
+  #panel-traces > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  #panel-traces > summary::-webkit-details-marker { display: none; }
+  #panel-traces .panel-title { font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  #panel-traces .panel-sub { font-size: 11px; color: var(--ink-2); font-family: var(--f-mono); }
+
+  /* --- Admission report + episode final panels (shared chrome) --- */
+  #panel-admission, #panel-episode-final { display: flex; flex-direction: column; gap: 8px; }
+  #panel-admission > summary, #panel-episode-final > summary {
+    list-style: none; cursor: pointer;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  }
+  #panel-admission > summary::-webkit-details-marker,
+  #panel-episode-final > summary::-webkit-details-marker { display: none; }
+  #panel-admission .panel-title, #panel-episode-final .panel-title {
+    font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600;
+  }
+  #panel-admission .panel-sub, #panel-episode-final .panel-sub {
+    font-size: 11px; color: var(--ink-2); font-family: var(--f-mono);
+  }
+  .status-chip {
+    display: inline-block; padding: 1px 7px; border-radius: 3px;
+    font-family: var(--f-mono); font-size: 10px;
+    letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  .status-chip.admitted, .status-chip.red-side, .status-chip.blue-side,
+  .status-chip.timeout, .status-chip.failure, .status-chip.rejected {
+    background: var(--bg-3);
+    color: var(--ink-1);
+  }
+  .status-chip.admitted { color: var(--green); background: rgba(77,133,72,0.12); }
+  .status-chip.rejected, .status-chip.failure { color: var(--red); background: rgba(166,64,64,0.12); }
+  .status-chip.red-side { color: var(--red); background: rgba(166,64,64,0.12); }
+  .status-chip.blue-side { color: var(--accent); background: var(--accent-soft); }
+  .status-chip.timeout { color: var(--amber); background: var(--accent-soft); }
+  .stage-pill {
+    display: inline-block; padding: 2px 7px; margin: 1px 3px 1px 0;
+    border-radius: 3px; font-size: 10.5px; font-family: var(--f-mono);
+    border: 1px solid var(--border);
+  }
+  .stage-pill.pass { background: rgba(77,133,72,0.12); color: var(--green); }
+  .stage-pill.fail { background: rgba(166,64,64,0.12); color: var(--red); }
+  .stage-pill.unknown { background: var(--bg-3); color: var(--ink-3); }
+  .gate-row, .score-row {
+    display: flex; flex-wrap: wrap; gap: 5px; margin: 4px 0;
+    font-family: var(--f-mono); font-size: 10.5px;
+  }
+  .gate-chip {
+    padding: 1px 6px; border-radius: 2px;
+    background: var(--bg-2); color: var(--ink-1);
+    border: 1px solid var(--border);
+  }
+  .gate-chip.pass { color: var(--green); }
+  .gate-chip.fail { color: var(--red); }
+  .admission-body { max-height: 200px; overflow-y: auto; }
+  .admission-head {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    font-family: var(--f-mono); font-size: 11px; color: var(--ink-1);
+  }
+  .admission-head .wid { color: var(--ink-0); font-weight: 600; }
+  .admission-section-label {
+    font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; margin-top: 6px;
+  }
+  .rejection-reasons {
+    font-style: italic; color: var(--red); font-size: 11px; margin-top: 4px;
+    list-style: disc; padding-left: 18px;
+  }
+  .rejection-reasons li { margin: 1px 0; }
+
+  /* Episode final outcome */
+  .episode-final-body { max-height: 260px; overflow-y: auto; }
+  .episode-final-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .episode-final-reason { font-size: 11px; color: var(--ink-2); margin-top: 3px; font-family: var(--f-mono); }
+  .episode-obj-cols {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px;
+  }
+  .episode-obj-col .episode-obj-label {
+    font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; margin-bottom: 4px;
+  }
+  .episode-obj-col.red .episode-obj-label { color: var(--red); }
+  .episode-obj-col.blue .episode-obj-label { color: var(--accent); }
+  .obj-chip {
+    display: inline-block; padding: 1px 6px; margin: 1px 3px 1px 0;
+    font-family: var(--f-mono); font-size: 10.5px;
+    border-radius: 3px; background: var(--bg-3);
+    color: var(--ink-0); border: 1px solid var(--border);
+  }
+  .obj-chip.none { color: var(--ink-3); font-style: italic; background: transparent; border: 1px dashed var(--border); }
+  .episode-meta-row {
+    margin-top: 8px; font-family: var(--f-mono); font-size: 10.5px;
+    color: var(--ink-1);
+  }
+  .episode-meta-row .sep { color: var(--ink-3); margin: 0 4px; }
+  .episode-audit-row { margin-top: 4px; font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-1); }
+  .episode-audit-warn { color: var(--amber); font-weight: 600; margin-top: 3px; font-family: var(--f-mono); font-size: 10.5px; }
+
+  /* Per-turn diversity HUD (appended to the Live RL panel) */
+  .audit-hud {
+    margin-top: 6px;
+    font-family: var(--f-mono); font-size: 10.5px;
+    color: var(--ink-1);
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+  }
+  .audit-hud .k { color: var(--ink-3); letter-spacing: 0.08em; text-transform: uppercase; font-size: 9.5px; }
+  .audit-hud .spark { letter-spacing: 0; }
+  .audit-hud .spark.red { color: var(--red); }
+  .audit-hud .spark.blue { color: var(--accent); }
+  .audit-hud .warn.none { color: var(--ink-3); }
+  .audit-hud .warn.red  { color: var(--red); font-weight: 600; }
+  .audit-hud .warn.blue { color: var(--red); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- =================== SIDEBAR =================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">O</div>
+      <div class="brand-name">OpenRange</div>
+      <div class="brand-search">
+        <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      </div>
+    </div>
+
+    <div class="nav-item active">
+      <span class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></span>
+      <span>Command</span>
+      <span class="pill live" id="pill-live-nav">●&nbsp;live</span>
+    </div>
+    <div class="nav-item">
+      <span class="icon"><svg viewBox="0 0 24 24"><path d="M3 7l9 5 9-5"/><rect x="3" y="5" width="18" height="14" rx="1.5"/></svg></span>
+      <span>Dispatch</span>
+      <span class="pill" id="pill-dispatch-count">—</span>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Operate</div>
+      <div class="nav-item" data-focus="panel-stream">
+        <span class="icon"><svg viewBox="0 0 24 24"><path d="M4 19V5l8 6 8-6v14"/></svg></span>
+        <span>Activity</span>
+      </div>
+      <div class="nav-item" data-action="btn-mutate">
+        <span class="icon"><svg viewBox="0 0 24 24"><path d="M4 12c0-4 4-8 8-8s8 4 8 8-4 8-8 8"/><path d="M12 8v4l3 2"/></svg></span>
+        <span>Mutate</span>
+      </div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">World</div>
+      <div class="nav-item" data-focus="meta-personas">
+        <span class="icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 2.5-5 6-5s6 2 6 5"/><circle cx="17" cy="9" r="2.5"/><path d="M14 19c0-2 1.5-3 3-3s3 1 3 3"/></svg></span>
+        <span>Personas</span>
+        <span class="pill" id="pill-personas-count">—</span>
+      </div>
+      <div class="nav-item" data-focus="meta-services">
+        <span class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1"/><rect x="3" y="11" width="18" height="5" rx="1"/><circle cx="6.5" cy="6.5" r=".9" fill="currentColor"/><circle cx="6.5" cy="13.5" r=".9" fill="currentColor"/></svg></span>
+        <span>Services</span>
+        <span class="pill" id="pill-services-count">—</span>
+      </div>
+      <div class="nav-item" data-focus="panel-lineage">
+        <span class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2"/><circle cx="6" cy="14" r="2"/><circle cx="18" cy="14" r="2"/><path d="M11 7l-4 5M13 7l4 5"/></svg></span>
+        <span>Lineage</span>
+        <span class="pill" id="pill-lineage-count">—</span>
+      </div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Manage</div>
+      <div class="nav-item" data-focus="meta-objectives">
+        <span class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/></svg></span>
+        <span>Objectives</span>
+      </div>
+      <div class="nav-item" id="nav-toggle-ticker">
+        <span class="icon"><svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h14M3 18h10"/></svg></span>
+        <span>Dispatch log</span>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <span class="dot"></span>
+      <span id="footer-docker">offline</span>
+    </div>
+  </aside>
+
+  <!-- =================== TOPBAR =================== -->
+  <header class="topbar">
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle sidebar">≡</button>
+    <div class="crumb">
+      <span class="back">← Agents</span>
+      <span class="title">Living <em>Office</em></span>
+      <span class="status-pill" id="pill-status">Active</span>
+      <span class="tag" id="pill-mode">joint_pool</span>
+      <span class="tag" id="pill-snapshot">awaiting</span>
+    </div>
+    <div class="topbar-spacer"></div>
+    <div class="topbar-meta">
+      <span>CLOCK</span>
+      <span class="val" id="clock-time">09:00</span>
+      <span class="sep">·</span>
+      <span id="clock-phase" class="val">morning</span>
+      <span class="sep">·</span>
+      <span id="clock-turn" class="val">t=0.0</span>
+    </div>
+    <button id="start" class="topbar-btn primary">
+      <span class="dot" style="background:#e05e5e"></span>
+      <span>Start work</span>
+    </button>
+    <button id="btn-mutate" class="topbar-btn">
+      <span>Mutate</span>
+    </button>
+  </header>
+
+  <!-- =================== CONTENT =================== -->
+  <main class="content">
+
+    <!-- Zone chips derived from scene_init.zones -->
+    <div id="zone-strip" class="zone-strip"></div>
+
+    <!-- Metric strip — populated dynamically from scene_init -->
+    <div id="metric-strip" class="metric-strip"></div>
+
+    <!-- Scene -->
+    <div class="scene-wrap" id="scene">
+      <canvas id="canvas"></canvas>
+      <div id="labels" class="labels"></div>
+      <div id="scene-boot" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
+        <div style="font-family:'Inter',sans-serif;font-weight:500;font-size:14px;color:var(--ink-3);letter-spacing:0.08em;text-transform:uppercase;">Loading scene…</div>
+      </div>
+      <div class="timeline">
+        <div class="axis"></div>
+        <div id="timeline-marks"></div>
+        <div id="timeline-cursor" class="cursor"></div>
+      </div>
+    </div>
+
+    <!-- Operating-context panels -->
+    <div class="panel-group">
+      <div class="panel" id="panel-stream">
+        <div class="panel-head">
+          <span>Live Agent Stream</span>
+          <span class="extra">grok-4.1-fast</span>
+        </div>
+        <div id="thought-list" style="min-height:80px;"></div>
+      </div>
+      <div class="panel" id="panel-lineage">
+        <div class="panel-head">
+          <span>Lineage</span>
+          <span class="extra">self-mutation</span>
+        </div>
+        <div id="lineage-tree" style="width:100%;height:260px;overflow:hidden;background:var(--bg-2);border:1px solid var(--border);border-radius:4px;"></div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- =================== META COLUMN =================== -->
+  <aside class="meta">
+    <div class="meta-section">
+      <div class="label">Chain of command</div>
+      <div class="meta-row"><span class="k">Role</span><span class="v">joint · red + blue</span></div>
+      <div class="meta-row"><span class="k">Reports to</span><span class="v cool">OpenRange admission oracle</span></div>
+      <div class="meta-row"><span class="k">Green scheduler</span><span class="v">LLMGreenScheduler</span></div>
+    </div>
+
+    <div class="meta-section">
+      <div class="label">Snapshot</div>
+      <div class="meta-row"><span class="k">Model</span><span class="v" id="meta-model">grok-4.1-fast</span></div>
+      <div class="meta-row"><span class="k">Runtime</span><span class="v" id="meta-runtime">offline</span></div>
+      <div class="meta-row"><span class="k">LLM calls / cache</span><span class="v" id="meta-tokens">0 / 0</span></div>
+      <div class="meta-row"><span class="k">Docker</span><span class="v" id="meta-docker">—</span></div>
+    </div>
+
+    <div class="meta-section" id="meta-personas">
+      <div class="label">Dramatis personae</div>
+      <div id="roster"></div>
+    </div>
+
+    <div class="meta-section" id="meta-services">
+      <div class="label">Service vitality</div>
+      <div id="services" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"></div>
+    </div>
+
+    <div class="meta-section" id="meta-rl">
+      <div class="label">Live RL rewards <span style="font-weight:400;color:var(--ink-2);font-family:var(--f-mono);text-transform:none;letter-spacing:0;margin-left:6px;">GRPO · per-turn</span></div>
+      <div class="kv-row"><span class="k">red</span><span class="v rose" id="rl-red">+0.000</span></div>
+      <div class="kv-row"><span class="k">blue</span><span class="v cool" id="rl-blue">+0.000</span></div>
+      <div id="chart-live-rl" style="width:100%;height:80px;background:var(--bg-2);border:1.5px solid var(--ink-0);margin-top:4px;"></div>
+      <div id="audit-hud" class="audit-hud">
+        <span><span class="k">diversity</span></span>
+        <span>red <span id="audit-spark-red" class="spark red">—</span> <span id="audit-frac-red">(—/—)</span></span>
+        <span>blue <span id="audit-spark-blue" class="spark blue">—</span> <span id="audit-frac-blue">(—/—)</span></span>
+        <span>warn: <span id="audit-warn" class="warn none">none</span></span>
+      </div>
+      <div style="font-size:10.5px;color:var(--ink-2);line-height:1.45;">
+        Rewards from actual `RewardEngine` — milestone shaping for red, detection + containment for blue. Curve fills as the episode runs.
+      </div>
+    </div>
+
+    <div class="meta-section" id="meta-objectives">
+      <div class="label">Objectives</div>
+      <div class="obj red"><span class="side">RED</span><span class="preds"><code>credential_obtained</code> <code>asset_read</code></span></div>
+      <div class="obj blue"><span class="side">BLUE</span><span class="preds"><code>intrusion_detected</code> <code>intrusion_contained</code></span></div>
+      <div class="obj grn"><span class="side">CONT.</span><span class="preds"><code>health ≥ 0.9</code></span></div>
+    </div>
+
+    <div class="meta-section">
+      <div class="label">Rewards</div>
+      <div class="kv-row"><span class="k">red</span><span class="v rose" id="k-red-r2">+0.000</span></div>
+      <div class="bar red"><span id="bar-red" style="width:50%"></span></div>
+      <div style="height:4px"></div>
+      <div class="kv-row"><span class="k">blue</span><span class="v cool" id="k-blue-r2">+0.000</span></div>
+      <div class="bar blue"><span id="bar-blue" style="width:50%"></span></div>
+      <div style="height:4px"></div>
+      <div class="kv-row"><span class="k">continuity</span><span class="v green" id="k-cont2">1.00</span></div>
+      <div class="bar"><span id="bar-cont" style="width:100%"></span></div>
+    </div>
+
+    <div class="meta-section">
+      <div class="label">Verdict</div>
+      <div class="meta-row"><span class="k">Winner</span><span class="v" id="k-winner">pending</span></div>
+      <div class="meta-row"><span class="k">Reason</span><span class="v" id="k-reason">—</span></div>
+    </div>
+
+    <details class="meta-section meta-panel" id="panel-traces" open>
+      <summary>
+        <span class="panel-title">LLM traces</span>
+        <span class="panel-sub" id="traces-totals">—</span>
+      </summary>
+      <div class="traces-body" id="traces-body"></div>
+    </details>
+
+    <details class="meta-section meta-panel" id="panel-admission" open>
+      <summary>
+        <span class="panel-title">Admission report</span>
+        <span class="panel-sub" id="admission-sub">awaiting</span>
+      </summary>
+      <div class="admission-body" id="admission-body">
+        <div style="font-size:11px;color:var(--ink-3);font-style:italic;">
+          No admission attempts yet. Propose a mutation to see stage-by-stage validator results.
+        </div>
+      </div>
+    </details>
+
+    <details class="meta-section meta-panel" id="panel-episode-final" open>
+      <summary>
+        <span class="panel-title">Episode outcome</span>
+        <span class="panel-sub" id="episode-final-sub">—</span>
+      </summary>
+      <div class="episode-final-body" id="episode-final-body">
+        <div style="font-size:11px;color:var(--ink-3);font-style:italic;">
+          Receipt posts here once the episode ends.
+        </div>
+      </div>
+    </details>
+
+    <div class="meta-section">
+      <div class="label">Mutation</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn small" id="btn-mutate-meta">Propose</button>
+        <button class="btn small" id="btn-promote">Promote latest</button>
+      </div>
+      <div style="font-size:11px;color:var(--ink-2);line-height:1.5;margin-top:2px;">
+        Scores parent via <code style="background:var(--bg-3);padding:0 4px;border-radius:3px;color:var(--ink-1)">FrontierMutationPolicy</code>, runs admission. Rejections are kept — proof the oracle is live.
+      </div>
+    </div>
+  </aside>
+
+  <!-- ticker drawer -->
+  <div class="ticker-drawer" id="ticker-drawer">
+    <div class="ticker-head">
+      <span>Dispatch log</span>
+      <span id="dispatch-count" class="extra" style="letter-spacing:0.04em;text-transform:none;font-family:var(--f-mono);">0 entries</span>
+    </div>
+    <div id="ticker" class="ticker"></div>
+  </div>
+
+  <!-- hidden legacy panels (rail popovers no longer used but referenced by scene.js) -->
+  <div style="display:none">
+    <div id="k-sim"></div>
+    <div id="k-turn"></div>
+    <div id="k-actor"></div>
+    <div id="hud-events"></div>
+    <div id="k-red-r"></div>
+    <div id="k-blue-r"></div>
+    <div id="k-gen"></div>
+    <div id="k-world"></div>
+    <div id="k-cont"></div>
+    <div id="services"></div>
+    <div id="thought-list-pop"></div>
+    <div id="count-personas"></div><div id="count-services"></div><div id="count-lineage"></div>
+    <div id="hud-docker"></div><div id="hud-docker-short"></div><div id="hud-npcs"></div><div id="hud-pods"></div>
+    <div id="pill-model"></div><div id="pill-runtime"></div><div id="pill-tokens"></div><div id="pill-live"></div>
+    <div class="legend"><div class="sq external"></div><div class="sq dmz"></div><div class="sq corp"></div><div class="sq data"></div><div class="sq management"></div></div>
+    <div class="thoughts"></div>
+    <div class="hud-chips"></div>
+    <div class="hud-chip"></div>
+  </div>
+</div>
+
+<script>
+  // Nav-toggle (hamburger) — opens/closes the sidebar on narrow viewports.
+  document.getElementById('nav-toggle')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.querySelector('.sidebar')?.classList.toggle('open');
+  });
+  // Clicking outside the sidebar closes it on narrow viewports.
+  document.addEventListener('click', (e) => {
+    if (window.matchMedia('(max-width: 860px)').matches) {
+      const sb = document.querySelector('.sidebar');
+      if (sb?.classList.contains('open') &&
+          !e.target.closest('.sidebar') &&
+          !e.target.closest('#nav-toggle')) {
+        sb.classList.remove('open');
+      }
+    }
+  });
+
+  // Nav behavior: focus/scroll to a panel, toggle ticker, trigger button actions
+  document.addEventListener('click', (e) => {
+    const item = e.target.closest('.nav-item');
+    if (!item) return;
+    if (item.id === 'nav-toggle-ticker') {
+      document.getElementById('ticker-drawer').classList.toggle('show');
+      item.classList.toggle('active');
+      return;
+    }
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    item.classList.add('active');
+    const focusId = item.dataset.focus;
+    if (focusId) {
+      const el = document.getElementById(focusId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('focus-flash');
+        setTimeout(() => el.classList.remove('focus-flash'), 1200);
+      }
+    }
+    const actionId = item.dataset.action;
+    if (actionId) {
+      const btn = document.getElementById(actionId);
+      if (btn) btn.click();
+    }
+  });
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "three":         "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="/static/scene.js?v=33"></script>
+</body>
+</html>

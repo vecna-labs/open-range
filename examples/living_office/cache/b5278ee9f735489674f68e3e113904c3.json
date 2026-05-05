@@ -1,0 +1,8 @@
+{
+  "text": "{\"thought\": \"Enumerate services on the web host to identify versions and scripts.\", \"tool\": \"shell_command\", \"args\": {\"command\": \"nmap -sC -sV svc-web\"}}",
+  "model": "x-ai/grok-4.1-fast",
+  "seed": 1006,
+  "latency_ms": 14567,
+  "prompt_tokens": 395,
+  "completion_tokens": 851
+}
