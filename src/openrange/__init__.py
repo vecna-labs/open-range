@@ -71,6 +71,7 @@ from openrange.core.episode import (
 )
 from openrange.llm import (
     CODEX_DEFAULT_MODEL,
+    OPENAI_COMPATIBLE_DEFAULT_MODEL,
     CodexBackend,
     LLMBackend,
     LLMBackendError,
@@ -78,6 +79,7 @@ from openrange.llm import (
     LLMRequest,
     LLMRequestError,
     LLMResult,
+    OpenAICompatibleBackend,
 )
 from openrange.npc import (
     NPC,
@@ -148,6 +150,8 @@ __all__ = [
     "Observation",
     "OpenRangeError",
     "OpenRangeRun",
+    "OPENAI_COMPATIBLE_DEFAULT_MODEL",
+    "OpenAICompatibleBackend",
     "PACKS",
     "Pack",
     "PackError",

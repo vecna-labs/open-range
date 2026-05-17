@@ -83,6 +83,17 @@ Optional Strands Agents support:
 uv sync --extra strands
 ```
 
+The `OpenAICompatibleBackend` uses the Chat Completions API shape and accepts
+`base_url`, `api_key`, `model`, `timeout`, and optional headers without any
+extra dependencies. It is the lightweight stdlib option for OpenAI and
+compatible servers such as OpenRouter, Groq, Together, Fireworks, DeepSeek,
+Ollama, vLLM, and llama.cpp server. The default model is `gpt-4o-mini`, which is
+mainly useful with OpenAI's API; set `model` explicitly for local and
+third-party compatible servers. When a JSON schema is supplied, it requests
+`response_format={"type": "json_schema", ...}` and returns both the raw text and
+parsed JSON object. Schema strictness defaults to off for broader provider
+compatibility and can be enabled with `json_schema_strict=True`.
+
 ## Build a world
 
 ```python
