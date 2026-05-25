@@ -1,147 +1,101 @@
 # OpenRange Roadmap
 
 > [!NOTE]
-> Direction, not a release schedule. Each item links to its tracking
-> issue — that's where status, scope, and discussion live.
+> Direction, not a release schedule.
 
-The bet behind OpenRange: agents trained against fresh, runnable,
-admission-checked worlds will generalize better than agents that
-overfit to static benches. Making that real means (a) good packs
-across many domains, (b) a clean way to plug a training loop into
-them, and (c) a core that scales from "single process" to "production
-training fleet."
+OpenRange just landed a substantial rewrite around a new pack /
+admission / distill shape. See [DESIGN.md](DESIGN.md) for the
+architecture and [CONTRACTS.md](CONTRACTS.md) for the wire formats.
+This roadmap is what comes next.
 
-Status tags on each item:
+## What's shipped (v0.1.0)
 
-- 🚧 **in progress** — actively being worked on
-- 🟢 **help wanted** — well-scoped, contributor-friendly
-- 🟡 **design needed** — design doc PR before code
-- 🔮 **research** — exploratory, no near-term plan
+- ✅ Typed-property-graph meta-model (`Node`, `Edge`, `WorldGraph`,
+  `Ontology`, three-tier `validate`, `GraphPatch`, `Role`,
+  `Visibility`).
+- ✅ The `bbg@0.1.0` ontology as built-in declarative data.
+- ✅ `Pack` / `Builder` / `TaskFamily` protocols + `PackPrior` /
+  `TaskSeed` / `TaskSpec` / `BuildResult` / `Mutation` /
+  `RuntimeHandle`.
+- ✅ Layered admission loop (`admit()`): structural + conformance +
+  pack invariants + task bindings + per-task feasibility, with a
+  repair budget.
+- ✅ Content-addressed `Snapshot` with build history (`BuildEvent`s
+  living beside the timeless graph).
+- ✅ `distill(graph, status_log) → PackPrior` — the seam any
+  BBG-emitting harness can drive through.
+- ✅ Reference Pack: `webapp` — one world-family, two TaskFamilies
+  (`webapp.build` + `webapp.pentest`), with three pack invariants
+  and a deterministic v1 builder.
+- ✅ CI boundary checks: core is domain-free; no harness imports.
 
-Browse all roadmap issues: [`label:roadmap`](https://github.com/vecna-labs/open-range/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap).
+## What's next
 
-## Packs
+### Runtime layer (re-wiring against the new shape)
 
-Packs are the reusable starting points for a family of worlds —
-ontology, realizer, defaults. See
-[docs/start_here.md](docs/start_here.md) for the contract.
+The runtime side (episode service, HTTP backing, NPC threads, agent
+backends, dashboard) was removed during the refactor and needs to come
+back against the new `Pack.realize(graph, backing) → RuntimeHandle`
+contract.
 
-### Cyber (priority)
+- 🚧 **`run_episode()` re-wire** — replace the removed
+  `EpisodeService` with one that consumes a `RuntimeHandle` from
+  `Pack.realize`, runs the agent against `surface()`, reads
+  `collect()` at the end, dispatches to the TaskFamily's
+  `check_success`.
+- 🚧 **`RuntimeBacking` re-wire** — HTTPBacking against the new node
+  shape. Per-node-kind dispatch from inside `Pack.realize`.
+- 🚧 **AgentBackend re-wire** — `StrandsAgentBackend` and
+  `CodexAgentBackend` reconnected to `run_episode`.
+- 🚧 **NPCs re-wire** — `NPC` / `AgentNPC` bound to nodes with
+  `role=NPC` in the world graph.
+- 🚧 **Dashboard re-wire** — topology view, build-event timeline,
+  episode-event stream against the new `Snapshot` shape.
 
-Cyber is the first-class pack. Both **offense and defense** are
-first-class task families on the same pack — same world, different
-role, different verifier. Long-term goal: dual-mode scenarios where
-one realized world hosts an offense agent and a defense agent in
-parallel.
+### webapp pack v2
 
-- 🚧 **`cyber.webapp`** — procedural builder + AST-spliced
-  vuln injection + NPCs + optional LLM-enriched task instruction +
-  per-task verifier. Already shipping.
-- 🟢 **Kind / Kubernetes runtime backing**
-  ([#189](https://github.com/vecna-labs/open-range/issues/189)) —
-  unblocks real cross-service exploit chains.
-- 🟢 **Expand the vulnerability catalog**
-  ([#190](https://github.com/vecna-labs/open-range/issues/190)) —
-  command injection, path traversal, deserialization, weak creds, etc.
-- 🟢 **Defense-cyber task family**
-  ([#191](https://github.com/vecna-labs/open-range/issues/191)) — same
-  pack, detection / mitigation / patching tasks instead of flag
-  retrieval. Enables dual-mode adversarial scenarios.
-- 🟡 **LLM-driven naming realism**
-  ([#192](https://github.com/vecna-labs/open-range/issues/192)) —
-  `svc_web` → `customer-portal`, `acct_0` → `alice@corp.example`.
-- 🔮 **MCTS-based world generator**
-  ([#193](https://github.com/vecna-labs/open-range/issues/193)) —
-  search over graph mutations instead of rejection sampling.
+The v1 webapp pack is hand-authored — same world every seed. v2 lifts
+that to a richer demo:
 
-### Other domains
+- 🟢 **Procedural sampler** consuming `PackPrior.topology` and
+  `PackPrior.task_seeds` to bias generation.
+- 🟢 **LLM-driven instruction generation** in TaskFamily.generate().
+- 🟢 **`available_mutations`** for curriculum evolution (harden /
+  soften / diversify directives carrying `GraphPatch`).
+- 🟢 **Flask realizer** + AST splice of weakness templates into the
+  generated service code. The old `cyber_webapp` pack had this for
+  the v0 shape; it needs porting against the new `RuntimeHandle`.
+- 🟢 **Smoke-test collection** in `RuntimeHandle.collect()` so
+  `webapp.build.check_success` can actually verify the agent's edits.
 
-We want at least one non-cyber pack so the Pack ABC isn't accidentally
-cyber-shaped.
+### The flywheel
 
-- 🟢 **Trading starter pack**
-  ([#194](https://github.com/vecna-labs/open-range/issues/194)) —
-  order book + P&L verifier. First non-HTTP runtime backing.
-- 🔮 **Social / negotiation pack**
-  ([#195](https://github.com/vecna-labs/open-range/issues/195)) —
-  multi-turn dialogue with NPC counterparties.
-- 🔮 **Robotics pack**
-  ([#196](https://github.com/vecna-labs/open-range/issues/196)) —
-  MuJoCo / Isaac integration via non-HTTP backing.
-- 🟢 **Pack author guide**
-  ([#197](https://github.com/vecna-labs/open-range/issues/197)) —
-  step-by-step doc lowering the bar for first-time pack authors.
+- 🟡 **BBG harness adapter** — formalize the JSON wire format for
+  what any harness emits. The shape lives in
+  [CONTRACTS.md](CONTRACTS.md) §6; we want at least one reference
+  decoder + a fixture file under `tests/fixtures/bbg/`.
+- 🟡 **Multi-trajectory `distill`** — today `distill` takes a single
+  graph; the flywheel needs to merge evidence across many runs.
+- 🔮 **Pack-induction path** — `distill(graph, into=None)` proposes
+  node kinds but not edge kinds. Closing that gap would let a fresh
+  domain bootstrap a pack from purely observed structure.
 
-## Training integration
+### New packs
 
-Today the examples are *eval* loops. Closing them into actual
-*training* is the next big piece.
+The library is already domain-free; the test of that is more packs
+that exercise the shape from different angles.
 
-- 🟡 **Training-loop integration via open-trajectory-gym**
-  ([#198](https://github.com/vecna-labs/open-range/issues/198)) —
-  pair OpenRange with
-  [open-trajectory-gym](https://github.com/vecna-labs/open-trajectory-gym).
-  Headline ask. Needs a design doc on the `EpisodeReport` ↔ trajectory
-  format seam.
-- 🟢 **Per-domain reward adapters**
-  ([#199](https://github.com/vecna-labs/open-range/issues/199)) —
-  structured verifier result → scalar / vector reward signal.
-- 🟢 **Curriculum-driven training demo**
-  ([#200](https://github.com/vecna-labs/open-range/issues/200)) —
-  notebook showing success-rate curves as `evolve(...)` hardens worlds.
+- 🟢 **Trading pack** — order books, venues, strategies; goals like
+  "discover an arbitrage" or "audit a counterparty's risk".
+- 🟢 **Compliance pack** — controls, evidence, regulations;
+  TaskFamilies for audit and remediation.
+- 🟢 **SWE pack** — repos, files, tests; TaskFamilies for refactor,
+  bug-fix, feature-add. Probably the closest analog to the agent-SDK
+  use case.
 
-## Core
+## Out of scope (for now)
 
-Primitives every pack and harness depends on.
-
-- 🟢 **Restore 100% test coverage**
-  ([#201](https://github.com/vecna-labs/open-range/issues/201)) —
-  v0 deletion + v1 work temporarily dropped coverage to 85.
-- 🟡 **Verifier sandboxing**
-  ([#202](https://github.com/vecna-labs/open-range/issues/202)) —
-  today's `exec` with empty builtins is a security concern at scale.
-- 🟡 **Lineage as a pool, not a chain**
-  ([#203](https://github.com/vecna-labs/open-range/issues/203)) —
-  multi-parent reference graph for curriculum / multi-snapshot training.
-- 🟡 **Multi-host EpisodeService**
-  ([#204](https://github.com/vecna-labs/open-range/issues/204)) —
-  distributed training fleets.
-- 🔮 **Container snapshotting for stateful runtimes**
-  ([#205](https://github.com/vecna-labs/open-range/issues/205)) —
-  CRIU / overlayfs / `docker commit` for fork/restore.
-
-## Dashboard
-
-The inspection surface for builders, snapshots, and live episodes.
-See [docs/dashboard.md](docs/dashboard.md).
-
-- 🟢 **Snapshot inspector improvements**
-  ([#206](https://github.com/vecna-labs/open-range/issues/206)) —
-  better UX for large world graphs, oracle-path highlighting.
-- 🟢 **Live training view**
-  ([#207](https://github.com/vecna-labs/open-range/issues/207)) —
-  curriculum evolution + per-rollout request log when training lands.
-- 🟡 **Pluggable per-pack dashboard widgets**
-  ([#208](https://github.com/vecna-labs/open-range/issues/208)) —
-  cyber's natural view is service topology; trading's is order book.
-
-## Docs
-
-- 🟢 **Tutorial: build → eval → curriculum**
-  ([#209](https://github.com/vecna-labs/open-range/issues/209)) —
-  `uv sync` to working eval to curriculum walk in one notebook.
-- 🟢 **Architecture decisions log**
-  ([#210](https://github.com/vecna-labs/open-range/issues/210)) —
-  short notes on the *why* of big shape choices.
-
-## How to help
-
-1. Pick something tagged 🟢 → comment on the issue saying you want it.
-2. For new packs (trading, social, robotics, anything else), open the
-   issue with a sketch of the ontology + verifier shape; we'll work
-   through the contract with you.
-3. 🟡 items want a design doc PR before code — saves cycles.
-4. Friday community call — link in
-   [README.md](README.md#-community-call).
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and workflow.
+- A managed cloud, hosted runtimes, billing.
+- A specific RL/SFT training loop.
+- A specific BBG runtime implementation. OpenRange consumes the JSON
+  wire format; harnesses (vecna's wayfinder; others) produce it.

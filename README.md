@@ -12,25 +12,46 @@
 
 </div>
 
-OpenRange is a domain-agnostic environment platform for training and evaluating agents. Give it a manifest and a pack; it builds a runnable world, verifies that tasks are actually solvable in the generated environment, freezes the result as a snapshot, and hands your agent harness a stable episode to run against.
+OpenRange is a **domain-agnostic environment platform for training and
+evaluating agents**. Give it a manifest and a Pack; it produces a
+content-addressed `Snapshot` through a layered admission loop, ready to
+run agent episodes against.
 
-<p align="center">
-  <img src="assets/openrange-demo.gif" alt="OpenRange dashboard rendering a live cyber.webapp episode — agent traffic, persona NPCs, evolve banner" width="720">
-</p>
+The library has just been rebuilt around three new ideas — a typed
+property-graph meta-model, a Pack/TaskFamily split that lets one world
+serve multiple task domains, and a `PackPrior` seam that lets agent
+memory (BBG-shaped JSON from any harness) drive world generation. See
+[DESIGN.md](DESIGN.md) for the architecture, [CONTRACTS.md](CONTRACTS.md)
+for the JSON wire formats.
+
+> [!WARNING]
+> **v0.1.0 is the foundation.** The library, admission, distill seam,
+> and one reference pack (`webapp`) ship and are green. The runtime
+> layer (episode service, HTTP backing, Flask code-gen, dashboard, NPC
+> threads, agent backends) was removed during the refactor and is being
+> re-wired against the new shape in follow-up PRs. If you need those
+> today, pin to a pre-`zen-hoover` commit.
 
 ### Why OpenRange
 
-- **Train on realistic scenarios, not static benches.** Each build samples a fresh, runnable world — new structure, new content, new exploit paths — so agents have to actually solve, not memorize.
-- **Same training setup, different env and domain.** Swap the pack and you go from cyber to trading to robotics without rewriting your harness, training loop, or reward policy.
-- **Solvable by construction.** Every task is admission-checked against the realized world before an episode starts — no broken evals, no impossible tasks.
-
-> [!WARNING]
-> OpenRange moves fast. Some docs describe the current implementation, while others describe the direction the project is working toward. APIs, pack contracts, examples, and dashboard details may change as the project stabilizes.
-
-> [!NOTE]
-> **Project Provenance:** OpenRange is managed by Vecna as an open-source project. The core evaluation engine and admission concepts were heavily inspired by the [open-cybernauts/open-range](https://github.com/open-cybernauts/open-range) proof of concept built during the OpenEnv HuggingFace Hackathon in early March.
+- **Train on realistic scenarios, not static benches.** Each build
+  samples a fresh world; admission verifies it before the agent ever
+  touches it.
+- **Same training setup, different domain.** Pack = world-family,
+  TaskFamily = domain. Swap the pack and you go from webapp to trading
+  to robotics without rewriting your harness, training loop, or reward
+  policy.
+- **Solvable by construction.** Five-layer admission: structural +
+  ontology + pack invariants + task bindings + per-task feasibility.
+  No broken evals, no impossible tasks.
+- **Bootstrap to flywheel.** A hand-authored `PackPrior` boots the
+  generator; once an agent has run real tasks and a harness has
+  recorded a BBG, `distill()` turns that experience into a sharper
+  prior. The builder has one code path — it never knows whether the
+  prior was learned or hand-authored.
 
 ### 📞 Community Call
+
 Join us every **Friday at 12:00 PM CT** for the Open Range Community Call.
 - 🎥 [Google Meet](https://meet.google.com/zuj-skfh-xjk)
 - 📱 Dial in: [(US) +1 443-671-4919](tel:+14436714919) · PIN: `320 286 452#` · [More numbers](https://tel.meet/zuj-skfh-xjk?pin=6302524387334)
@@ -38,139 +59,115 @@ Join us every **Friday at 12:00 PM CT** for the Open Range Community Call.
 
 ## How it works
 
-![high-level overview](assets/openrange_high-level.svg)
-
-OpenRange turns a request into an admitted world an agent can act inside:
-
 ```text
-manifest + pack + builder
-        → world graph + runtime artifacts + tasks
-        → feasibility checks / admission
-        → frozen world snapshot
-        → agent episode
-        → structured result
+manifest + Pack
+        ↓
+   Pack.make_builder(prior)
+        ↓
+   Builder.build(manifest)  →  WorldGraph + tasks
+        ↓
+   admit():
+     1. structural + ontology validation
+     2. pack invariants
+     3. task bindings (entrypoints/goals exist; entrypoints not HIDDEN)
+     4. per-task feasibility (each TaskFamily.check_feasibility)
+        ↓
+   Snapshot  (content-addressed, frozen)
+        ↓
+   run_episode  (agent acts; family.check_success scores)
+        ↓
+   EpisodeResult  (structured; not a scalar reward)
 ```
 
-The key design boundary: **OpenRange owns the world, not the agent.** It handles world construction, task admission, runtime coordination, episode verification, and observability. Your harness owns the model, tools, rollout loop, training algorithm, and reward policy.
+**OpenRange owns the world, not the agent.** Your harness owns the
+model, tools, rollout loop, training algorithm, and reward policy.
 
-This lets OpenRange support different domains — cyber ranges, trading environments, robotics tasks, enterprise simulations — without forcing every agent framework into the same API shape. The agent interacts with whatever surface the world exposes: HTTP endpoints, files, shells, MCP tools, simulator APIs, browser sessions, or custom interfaces.
+The agent interacts with whatever surface the world exposes: HTTP
+endpoints, files, shells, MCP tools, simulator APIs. The shape of
+that surface is the Pack's choice.
 
 ## Core concepts
 
-**Manifests** describe what you want built: domain, scenario, constraints, task families, scale, and runtime backing.
-
-**Packs** are the reusable starting points for a family of worlds. A pack might include code, containers, templates, simulator bindings, scripted state machines, seed data, and verifier helpers. It doesn't describe one world — it describes what kinds of worlds can be built and how.
-
-**Builders** turn a manifest and pack into a concrete world. A builder can be handwritten Python, procedural generation, an LLM pipeline, or a hybrid. The builder outputs a world graph, runtime artifacts, tasks, feasibility checks, and admission metadata.
-
-**Admission** is the gate between generation and execution. A feasibility check verifies that a generated task is actually solvable in the generated world. If a check fails, the builder repairs or regenerates the relevant piece. A task is never accepted without a passing feasibility check against a frozen world snapshot.
-
-**Episodes** reset an admitted snapshot into separate environment and agent workspaces, run the agent, collect final state, and return a structured result — not a scalar reward. A training adapter maps that result into whatever signal your setup needs.
-
-See [docs/start_here.md](docs/start_here.md) for the full design breakdown.
+- **Pack** — the reusable starting point for one world-family (e.g.
+  `webapp`). Owns the ontology, builder, realizer, and TaskFamilies.
+- **TaskFamily** — a *domain* of tasks against a world (e.g.
+  `webapp.build`, `webapp.pentest`). Owns task generation,
+  entrypoint/goal selection, feasibility, success. **Domain lives
+  here, not on Pack.**
+- **Ontology** — declarative node/edge kinds with rich `AttrSpec`
+  (enums, REFs, required flags). One generic validator checks any
+  graph against any ontology.
+- **WorldGraph** — a typed property graph: nodes and edges with
+  `kind` + `attrs`. World-absolute facts (`Role`,
+  `Visibility=HIDDEN`) live on the node; task-relative facts
+  (entrypoints, goal_nodes) live on the `TaskSpec`.
+- **Snapshot** — an admitted, content-addressed world. `snapshot_id ==
+  graph.content_hash()`. Build history rides alongside in
+  `Snapshot.history`.
+- **PackPrior** — the BBG → Builder seam; generic graph statistics
+  emitted by `distill()` and consumed by a builder. The flywheel
+  closes through JSON.
 
 ## Install
 
-OpenRange uses [`uv`](https://github.com/astral-sh/uv) and requires Python 3.14.
+OpenRange uses [`uv`](https://github.com/astral-sh/uv) and requires
+Python 3.14.
 
 ```bash
 uv sync --group dev
 ```
 
-Optional Strands Agents support:
-
-```bash
-uv sync --extra strands
-```
-
 ## Build a world
 
 ```python
-import openrange as OR
+from openrange import admit
+from webapp import WebappPack
 
-run = OR.OpenRangeRun(OR.RunConfig("or-runs/dev-run", dashboard=True))
-snapshot = run.build(
-    {
-        "world": {"goal": "find the admin flag in a vulnerable webapp"},
-        "pack": {"id": "cyber.webapp", "source": {"kind": "builtin"}},
-    },
-    llm=OR.CodexBackend(),  # optional — enriches task instruction + verifier
-)
+pack = WebappPack()
+snapshot = admit(pack, manifest={"seed": 0})
 
-for task in snapshot.get_tasks():
-    print(task.id, task.instruction)
+# Returns either a Snapshot or an AdmissionFailure.
+print(snapshot.snapshot_id)         # sha256:...
+for task in snapshot.tasks:
+    print(task.id, "→", task.instruction)
+    # webapp.build.0    → Implement the POST /login endpoint ...
+    # webapp.pentest.0  → Recover the hidden admin flag ...
 ```
 
-The built-in `cyber.webapp` pack procedurally samples a multi-service webapp world (graph topology, vulnerabilities, accounts, secrets), AST-splices vulnerability templates into the realized service code, and ships with NPCs that generate background traffic alongside the agent. Pass an LLM and the build also produces a graph-aware task instruction and a per-task verifier; without one, it falls back to deterministic templates.
-
-## Run an eval
-
-Codex-backed eval pipeline:
-
-```bash
-uv run python -m examples.codex_eval \
-  --runs-dir or-runs \
-  --builder-timeout 300 \
-  --agent-timeout 300 \
-  --dashboard-port 8000
-```
-
-This builds an admitted snapshot, resets a webapp episode with separate environment and agent roots, runs Codex against the generated task instruction, collects final state, verifies it, and writes a report to an immutable run directory.
-
-Strands Agents:
-
-```bash
-uv run --extra strands python -m examples.strands_eval \
-  --run-root or-runs/strands-eval \
-  --builder-timeout 300 \
-  --dashboard-port 8000
-```
-
-OpenRange handles build, reset, final-state collection, verification, and reporting. Strands handles the agent loop and tools.
-
-## Inspect runs
-
-Live eval runs write two dashboard artifacts:
-
-- `dashboard.events.jsonl` — append-only stream of builder and episode events
-- `dashboard.json` — polling snapshot with builder steps and runtime turns
-
-```bash
-# Open a saved eval run
-uv run openrange dashboard --run-root or-runs/<run-id>
-
-# Inspect saved snapshots
-uv run openrange dashboard --store-dir snapshots
-
-# Build and inspect from the CLI
-uv run openrange build path/to/manifest.yaml --output snapshots
-uv run openrange inspect snapshots/<snapshot-id>.json
-```
-
+The `webapp` pack ships two TaskFamilies on the same world graph
+(`webapp.build` and `webapp.pentest`). The build task entrypoints the
+repo; the pentest task entrypoints an exposed endpoint. That
+load-bearing demo lives at [tests/test_webapp_pack.py](tests/test_webapp_pack.py).
 
 ## Project layout
 
 ```text
-src/openrange/    core library, runtime, dashboard, and built-in packs
-examples/         runnable eval harness examples
-docs/             design notes and implementation direction
-tests/            integration-focused test suite
-CONTRIBUTING.md   contribution workflow and local setup
+src/openrange/
+  world_ir.py            typed-property-graph meta-model
+  ontologies/
+    bbg.py               the bbg@0.1.0 ontology (consumed by distill)
+  core/
+    pack.py              Pack/Builder/TaskFamily protocols + wire shapes
+    admit.py             layered admission loop + Snapshot + BuildEvent
+    distill.py           graph + status-log → PackPrior
+
+packs/webapp/            reference Pack: one world, two task families
+tests/                   the test suite (107 tests, 95% coverage)
+
+DESIGN.md                architecture narrative
+CONTRACTS.md             JSON wire formats
 ```
-
-Start with:
-
-- [OpenRange overview](docs/start_here.md)
-- [Roadmap](ROADMAP.md) — direction, what we're working on, where contributors can help
-- [API lifecycle](docs/api.md)
-- [Dashboard](docs/dashboard.md)
-- [Contributing](CONTRIBUTING.md)
 
 ## Contributing
 
-Contributions are welcome across code, docs, examples, pack design, bug reports, and design discussion. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, the development workflow, and how to run the test suite. Open an issue for larger changes before building too far ahead, and use the pull request template when submitting changes.
+Contributions welcome across code, docs, examples, pack design, bug
+reports, and design discussion. The `scripts/check_boundary.sh` script
+enforces two invariants: core is domain-free and never imports a
+specific harness library. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+local setup.
 
-Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Security-sensitive reports can go to **security@vecna-labs.dev**.
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Security-sensitive reports can go to **security@vecna-labs.dev**.
 
 ## License
 
