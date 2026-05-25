@@ -143,7 +143,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             # a default the runs picker stalls in "no runs found".
             run_id: str
             if view.snapshot is not None:
-                run_id = view.snapshot.id
+                run_id = view.snapshot.snapshot_id
             else:
                 stored = view._stored_section("topology")  # noqa: SLF001
                 stored_id = stored.get("snapshot_id")

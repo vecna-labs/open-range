@@ -1,4 +1,23 @@
-"""Manifest parsing for OpenRange builds."""
+"""Legacy typed Manifest — a transitional backward-compat shim.
+
+The typed `Manifest` concept is going away. In the new pack/admission
+contracts (see `openrange.core.contracts`), `Manifest = Mapping[str, Any]`:
+a free-form dict the pack interprets, never branched on by core.
+
+This module still exists for the brief window during which the legacy
+runtime modules (`openrange.core.builder`, `openrange.core.snapshot`,
+`openrange.core.pack`) — all scheduled for deletion in Phase 4 of the
+runtime migration — still depend on the typed structures it ships.
+Once those consumers are gone, this file goes with them.
+
+What changed in this slim pass:
+  - YAML loading is removed. Per the migration plan, manifest-as-YAML
+    is a future-CLI concern, not part of core. `Manifest.load(...)`
+    therefore no longer accepts `str | Path`; callers must pass an
+    in-memory mapping (or an existing `Manifest`).
+  - No public re-exports. New code imports `Manifest` from
+    `openrange.core.contracts` (where it is a `Mapping[str, Any]` alias).
+"""
 
 from __future__ import annotations
 
@@ -7,8 +26,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, cast
-
-import yaml
 
 from openrange.core.errors import ManifestError
 
@@ -19,12 +36,11 @@ TickMode = Literal["auto", "manual"]
 
 @dataclass(frozen=True, slots=True)
 class TickConfig:
-    """How world time advances during episodes.
+    """How world time advances during episodes (legacy).
 
-    ``auto`` (default): a background loop calls ``tick`` at ``rate_hz``.
-    ``manual``: the world only ticks when the harness calls ``tick``
-    explicitly. Manual mode suits deterministic eval and training; auto
-    suits demos and packs whose NPCs / timers depend on wall-clock time.
+    Kept for backward compat with the pre-refactor `RuntimeConfig`
+    pathway. New packs decide their own tick semantics — there is no
+    longer a single OpenRange-owned tick contract.
     """
 
     mode: TickMode = "auto"
@@ -50,7 +66,7 @@ class TickConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
-    """Manifest-level runtime knobs."""
+    """Manifest-level runtime knobs (legacy)."""
 
     tick: TickConfig = field(default_factory=TickConfig)
 
@@ -68,6 +84,8 @@ class RuntimeConfig:
 
 @dataclass(frozen=True, slots=True)
 class PackSource:
+    """Where a pack is loaded from (legacy)."""
+
     kind: PackSourceKind = "builtin"
     uri: str | None = None
 
@@ -94,6 +112,8 @@ class PackSource:
 
 @dataclass(frozen=True, slots=True)
 class PackRef:
+    """Reference to a pack in a manifest (legacy)."""
+
     id: str
     source: PackSource = field(default_factory=PackSource)
     options: Mapping[str, object] = field(default_factory=dict)
@@ -122,6 +142,14 @@ class PackRef:
 
 @dataclass(frozen=True, slots=True)
 class Manifest:
+    """Legacy typed manifest.
+
+    DEPRECATED — see module docstring. New code annotates against
+    `openrange.core.contracts.Manifest`, which is `Mapping[str, Any]`.
+    `Manifest.load(...)` no longer accepts `str | Path`; YAML loading
+    is no longer part of core.
+    """
+
     world: Mapping[str, object]
     pack: PackRef
     builder: str | None = None
@@ -131,14 +159,23 @@ class Manifest:
 
     @classmethod
     def load(cls, manifest: str | Path | Mapping[str, object] | Manifest) -> Manifest:
+        """Normalize an in-memory manifest to a `Manifest` instance.
+
+        YAML / path loading was removed: this method no longer reads a
+        file. The `str | Path` arms remain in the signature only because
+        legacy callers (Phase-4-doomed `openrange.core.builder`) still
+        spell those types in their own signatures; passing a path-like
+        now raises `ManifestError` immediately so the regression is loud
+        rather than silent.
+        """
         if isinstance(manifest, Manifest):
             return manifest
         if isinstance(manifest, str | Path):
-            with Path(manifest).open(encoding="utf-8") as handle:
-                loaded = yaml.safe_load(handle)
-            if not isinstance(loaded, Mapping):
-                raise ManifestError("manifest YAML must contain a mapping")
-            return cls.from_mapping(cast(Mapping[str, object], loaded))
+            raise ManifestError(
+                "Manifest.load no longer accepts a path — parse the file "
+                "into a mapping in a CLI layer and pass the mapping in. "
+                "See openrange.core.contracts.Manifest for the new shape."
+            )
         return cls.from_mapping(manifest)
 
     @classmethod

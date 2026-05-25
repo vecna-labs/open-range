@@ -13,10 +13,24 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from openrange.core.snapshot import json_safe
-
 if TYPE_CHECKING:
     from openrange.dashboard.view import DashboardView
+
+
+def json_safe(value: object) -> object:
+    """Recursively normalize a value into JSON-encodable primitives.
+
+    Mappings become dicts (with stringified keys), tuples and lists
+    become lists, and everything else is returned as-is. Used to flatten
+    `MappingProxyType` / dataclass / tuple leaks before handing payloads
+    to `json.dumps`. Lives here (not in core) because the dashboard is
+    the only consumer left after the old snapshot module retires.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [json_safe(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True, slots=True)
