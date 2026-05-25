@@ -28,7 +28,7 @@ from typing import Any
 
 import pytest
 
-from openrange.core.admit_loop import (
+from openrange.core.admit import (
     BuildEvent,
     Snapshot,
     admit,

@@ -16,7 +16,7 @@ import pytest
 from cyber_webapp import WebappPack
 
 import openrange as OR
-from openrange.core.admit_loop import Snapshot, admit
+from openrange.core.admit import Snapshot, admit
 from openrange.dashboard import (
     DashboardArtifactLog,
     DashboardEvent,

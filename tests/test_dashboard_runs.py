@@ -25,7 +25,7 @@ from pathlib import Path
 
 from cyber_webapp import WebappPack
 
-from openrange.core.admit_loop import Snapshot, admit
+from openrange.core.admit import Snapshot, admit
 from openrange.dashboard.events import DashboardEvent
 from openrange.dashboard.runs import RunsRegistry
 from openrange.dashboard.view import DashboardView

@@ -63,7 +63,7 @@ from openrange.world_ir import (
 )
 
 if TYPE_CHECKING:
-    from openrange.core.admit_loop import Snapshot
+    from openrange.core.admit import Snapshot
 
 
 Direction = Literal["harden", "soften", "diversify"]
@@ -240,8 +240,8 @@ def _evolve_snapshot(
     Returns ``None`` if re-admission rejects the evolved graph (the
     caller treats this as "skip this candidate").
     """
-    from openrange.core.admit_loop import AdmissionFailure, admit
-    from openrange.core.admit_loop import Snapshot as _Snapshot
+    from openrange.core.admit import AdmissionFailure, admit
+    from openrange.core.admit import Snapshot as _Snapshot
 
     builder = pack.make_builder(None)
     patch = builder.evolve(snapshot, mutation)

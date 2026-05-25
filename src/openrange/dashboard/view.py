@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import cast
 
 from openrange.core import ActorTurn
-from openrange.core.admit_loop import Snapshot
+from openrange.core.admit import Snapshot
 from openrange.core.contracts import TaskSpec
 from openrange.dashboard.events import (
     DashboardEvent,
@@ -448,7 +448,7 @@ def _manifest_from_lineage(lineage: Mapping[str, object]) -> Mapping[str, object
 def _task_to_dict(task: TaskSpec) -> dict[str, object]:
     """Project a TaskSpec into the wire shape the dashboard ships.
 
-    Mirrors ``snapshot_to_dict`` in ``admit_loop.py`` but lives here so
+    Mirrors ``snapshot_to_dict`` in ``admit.py`` but lives here so
     the dashboard does not have to import the snapshot serializer for
     one helper. ``entrypoints`` is a list of node-id strings (the new
     shape — no more ``Entrypoint(kind, target)``).

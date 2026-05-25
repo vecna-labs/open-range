@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from openrange.core.admit_loop import Snapshot, admit
+from openrange.core.admit import Snapshot, admit
 from openrange.core.contracts import (
     Backing,
     Builder,

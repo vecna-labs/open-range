@@ -47,7 +47,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from openrange.agent_backend import AgentBackend, StrandsAgentBackend
-from openrange.core.admit_loop import Snapshot
+from openrange.core.admit import Snapshot
 from openrange.core.contracts import (
     Backing,
     EpisodeResult,

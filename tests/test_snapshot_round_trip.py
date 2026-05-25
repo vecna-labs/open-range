@@ -20,7 +20,7 @@ from typing import Any
 
 from cyber_webapp import WebappPack
 
-from openrange.core.admit_loop import Snapshot, admit, snapshot_to_dict
+from openrange.core.admit import Snapshot, admit, snapshot_to_dict
 from openrange.world_ir import Visibility
 
 
@@ -138,7 +138,7 @@ def test_snapshot_history_carries_build_refs() -> None:
 
 
 def test_snapshot_lineage_carries_pack_provenance() -> None:
-    """lineage holds the manifest plus pack id+version (per admit_loop.py)."""
+    """lineage holds the manifest plus pack id+version (per admit.py)."""
     snap = _admit_snapshot()
     payload = snapshot_to_dict(snap)
     lineage = payload["lineage"]

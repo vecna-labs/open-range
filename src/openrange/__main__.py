@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from openrange.core.admit_loop import AdmissionFailure, admit, snapshot_to_dict
+from openrange.core.admit import AdmissionFailure, admit, snapshot_to_dict
 from openrange.core.errors import EpisodeRuntimeError
 from openrange.core.store import SnapshotStore
 from openrange.dashboard import (

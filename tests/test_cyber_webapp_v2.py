@@ -32,7 +32,7 @@ from cyber_webapp.invariants import (
 )
 from cyber_webapp.ontology_v2 import ONTOLOGY_ID, webapp_ontology
 
-from openrange.core.admit_loop import Snapshot, admit
+from openrange.core.admit import Snapshot, admit
 from openrange.core.contracts import (
     Backing,
     Builder,

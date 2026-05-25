@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from openrange.core.admit_loop import Snapshot
+from openrange.core.admit import Snapshot
 from openrange.dashboard.events import json_safe
 from openrange.world_ir import WorldGraph
 
@@ -397,7 +397,7 @@ def _manifest_from_snapshot(snapshot: Snapshot) -> Mapping[str, object]:
 
     ``Snapshot.lineage`` is now a free-form ``Mapping[str, Any]`` set
     by ``admit()``; the manifest lives under the ``"manifest"`` key
-    (per ``core/admit_loop.py`` ``admit()``). Returns an empty mapping
+    (per ``core/admit.py`` ``admit()``). Returns an empty mapping
     if the key is missing or malformed so callers don't have to guard.
     """
     manifest = snapshot.lineage.get("manifest")

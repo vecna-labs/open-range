@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
-from openrange.core.admit_loop import BuildEvent, Snapshot, snapshot_to_dict
+from openrange.core.admit import BuildEvent, Snapshot, snapshot_to_dict
 from openrange.core.contracts import TaskSpec
 from openrange.core.errors import StoreError
 from openrange.world_ir import Edge, Node, Role, Visibility, WorldGraph
@@ -74,14 +74,14 @@ class SnapshotStore:
 
 
 # ---------------------------------------------------------------------------
-# snapshot_from_dict — exact inverse of admit_loop.snapshot_to_dict
+# snapshot_from_dict — exact inverse of admit.snapshot_to_dict
 # ---------------------------------------------------------------------------
 
 
 def snapshot_from_dict(data: Mapping[str, Any]) -> Snapshot:
     """Reconstruct a `Snapshot` from its wire-shape dict.
 
-    Pair of `openrange.core.admit_loop.snapshot_to_dict`: feeding the
+    Pair of `openrange.core.admit.snapshot_to_dict`: feeding the
     output of one to the other reproduces the original Snapshot's value.
     Use this when reading a snapshot back from storage or off the wire.
 

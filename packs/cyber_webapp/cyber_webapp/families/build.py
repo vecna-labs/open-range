@@ -38,7 +38,7 @@ from openrange.core.contracts import (
 from openrange.world_ir import Node, WorldGraph
 
 if TYPE_CHECKING:
-    from openrange.core.admit_loop import Snapshot
+    from openrange.core.admit import Snapshot
 
 
 class WebappBuild(TaskFamily):

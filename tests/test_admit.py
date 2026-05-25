@@ -1,4 +1,4 @@
-"""Tests for the new admission loop (openrange.core.admit_loop), against a stub pack.
+"""Tests for the new admission loop (openrange.core.admit), against a stub pack.
 
 These tests don't touch the existing pack/runtime layer — they exercise
 the new `openrange.core.admit` + `openrange.core.contracts` shapes
@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from openrange.core.admit_loop import (
+from openrange.core.admit import (
     AdmissionFailure,
     BuildEvent,
     Snapshot,

@@ -2,7 +2,7 @@
 
 ``OpenRangeRun`` ties admit + episode + dashboard together for example
 scripts and the CLI. The admission seam is now
-:func:`openrange.core.admit_loop.admit`; the episode seam is the
+:func:`openrange.core.admit.admit`; the episode seam is the
 ``EpisodeService(pack, run_root, ...)`` constructor whose first
 positional arg is the resolved Pack. This module is the wrapper around
 both, not their owner.
@@ -23,7 +23,7 @@ from typing import Any, cast
 
 from openrange.agent_backend import AgentBackend
 from openrange.core._registry import iter_entry_points
-from openrange.core.admit_loop import AdmissionFailure, Snapshot, admit
+from openrange.core.admit import AdmissionFailure, Snapshot, admit
 from openrange.core.contracts import Pack
 from openrange.core.episode import EpisodeService
 from openrange.core.errors import EpisodeRuntimeError, PackError
@@ -121,7 +121,7 @@ class OpenRangeRun:
         Resolves the pack from ``manifest["pack"]["id"]`` (or
         ``manifest["pack"]`` as a string fallback) through the global
         :data:`PACKS` registry, then dispatches to
-        :func:`openrange.core.admit_loop.admit`. Raises
+        :func:`openrange.core.admit.admit`. Raises
         :class:`EpisodeRuntimeError` if the manifest doesn't name a
         pack or the admission loop fails within the repair budget.
         """

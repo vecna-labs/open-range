@@ -27,7 +27,7 @@ from __future__ import annotations
 from cyber_webapp import WebappBuilder, WebappPack
 from cyber_webapp.priors import default_prior
 
-from openrange.core.admit_loop import Snapshot, admit
+from openrange.core.admit import Snapshot, admit
 from openrange.core.contracts import BuildResult, PackPrior
 
 # ---------------------------------------------------------------------------

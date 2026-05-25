@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from openrange.world_ir import GraphPatch, Issue, Ontology, WorldGraph
 
 if TYPE_CHECKING:
-    from openrange.core.admit_loop import Snapshot
+    from openrange.core.admit import Snapshot
 
 
 # ---------------------------------------------------------------------------
