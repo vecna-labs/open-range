@@ -249,6 +249,21 @@ def test_distill_into_none_induces_a_proposal_ontology() -> None:
     p = distill(_small_bbg(), into=None)
     assert p.ontology.id == "distilled@0.1.0"
     assert set(p.ontology.node_kinds) == {"endpoint", "db", "cred"}
+    # Single induced edge kind whose endpoints are the union of observed
+    # kind-pairs from ``traversed`` edges (deterministic first-seen order).
+    assert set(p.ontology.edge_kinds) == {"transitions"}
+    transitions = p.ontology.edge_kinds["transitions"]
+    assert set(transitions.endpoints) == {
+        ("endpoint", "endpoint"),
+        ("endpoint", "db"),
+        ("db", "cred"),
+    }
+
+
+def test_distill_into_none_emits_no_edge_kinds_when_bbg_has_no_traversals() -> None:
+    g = _new_bbg()
+    _add_thing(g, "thing.lonely", kind_hint="thing")
+    p = distill(g, into=None)
     assert p.ontology.edge_kinds == {}
 
 

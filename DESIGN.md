@@ -655,10 +655,12 @@ modes. The generic-only rule keeps it one mode.
 This document describes what shipped, not what's planned. A handful
 of seams have a fixed contract and a placeholder body:
 
-- **`distill(into=None)` edge induction.** The current `distill`
-  with `into=None` proposes an Ontology with the right node kinds
-  but no edge kinds — so it isn't a buildable bootstrap path on
-  its own. The working path is `into=<existing pack ontology>`.
+- **Pack-specific edge kind names in `distill(into=None)`.** The
+  `into=None` path induces a single generic `transitions` edge kind
+  carrying the observed kind-pair endpoints. A bootstrap caller can
+  build against this, but pack authors typically refine the names
+  during ontology authoring (e.g. `transitions` → `runs_on` +
+  `exposes`).
 - **Multi-trajectory `distill`.** Today `distill` reads one BBG.
   Real flywheel use will merge evidence across many BBGs, with
   `TaskSeed.evidence` actually accumulating. The shape is right;
@@ -671,11 +673,6 @@ of seams have a fixed contract and a placeholder body:
   `WebappRuntimeHandle` raises `NotImplementedError` for backings
   other than `Backing.PROCESS`. The Protocol shape supports all
   four; the wiring is partial.
-- **`BuildEvent` phase `"evolve"`.** Defined in the closed
-  vocabulary; `auto_evolve` doesn't currently emit it on success
-  (it records the move in the evolved snapshot's `lineage._evolve`
-  block instead). Closing this is a one-line addition once we're
-  sure of the naming.
 
 Each is an additive widening of a stable contract. None requires a
 breaking change to anything in [CONTRACTS.md](CONTRACTS.md).

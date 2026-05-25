@@ -41,7 +41,10 @@ What v1 extracts:
 What v1 does NOT yet do (tracked in ROADMAP.md):
 
 - Multi-trajectory `distill` (merging evidence across many graphs).
-- Edge induction in the `into=None` path.
+- Pack-specific edge kind names in the `into=None` path. v1 emits a
+  single induced ``transitions`` edge kind whose `endpoints` field
+  carries the observed kind-pairs; pack authors using the proposal
+  rename to meaningful kinds during refinement.
 - Status-log mining ("the agent believed X for N steps before
   discovering not-X"). The `status_log` parameter is accepted but
   currently unused — distill reads only each node's latest `status`
@@ -62,6 +65,7 @@ from typing import Any
 
 from openrange.core.pack import PackPrior, TaskSeed
 from openrange.world_ir import (
+    EdgeKind,
     NodeKind,
     Ontology,
     WorldGraph,
@@ -112,10 +116,12 @@ def distill(
     `into` is the target world ontology:
       * given → the prior is refined to conform to an existing pack.
       * None  → the prior carries a *proposed* induced ontology built
-                from observed `kind_hint`s. v1 induces node kinds only,
-                no edge kinds, so `into=None` is not yet a buildable
-                bootstrap path on its own; the working path is
-                `into=<existing pack ontology>`.
+                from observed `kind_hint`s on things plus the union of
+                kind-pairs observed across `traversed` edges. Node kinds
+                are minted per unique `kind_hint`; the single induced
+                edge kind ``transitions`` carries the observed
+                kind-pairs as its `endpoints` so a downstream builder
+                sees which kinds the agent actually moved between.
     """
     things = [n for n in graph.nodes.values() if n.kind == "thing"]
     thoughts = [n for n in graph.nodes.values() if n.kind == "thought"]
@@ -125,10 +131,32 @@ def distill(
     induced = into
     if induced is None:
         kind_hints = sorted({t.attrs.get("kind_hint") or "thing" for t in things})
+        # Induce the single ``transitions`` edge kind from the union of
+        # source/target kind-pairs observed across ``traversed`` edges.
+        # The order is the first-seen order so the proposal is
+        # deterministic for a given BBG.
+        transition_pairs: list[tuple[str, str]] = []
+        for e in traversals:
+            src_node = graph.nodes.get(e.src)
+            dst_node = graph.nodes.get(e.dst)
+            if src_node is None or dst_node is None:
+                continue
+            src_kind = str(src_node.attrs.get("kind_hint") or "thing")
+            dst_kind = str(dst_node.attrs.get("kind_hint") or "thing")
+            pair = (src_kind, dst_kind)
+            if pair not in transition_pairs:
+                transition_pairs.append(pair)
+        edge_kinds: dict[str, EdgeKind] = {}
+        if transition_pairs:
+            edge_kinds["transitions"] = EdgeKind(
+                "transitions",
+                endpoints=list(transition_pairs),
+                description="observed agent transition between things",
+            )
         induced = Ontology(
             id="distilled@0.1.0",
             node_kinds={k: NodeKind(k) for k in kind_hints},
-            edge_kinds={},
+            edge_kinds=edge_kinds,
         )
 
     # --- topology: generic stats only (builder interprets) ---

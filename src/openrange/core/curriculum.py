@@ -272,7 +272,32 @@ def _evolve_snapshot(
     if isinstance(result, AdmissionFailure):
         return None
     assert isinstance(result, _Snapshot)
-    return result
+    # Record the evolution as the closing entry in the new snapshot's
+    # history. Phase ``"evolve"`` is one of the documented closed-vocab
+    # entries (CONTRACTS §5); the seq is the one after the build's
+    # final ``freeze`` event. ``refs`` carries the parent snapshot id so
+    # a consumer reading history alone can reconstruct the lineage
+    # chain without diving into ``lineage._evolve``.
+    from openrange.core.admit import BuildEvent
+
+    evolve_event = BuildEvent(
+        seq=len(result.history),
+        phase="evolve",
+        detail=(
+            f"evolved from {snapshot.snapshot_id} via "
+            f"{mutation.family}/{mutation.direction} "
+            f"(relevance={mutation.relevance:.2f})"
+        ),
+        refs=(snapshot.snapshot_id,),
+    )
+    return _Snapshot(
+        snapshot_id=result.snapshot_id,
+        ontology_id=result.ontology_id,
+        graph=result.graph,
+        tasks=result.tasks,
+        lineage=result.lineage,
+        history=(*result.history, evolve_event),
+    )
 
 
 def _clone_graph(graph: WorldGraph) -> WorldGraph:
