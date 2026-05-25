@@ -1,13 +1,15 @@
 """Behavioral tests for cyber NPCs.
 
-The NPCs receive an ``interface`` dict matching the HTTP backing's
-shape (``{base_url, http_get, http_get_json}``). Tests use a fake
+The NPCs receive an ``interface`` mapping matching the shape produced
+by ``WebappRuntimeHandle.surface()``:
+``{base_url, http_get, http_get_json, agent_root}``. Tests use a fake
 interface that records GET calls so we can assert on cadence,
-rotation, and graceful error handling.
+rotation, and graceful error handling — no real subprocess needed.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -26,7 +28,14 @@ from cyber_webapp.npcs.browsing_user import (
 
 
 class _FakeInterface(dict[str, Any]):
-    """Mimics ``HTTPBacking.interface``: a dict with an ``http_get`` callable."""
+    """Hand-built mock matching ``WebappRuntimeHandle.surface()``.
+
+    Provides every key NPCs may read from the runtime surface
+    (``base_url``, ``http_get``, ``http_get_json``, ``agent_root``)
+    while recording the paths ``http_get`` was called with, so tests
+    can assert on cadence and rotation without spinning a real
+    subprocess.
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -36,8 +45,13 @@ class _FakeInterface(dict[str, Any]):
             self.calls.append(str(path))
             return b""
 
+        def http_get_json(path: object) -> object:
+            return json.loads(http_get(path).decode() or "null")
+
         self["base_url"] = "http://test.local"
         self["http_get"] = http_get
+        self["http_get_json"] = http_get_json
+        self["agent_root"] = "/tmp/fake-agent-root"
 
 
 # ---------------------------------------------------------------------------

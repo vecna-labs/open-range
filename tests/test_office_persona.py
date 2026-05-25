@@ -5,6 +5,11 @@ configured backend returns a JSON ``{speak, visit}`` payload; the NPC
 does the HTTP visit itself via the runtime interface and records the
 speech via ``record_action``.
 
+The ``interface`` mapping the NPC consumes is the same shape
+``WebappRuntimeHandle.surface()`` returns
+(``{base_url, http_get, http_get_json, agent_root}``); these tests
+build a hand-rolled mock with that shape so no subprocess is spawned.
+
 Two backend shapes get exercised:
 
 * ``_PermissiveBackend`` — accepts any ``tools`` argument. Stands in
@@ -17,6 +22,7 @@ Two backend shapes get exercised:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -113,11 +119,26 @@ def _record(actions: list[dict[str, Any]]) -> Callable[..., None]:
 
 
 def _interface(http_calls: list[str]) -> dict[str, Any]:
+    """Hand-built mock matching ``WebappRuntimeHandle.surface()``.
+
+    Returns every key the cyber pack's runtime surface advertises
+    (``base_url``, ``http_get``, ``http_get_json``, ``agent_root``)
+    while recording call paths into ``http_calls``.
+    """
+
     def http_get(path: object) -> bytes:
         http_calls.append(str(path))
         return b'{"ok": true, "page": "demo"}'
 
-    return {"base_url": "http://test.local", "http_get": http_get}
+    def http_get_json(path: object) -> object:
+        return json.loads(http_get(path).decode())
+
+    return {
+        "base_url": "http://test.local",
+        "http_get": http_get,
+        "http_get_json": http_get_json,
+        "agent_root": "/tmp/fake-agent-root",
+    }
 
 
 # ---------------------------------------------------------------------------

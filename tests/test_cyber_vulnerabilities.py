@@ -1,11 +1,19 @@
 """Tests for the cyber vulnerability catalog.
 
-Three concerns:
+Four concerns:
   1. The catalog round-trips through YAML.
   2. Templates render with the documented parameters and yield valid Python.
   3. Each rendered handler is *functionally vulnerable* — the bug actually
      fires when invoked. This is the test that distinguishes "we have a
      template" from "we have an injectable, exploitable vulnerability."
+  4. A catalog entry's metadata drives the new-shape ``Node(kind=...,
+     visibility=Visibility.HIDDEN)`` construction the sampler emits into
+     the world graph.
+
+The catalog module itself is unchanged from the old pack shape; this
+file's only migration is the bridge test in §4 that confirms catalog
+entries still drive ``cyber_webapp.ontology_v2``-shaped vulnerability
+nodes through the new ``Node`` / ``Visibility`` API.
 """
 
 from __future__ import annotations
@@ -27,6 +35,8 @@ from cyber_webapp.vulnerabilities import (
     vuln,
     vulns_for_kind,
 )
+
+from openrange.world_ir import Node, Visibility
 
 
 def _exec_handler(source: str) -> Any:
@@ -250,3 +260,53 @@ def test_broken_authz_grants_admin_with_forged_header() -> None:
     status, _, body = handle({"X-User-Role": ["admin"]}, state)
     assert status == 200
     assert b"ORANGE{authz_bypass}" in body
+
+
+# ---------------------------------------------------------------------------
+# Bridge: catalog -> new-shape Node(kind="vulnerability", visibility=HIDDEN)
+# ---------------------------------------------------------------------------
+
+
+def test_catalog_entry_drives_hidden_vulnerability_node() -> None:
+    """A catalog entry's id / family drive new-shape ``Node`` construction.
+
+    The procedural sampler emits one vulnerability node per chosen
+    catalog entry, with ``kind="vulnerability"``, ``visibility=HIDDEN``,
+    and ``attrs={"kind": <catalog id>, "family": <catalog family>,
+    "params": {...}}``. This test pins that wiring at the catalog
+    boundary so a future catalog reshape can't silently break the
+    sampler's node-construction contract.
+    """
+    entry = SQL_INJECTION
+    node = Node(
+        id="vuln_sql_injection_0",
+        kind="vulnerability",
+        attrs={
+            "kind": entry.id,
+            "family": entry.family,
+            "params": {
+                "target_param": "q",
+                "table": "records",
+                "leak_column": "value",
+            },
+        },
+        visibility=Visibility.HIDDEN,
+    )
+    assert node.kind == "vulnerability"
+    assert node.visibility is Visibility.HIDDEN
+    assert node.attrs["kind"] == "sql_injection"
+    assert node.attrs["family"] == "code_web"
+
+
+def test_every_catalog_entry_targets_a_real_ontology_kind() -> None:
+    """Every catalog entry's ``target_kinds`` are kinds the new ontology declares.
+
+    The ``affects`` edge in the new ontology accepts
+    ``(vulnerability, endpoint)`` and ``(vulnerability, service)``; the
+    catalog must restrict ``target_kinds`` to that domain or the
+    sampler would emit an edge the conformance check would reject.
+    """
+    allowed = {"endpoint", "service"}
+    for vid, v in CATALOG.items():
+        unknown = set(v.target_kinds) - allowed
+        assert not unknown, f"catalog {vid!r} targets unknown kinds: {unknown}"
