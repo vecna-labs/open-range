@@ -6,12 +6,6 @@ resolution-markers = [
     "python_full_version < '3.15'",
 ]
 
-[manifest]
-members = [
-    "openrange",
-    "openrange-cyber-webapp",
-]
-
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -780,7 +774,6 @@ strands = [
 dev = [
     { name = "coverage" },
     { name = "mypy" },
-    { name = "openrange-cyber-webapp" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -798,26 +791,8 @@ provides-extras = ["strands"]
 dev = [
     { name = "coverage", extras = ["toml"], specifier = ">=7.13" },
     { name = "mypy", specifier = ">=1.19" },
-    { name = "openrange-cyber-webapp", editable = "packs/cyber_webapp" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.15.6" },
-]
-
-[[package]]
-name = "openrange-cyber-webapp"
-version = "0.1.0"
-source = { editable = "packs/cyber_webapp" }
-dependencies = [
-    { name = "jinja2" },
-    { name = "openrange" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "jinja2", specifier = ">=3.1" },
-    { name = "openrange", editable = "." },
-    { name = "pyyaml", specifier = ">=6.0.3" },
 ]
 
 [[package]]

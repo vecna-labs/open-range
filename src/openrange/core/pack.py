@@ -1,301 +1,431 @@
-"""Pack contracts and generated task artifacts."""
+"""Pack, Builder, TaskFamily — the binding surface between OpenRange and a domain.
+
+This module owns the protocols core depends on plus the plain-data shapes
+that flow through them. The two boundaries:
+
+    CORE  owns TYPES and GENERIC ALGORITHMS — things identical for every
+          domain. It never names a domain concept.
+
+    PACK  owns VALUES and DOMAIN FUNCTIONS — the ontology value, the builder,
+          the realizer, the task families, the checks. Everything
+          domain-specific.
+
+The split is enforceable: `grep` this file for any domain string (`host`,
+`vuln`, `endpoint`, `trading`, `pendulum`); there should be zero hits.
+
+The seam to the BBG world is `PackPrior`. A `PackPrior` arrives at
+`Pack.make_builder(prior=...)` from either:
+
+    - `openrange.distill(graph, status_log)`  (the flywheel path: distilled
+      from a real agent's spatial memory dump)
+    - a hand-authored default shipped with the pack  (the boot path:
+      `make_builder(prior=None)` falls back to the pack's hand-authored
+      `PackPrior`)
+
+The builder has one code path; it never knows which source produced the
+prior. That's what keeps the bootstrap-to-flywheel transition seamless.
+"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
-from types import MappingProxyType
-from typing import TYPE_CHECKING, cast
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from openrange.core.errors import PackError, StoreError
+from openrange.world_ir import GraphPatch, Issue, Ontology, WorldGraph
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from openrange.core.builder import BuildContext
-    from openrange.core.builder_protocol import Builder
-    from openrange.core.curriculum import Mutation
-    from openrange.core.episode import EpisodeReport
-    from openrange.core.graph import RuntimeBundle, WorldGraph, WorldSchema
-    from openrange.core.manifest import Manifest
-    from openrange.core.snapshot import Snapshot
-    from openrange.llm import LLMBackend
-
-VerifierResult = Mapping[str, object]
-Verifier = Callable[[Mapping[str, object]], VerifierResult]
-AdmissionState = Callable[[Mapping[str, object]], Mapping[str, object]]
+    from openrange.core.admit import Snapshot
 
 
-def verifier_from_source(source: str) -> Verifier:
-    namespace: dict[str, object] = {}
-    try:
-        exec(source, {"__builtins__": {}}, namespace)
-    except Exception as exc:
-        raise StoreError("stored verifier source is invalid") from exc
-    verify = namespace.get("verify")
-    if not callable(verify):
-        raise StoreError("stored verifier source must define verify()")
-
-    def run(state: Mapping[str, object]) -> VerifierResult:
-        result = cast(Verifier, verify)(state)
-        if not isinstance(result, Mapping):
-            raise StoreError("verifier returned invalid result")
-        return MappingProxyType(dict(result))
-
-    return run
+# ---------------------------------------------------------------------------
+# Backing — how a realized world runs
+# ---------------------------------------------------------------------------
 
 
-def admission_state_from_source(source: str) -> AdmissionState:
-    namespace: dict[str, object] = {}
-    try:
-        exec(source, {"__builtins__": {}}, namespace)
-    except Exception as exc:
-        raise StoreError("stored admission source is invalid") from exc
-    admission_state = namespace.get("admission_state")
-    if not callable(admission_state):
-        raise StoreError("stored admission source must define admission_state()")
+class Backing(StrEnum):
+    """The runtime substrate a Pack realizes its world against.
 
-    def run(interface: Mapping[str, object]) -> Mapping[str, object]:
-        state = cast(AdmissionState, admission_state)(interface)
-        if not isinstance(state, Mapping):
-            raise StoreError("admission source returned invalid final state")
-        return MappingProxyType(dict(state))
+    A pack may support one backing or several; the same `Pack.realize()` call
+    receives the choice. Choosing here is a runtime decision (laptop vs.
+    container vs. compute farm) that does not affect the world's graph.
 
-    return run
+    PROCESS    : in-process simulation (NPCs as threads, file artifacts in /tmp)
+    CONTAINER  : docker / podman / k8s per service
+    SIMULATOR  : a pack-provided simulator (no real services)
+    HYBRID     : a mix — process for cheap parts, container for expensive ones
+    """
 
-
-@dataclass(frozen=True, slots=True)
-class Entrypoint:
-    kind: str
-    target: str
-    metadata: Mapping[str, object] = field(default_factory=dict)
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "target": self.target,
-            "metadata": dict(self.metadata),
-        }
-
-    @classmethod
-    def from_mapping(cls, data: Mapping[str, object]) -> Entrypoint:
-        kind = data.get("kind")
-        target = data.get("target")
-        metadata = data.get("metadata", {})
-        if not isinstance(kind, str) or not isinstance(target, str):
-            raise StoreError("stored entrypoint is invalid")
-        if not isinstance(metadata, Mapping):
-            raise StoreError("stored entrypoint metadata is invalid")
-        return cls(kind, target, MappingProxyType(dict(metadata)))
+    PROCESS = "process"
+    CONTAINER = "container"
+    SIMULATOR = "simulator"
+    HYBRID = "hybrid"
 
 
-@dataclass(frozen=True, slots=True)
-class Task:
-    """Pure-data description of one task an agent can attempt.
+# ---------------------------------------------------------------------------
+# Generic wire shapes — declared here so packs and core agree on the types
+# that cross the boundary
+# ---------------------------------------------------------------------------
 
-    The verifier callable is not stored here — it's resolved from the
-    snapshot's ``verifier_sources`` by ``verifier_id`` when needed. This
-    keeps Task serializable and lets multiple tasks reference the same
-    verifier source without duplication.
+
+@dataclass(frozen=True)
+class TaskSpec:
+    """One task an agent can attempt against a world.
+
+    Three parts: an instruction (what to do), entrypoints (where it starts
+    acting — node-ids in the world graph), and goal_nodes (what counts as
+    completion — also node-ids; may be HIDDEN).
+
+    `feasibility_check` and `success_check` are HANDLES, not exec'd source.
+    They name a TaskFamily; the pack's `task_family(name)` resolves them to
+    a class that runs the check as a method.
+
+    Entrypoints and goal_nodes live HERE, on the task, never as node roles.
+    Two tasks against the same world may entrypoint different nodes (a build
+    task entrypoints the repo; a pentest task entrypoints the endpoint) —
+    that is task-relative, not world-absolute.
     """
 
     id: str
     instruction: str
-    entrypoints: tuple[Entrypoint, ...]
-    verifier_id: str
-
-    @property
-    def interface(self) -> tuple[Entrypoint, ...]:
-        return self.entrypoints
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "id": self.id,
-            "instruction": self.instruction,
-            "entrypoints": [entrypoint.as_dict() for entrypoint in self.entrypoints],
-            "verifier_id": self.verifier_id,
-        }
+    entrypoints: tuple[str, ...]
+    goal_nodes: tuple[str, ...]
+    feasibility_check: str  # "webapp.pentest" — a TaskFamily.id
+    success_check: str  # same handle conventionally
+    meta: Mapping[str, Any] = field(default_factory=dict)
+    # `meta` carries family + difficulty + any pack-shaped task provenance.
 
 
-class Pack(ABC):
-    """Domain SDK contract.
+@dataclass(frozen=True)
+class TaskSeed:
+    """One distilled hint at where a task could be authored.
 
-    A Pack ships an ontology, a realizer that turns conforming graphs into
-    runtime artifacts, and optional verifier helpers, generation priors,
-    and a default builder. Core does not interpret pack-internal data —
-    the ``ontology`` and ``realize()`` are the only seams Core requires.
+    Emitted by `distill()` (one per thought-cluster) and consumed by a
+    TaskFamily's `generate()`. Carries ANCHORS (kinds of things the
+    cluster anchored on) and SUGGESTED GOAL KINDS (kinds of things at the
+    sinks of productive paths). A TaskFamily can use these as seeds for
+    its own task synthesis — or ignore them and generate from manifest +
+    graph alone.
 
-    Subclasses must set ``id`` and ``version`` as class attributes (or
-    properties) and implement ``ontology`` and ``realize()``. Filesystem-
-    backed packs may also expose ``dir`` so the runtime can locate
-    on-disk assets.
+    `family` is OPTIONAL — `distill()` never tags seeds with a family.
+    A harness with that knowledge may attach one; otherwise TaskFamilies
+    self-select by `anchor_kinds`.
     """
 
-    id: str = ""
-    version: str = ""
-    dir: Path | None = None
+    theme: str  # cluster identifier, e.g. "cluster-0"
+    anchor_kinds: tuple[str, ...]  # kinds of nodes the cluster anchored on
+    suggested_goal_kinds: tuple[str, ...]
+    difficulty: float  # 0..1
+    evidence: int = 1  # how many trajectories agreed
+    family: str | None = None
 
-    def __init__(self, dir: Path | None = None) -> None:
-        """Default constructor: filesystem-backed packs may pass a custom dir.
 
-        Subclasses are free to override with their own signature, but the
-        ``dir: Path | None = None`` convention is what path-pack loading
-        relies on. Non-filesystem packs typically just leave ``dir = None``
-        and ignore this argument.
-        """
-        if dir is not None:
-            self.dir = dir
+@dataclass(frozen=True)
+class PackPrior:
+    """The generation prior flowing from BBG → Builder.
 
-    @property
+    Carries ONLY generic graph statistics. The builder INTERPRETS these
+    into domain decisions; the prior never tells the builder what to do.
+    This is the one rule that keeps `distill()` reusable across domains.
+
+    `ontology` may be the target pack's ontology (refinement path) or an
+    induced ontology that `distill` proposed (bootstrap path with no
+    existing pack).
+
+    `topology` keys are a fixed generic set:
+      - `node_kind_freq` : count of each kind in the source graph
+      - `salient_kind_freq` : count of each kind where status=salient
+      - `dead_end_ratio` : fraction of traversed edges with outcome=dead_end
+      - `hidden_signal` : per-kind count of confirmed-thought anchors
+    """
+
+    source: str  # e.g. "bbg@0.1.0 :: sha256:..."
+    ontology: Ontology
+    topology: Mapping[str, Any]
+    task_seeds: tuple[TaskSeed, ...] = ()
+    difficulty: Mapping[str, float] = field(default_factory=dict)
+    coverage: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    """What `Builder.build()` returns: the candidate world + its tasks.
+
+    `admission_meta` is the builder's own provenance (LLM prompts, sampling
+    seed, prior summary). It rides into `Snapshot.lineage` and is otherwise
+    opaque to core.
+    """
+
+    graph: WorldGraph
+    tasks: list[TaskSpec]
+    admission_meta: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FeasibilityVerdict:
+    """A TaskFamily's verdict on whether a task is solvable in this world."""
+
+    feasible: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class EpisodeResult:
+    """What an episode's success-check returns.
+
+    Structured — NOT a scalar reward. A harness-side training adapter maps
+    this into whatever signal a training setup needs. OpenRange does not
+    shape rewards.
+    """
+
+    success: bool
+    subgoals: Mapping[str, bool] = field(default_factory=dict)
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class Mutation:
+    """One curriculum move proposed by a TaskFamily.
+
+    Carries a GraphPatch (not a dict directive — the patch is the universal
+    diff type), a direction tag (harden / soften / diversify), a relevance
+    score (0..1) reflecting how well the move responds to recent episode
+    reports, the family that proposed it, and an optional note.
+
+    Core's curriculum policy picks a direction from aggregate pass-rate,
+    scores candidate mutations against it, and applies the winning patch
+    via `Builder.evolve(snapshot, mutation)`.
+    """
+
+    patch: GraphPatch
+    direction: str  # "harden" | "soften" | "diversify"
+    relevance: float
+    family: str
+    note: str = ""
+
+
+# ---------------------------------------------------------------------------
+# RuntimeHandle — what `Pack.realize` returns
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class RuntimeHandle(Protocol):
+    """A running realized world. Owned by the pack; consumed by the episode.
+
+    The handle is the seam between the realizer (pack territory: knows how
+    to start services, seed databases, render templates) and the episode
+    loop (core territory: doesn't care how, only that the agent can act and
+    the final state can be read).
+
+    `surface()` returns whatever the agent's IO needs — base URLs, file
+    roots, MCP endpoints. The shape is pack-defined; the harness binds
+    against keys it expects.
+
+    `collect()` returns the structured final state at episode end. A
+    TaskFamily's `check_success` reads from this dict against world graph
+    + task to decide success. Shape is pack-defined; the family knows it
+    because the family and the pack are siblings.
+    """
+
+    def reset(self) -> None: ...
+    def surface(self) -> Mapping[str, Any]: ...
+    def collect(self) -> Mapping[str, Any]: ...
+    def stop(self) -> None: ...
+
+
+# ---------------------------------------------------------------------------
+# Manifest — declared loosely so packs can ship their own typed shapes
+# ---------------------------------------------------------------------------
+
+Manifest = Mapping[str, Any]
+"""A manifest is a free-form dict. Packs document their expected keys; core
+never branches on a manifest field."""
+
+
+# ---------------------------------------------------------------------------
+# The three core protocols
+# ---------------------------------------------------------------------------
+
+
+class TaskFamily(ABC):
+    """A domain of tasks posed against a Pack's world.
+
+    A Pack owns a world-family (e.g. `webapp`); a TaskFamily owns one
+    DOMAIN of tasks against that world (e.g. `webapp.build`,
+    `webapp.pentest`). The same world graph can serve multiple families
+    with different entrypoints, different goals, and different success
+    criteria — *this* is where the word "domain" lives, not on Pack.
+
+    A TaskFamily owns:
+      - task generation (instruction text, entrypoint selection, goal
+        selection from the graph)
+      - feasibility checking (against the world graph, no runtime)
+      - success checking (against the world graph + the realizer's
+        collected final state)
+      - curriculum mutations (what graph changes would harden / soften
+        / diversify *this* family's tasks specifically)
+
+    Concrete TaskFamilies are pack-side classes. Core never imports a
+    specific family; it looks them up by `id` through the Pack.
+    """
+
+    id: str = ""  # "webapp.build", "webapp.pentest"
+    pack_id: str = ""  # back-pointer to the Pack.id
+
     @abstractmethod
-    def ontology(self) -> WorldSchema: ...
+    def generate(
+        self, graph: WorldGraph, manifest: Manifest, prior: PackPrior | None
+    ) -> list[TaskSpec]:
+        """Generate one or more TaskSpecs against this world.
+
+        The family selects entrypoints (which node-ids the agent acts
+        from), goal-nodes (which node-ids count as completion), and
+        composes the instruction string. `prior.task_seeds` is the
+        distill output, available as a hint; the family may ignore it.
+        """
 
     @abstractmethod
-    def realize(self, graph: WorldGraph, manifest: Manifest) -> RuntimeBundle: ...
+    def check_feasibility(
+        self, graph: WorldGraph, task: TaskSpec
+    ) -> FeasibilityVerdict:
+        """Decide whether `task` is actually solvable in `graph`.
 
-    def verifier_helpers(self) -> Mapping[str, Callable[..., object]]:
-        return MappingProxyType({})
-
-    def default_builder(self, context: BuildContext) -> Builder | None:
-        """Construct the pack's default Builder for a given build context.
-
-        Returns ``None`` if the pack ships no default; the user must then
-        supply their own Builder. Packs are free to inspect ``context``
-        (LLM, prompt, curriculum, feedback) when constructing.
+        Pure-graph reasoning — no realizer, no runtime. The family walks
+        the graph and decides. (Schema correctness is already covered by
+        admission's structural+conformance tiers; this is the
+        domain-meaning check that only the family knows how to do.)
         """
-        return None
 
-    def generation_priors(self) -> Mapping[str, object]:
-        return MappingProxyType({})
+    @abstractmethod
+    def check_success(
+        self, graph: WorldGraph, task: TaskSpec, final_state: Mapping[str, Any]
+    ) -> EpisodeResult:
+        """Read the realizer's final-state mapping and decide success.
 
-    def runtime_backings(self) -> tuple[object, ...]:
-        """Per-pack runtime backings for artifact kinds the pack introduces.
-
-        Returns RuntimeBacking instances. Default: empty (rely on built-ins).
-        Typed as ``tuple[object, ...]`` to avoid a hard import cycle between
-        ``pack`` and ``runtime_backing``.
+        `final_state` is the dict `RuntimeHandle.collect()` returned. Its
+        keys are a pack/family convention. The family compares against
+        the world graph + the task and returns a structured result —
+        success bool, optional subgoals, optional reason.
         """
-        return ()
 
     def available_mutations(
         self,
         snapshot: Snapshot,
-        reports: Sequence[EpisodeReport],
+        reports: Sequence[Any],
         *,
-        llm: LLMBackend | None = None,
+        llm: Any | None = None,
     ) -> tuple[Mutation, ...]:
-        """Enumerate evolution moves available from this snapshot.
+        """Propose curriculum mutations that would harden / soften / diversify
+        this family's tasks specifically.
 
-        Each returned ``Mutation`` carries a directive (the dict
-        ``evolve()`` consumes), a direction tag (harden / soften /
-        diversify), a relevance score (0..1) reflecting how well the
-        move responds to the recent reports, and an optional note.
-
-        ``llm`` is offered so packs can run a semantic enrichment pass
-        (e.g. re-score relevance from request payloads, not just paths)
-        when an LLM is configured. Packs that don't use LLMs ignore it.
-
-        Default returns ``()`` — packs without auto-curriculum support
-        opt out of ``auto_evolve()`` cleanly.
+        Default returns `()` — families without curriculum support opt out
+        cleanly. `llm` is offered so a family can re-score relevance with
+        a semantic pass; families that don't use LLMs ignore it.
         """
         del snapshot, reports, llm
         return ()
 
-    def project_world(self, graph: WorldGraph) -> Mapping[str, object]:
-        """Project the graph back to the flat ``world`` dict the runtime expects.
 
-        Used by core to populate ``argv``-from-world placeholders and the
-        verifier's ``state['world']`` view. Default: the attrs of the
-        first node (matches the cyber-pack v0 single-node convention).
-        Multi-node ontologies override to project the relevant attrs
-        (e.g. flag value, service URLs) into a flat mapping.
-        """
-        return dict(graph.first_node_attrs())
+class Builder(ABC):
+    """The pack-side machinery that produces a candidate `BuildResult`.
 
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "id": self.id,
-            "version": self.version,
-            "dir": None if self.dir is None else str(self.dir),
-        }
+    A Pack constructs its Builder via `make_builder(prior)`. The same
+    Builder can be invoked many times with different manifests; it should
+    be deterministic in `(manifest, prior)` modulo any builder-internal
+    seed.
 
-
-PACK_ENTRY_POINT_GROUP = "openrange.packs"
-
-
-class PackRegistry:
-    """Registry of Pack instances by id.
-
-    Packs can be registered explicitly via ``register()`` or, on the
-    global ``PACKS`` instance, discovered via Python entry points in
-    the ``openrange.packs`` group. Entry-point values must resolve to a
-    callable returning a Pack instance (typically the Pack class itself
-    with a parameterless default constructor).
-
-    ``autodiscover=False`` (the default) gives a clean slate suitable
-    for tests. The global ``PACKS = PackRegistry(autodiscover=True)``
-    pulls in installed packs on first access.
+    `build()` returns a candidate world + tasks. Admission validates them
+    and, on failure, calls `repair(prev, errors, infeasible)` — up to the
+    configured budget. After admission, `evolve(snapshot, mutation)`
+    applies a curriculum move as a `GraphPatch`.
     """
 
-    def __init__(self, *, autodiscover: bool = False) -> None:
-        self._packs: dict[str, Pack] = {}
-        self._autodiscover = autodiscover
-        self._discovered = False
+    @abstractmethod
+    def build(self, manifest: Manifest) -> BuildResult: ...
 
-    def register(self, pack: Pack) -> None:
-        self._packs[pack.id] = pack
+    def repair(
+        self, prev: BuildResult, errors: list[Issue], infeasible: list[str]
+    ) -> BuildResult:
+        """Optional repair hook. Default: regenerate from scratch.
 
-    def resolve(self, pack_id: str) -> Pack:
-        self._ensure_discovered()
-        try:
-            return self._packs[pack_id]
-        except KeyError as exc:
-            raise PackError(f"unknown pack {pack_id!r}") from exc
-
-    def resolve_class(self, pack_id: str) -> type[Pack]:
-        """Return the Pack subclass for ``pack_id``.
-
-        Used by path-loaded packs to construct an instance pointing at a
-        custom directory. Raises ``PackError`` if no pack is registered
-        for that id.
+        A procedural builder may resample; an LLM builder may patch the
+        offending piece. Core supplies the failures and asks for a new
+        candidate; the builder decides how to respond.
         """
-        return type(self.resolve(pack_id))
+        del prev, errors, infeasible
+        raise NotImplementedError(
+            "this Builder did not implement repair(); admission will not "
+            "retry. Override repair() to participate in the admission loop."
+        )
 
-    def ids(self) -> tuple[str, ...]:
-        self._ensure_discovered()
-        return tuple(sorted(self._packs))
+    def evolve(self, snapshot: Snapshot, mutation: Mutation) -> GraphPatch:
+        """Apply a curriculum mutation, returning a `GraphPatch`.
 
-    def discover(self) -> None:
-        """Force entry-point discovery (idempotent on the same registry)."""
-        self._ensure_discovered(force=True)
-
-    def _ensure_discovered(self, *, force: bool = False) -> None:
-        if not self._autodiscover and not force:
-            return
-        if self._discovered and not force:
-            return
-        self._discovered = True
-        from openrange.core._registry import iter_entry_points
-
-        for name, value in iter_entry_points(
-            PACK_ENTRY_POINT_GROUP,
-            error_cls=PackError,
-            kind="pack",
-        ):
-            if name in self._packs and not force:
-                continue
-            pack = value() if callable(value) else value
-            if not isinstance(pack, Pack):
-                raise PackError(
-                    f"entry point {name!r} did not return a Pack",
-                )
-            if pack.id != name:
-                raise PackError(
-                    f"entry point name {name!r} does not match pack.id {pack.id!r}",
-                )
-            self._packs[pack.id] = pack
+        Default: return the mutation's patch verbatim. A pack that wants
+        to refine the patch (e.g. adjust LLM-generated artifacts to fit
+        the existing world) overrides this.
+        """
+        del snapshot
+        return mutation.patch
 
 
-PACKS = PackRegistry(autodiscover=True)
+class Pack(ABC):
+    """The pack-side contract core depends on.
+
+    A Pack ships:
+      - an `Ontology` declaring the world's node/edge kinds + attrs
+      - pack invariants (Tier-3 callables core's `validate()` runs)
+      - a `Builder` factory accepting a `PackPrior | None`
+      - a `realize()` that turns an admitted graph into a `RuntimeHandle`
+      - one or more `TaskFamily` classes
+
+    Core depends on this Protocol; it never imports a concrete pack. A
+    pack registers via the `openrange.packs` entry point group (see
+    `openrange.core.registry`).
+    """
+
+    id: str = ""  # e.g. "webapp"
+    version: str = ""
+
+    @abstractmethod
+    def ontology(self) -> Ontology: ...
+
+    def invariants(self) -> list[Callable[[WorldGraph], list[Issue]]]:
+        """Tier-3 invariants the validator runs on every candidate.
+
+        Returns a list of plain functions, each `(graph) -> list[Issue]`.
+        Default empty — a pack without graph-wide invariants opts out
+        cleanly.
+        """
+        return []
+
+    @abstractmethod
+    def make_builder(self, prior: PackPrior | None) -> Builder:
+        """Construct a fresh Builder for this pack with the given prior.
+
+        `prior=None` is the boot path: the pack falls back to a
+        hand-authored default `PackPrior` (typically returned by a
+        `default_prior()` helper inside the pack).
+        """
+
+    @abstractmethod
+    def realize(self, graph: WorldGraph, backing: Backing) -> RuntimeHandle: ...
+
+    def task_families(self) -> list[TaskFamily]:
+        """Every TaskFamily this pack offers. Default empty.
+
+        A pack with no task families won't admit anything (admission
+        requires at least one task), so packs that admit at all must
+        return at least one family here.
+        """
+        return []
+
+    def task_family(self, family_id: str) -> TaskFamily | None:
+        """Look up a TaskFamily by its `id`. Default: linear scan."""
+        for fam in self.task_families():
+            if fam.id == family_id:
+                return fam
+        return None

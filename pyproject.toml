@@ -33,14 +33,10 @@ dev = [
     "mypy>=1.19",
     "pytest>=9.0",
     "ruff>=0.15.6",
-    "openrange-cyber-webapp",
 ]
 
 [tool.uv.workspace]
-members = ["packs/cyber_webapp"]
-
-[tool.uv.sources]
-openrange-cyber-webapp = { workspace = true }
+members = []
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openrange"]
