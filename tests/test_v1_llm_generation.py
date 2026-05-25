@@ -25,7 +25,7 @@ from cyber_webapp.llm_generation import (
     generate_task_instruction,
 )
 
-from openrange.core.contracts import EpisodeReportLike, Mutation
+from openrange.core.pack import EpisodeReportLike, Mutation
 from openrange.llm import LLMBackend, LLMError, LLMRequest, LLMResult
 from openrange.world_ir import (
     Edge,

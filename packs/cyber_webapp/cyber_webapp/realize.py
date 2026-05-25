@@ -9,7 +9,7 @@ events, decide when the agent has finished, and collect the structured
 final state the task families read.
 
 The class implements the eight-method ``RuntimeHandle`` Protocol
-declared in ``openrange.core.contracts``:
+declared in ``openrange.core.pack``:
 
   reset()        : materialize app source + start subprocess + open log
   surface()      : ``{base_url, http_get, http_get_json, agent_root}``
@@ -50,8 +50,8 @@ from cyber_webapp.codegen.entrypoint import (
     REQUEST_LOG_NAME,
     RESULT_FILE_NAME,
 )
-from openrange.core.contracts import Backing
 from openrange.core.errors import OpenRangeError
+from openrange.core.pack import Backing
 from openrange.world_ir import WorldGraph
 
 

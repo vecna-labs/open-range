@@ -27,7 +27,11 @@ from typing import Any
 import pytest
 
 from openrange.core.admit import Snapshot, admit
-from openrange.core.contracts import (
+from openrange.core.curriculum import (
+    auto_evolve,
+    direction_from_reports,
+)
+from openrange.core.pack import (
     Backing,
     Builder,
     BuildResult,
@@ -42,10 +46,6 @@ from openrange.core.contracts import (
     RuntimeHandle,
     TaskFamily,
     TaskSpec,
-)
-from openrange.core.curriculum import (
-    auto_evolve,
-    direction_from_reports,
 )
 from openrange.world_ir import (
     AttrSpec,

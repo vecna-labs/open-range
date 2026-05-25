@@ -11,13 +11,13 @@ from typing import cast
 
 from openrange.core.admit import AdmissionFailure, admit, snapshot_to_dict
 from openrange.core.errors import EpisodeRuntimeError
+from openrange.core.pack import PACKS
 from openrange.core.store import SnapshotStore
 from openrange.dashboard import (
     DashboardHTTPServer,
     DashboardView,
     RunsRegistry,
 )
-from openrange.runtime import _resolve_pack_by_id
 
 
 def main() -> None:
@@ -88,7 +88,10 @@ def _run_build(args: argparse.Namespace) -> None:
         raise EpisodeRuntimeError(
             "manifest must declare a pack via 'pack.id' or 'pack' (string)",
         )
-    pack = _resolve_pack_by_id(pack_id)
+    try:
+        pack = PACKS.resolve(pack_id)
+    except Exception as exc:
+        raise EpisodeRuntimeError(f"unknown pack {pack_id!r}") from exc
     result = admit(pack, manifest, max_repairs=args.max_repairs)
     if isinstance(result, AdmissionFailure):
         raise EpisodeRuntimeError(

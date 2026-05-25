@@ -31,8 +31,8 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from openrange.core.contracts import EpisodeReportLike, Mutation
 from openrange.core.errors import OpenRangeError
+from openrange.core.pack import EpisodeReportLike, Mutation
 from openrange.world_ir import WorldGraph
 
 if TYPE_CHECKING:

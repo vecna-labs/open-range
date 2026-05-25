@@ -57,7 +57,7 @@ from cyber_webapp.invariants import (
 )
 from cyber_webapp.ontology_v2 import ONTOLOGY_ID, webapp_ontology
 from cyber_webapp.realize import WebappRuntimeError, WebappRuntimeHandle
-from openrange.core.contracts import (
+from openrange.core.pack import (
     Backing,
     Builder,
     Pack,

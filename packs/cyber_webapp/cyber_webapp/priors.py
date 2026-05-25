@@ -4,7 +4,7 @@
 prior ``WebappPack.make_builder(prior=None)`` falls back to before the
 flywheel has produced any distilled BBG-driven prior. It carries the
 same generic-stats shape ``openrange.core.distill`` emits (a
-``PackPrior`` from ``openrange.core.contracts``), so the builder has one
+``PackPrior`` from ``openrange.core.pack``), so the builder has one
 code path and never knows whether its prior was learned or authored.
 
 The keys live in two places, by design:
@@ -34,7 +34,7 @@ from types import MappingProxyType
 from typing import Any
 
 from cyber_webapp.ontology_v2 import webapp_ontology
-from openrange.core.contracts import PackPrior, TaskSeed
+from openrange.core.pack import PackPrior, TaskSeed
 
 # ---------------------------------------------------------------------------
 # Pack-private generation config — NOT in PackPrior

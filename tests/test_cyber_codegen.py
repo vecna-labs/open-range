@@ -34,7 +34,7 @@ from cyber_webapp.codegen.entrypoint import (
     SEED_FILE_NAME,
 )
 
-from openrange.core.contracts import Backing, RuntimeHandle
+from openrange.core.pack import Backing, RuntimeHandle
 from openrange.world_ir import WorldGraph
 
 # ---------------------------------------------------------------------------

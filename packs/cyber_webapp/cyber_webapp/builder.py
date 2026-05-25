@@ -32,7 +32,7 @@ from typing import Any
 from cyber_webapp.families import WebappBuild, WebappPentest
 from cyber_webapp.priors import default_prior
 from cyber_webapp.sampling import sample_graph
-from openrange.core.contracts import (
+from openrange.core.pack import (
     Builder,
     BuildResult,
     Manifest,

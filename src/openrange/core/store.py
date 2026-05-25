@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from openrange.core.admit import BuildEvent, Snapshot, snapshot_to_dict
-from openrange.core.contracts import TaskSpec
 from openrange.core.errors import StoreError
+from openrange.core.pack import TaskSpec
 from openrange.world_ir import Edge, Node, Role, Visibility, WorldGraph
 
 

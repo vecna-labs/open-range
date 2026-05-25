@@ -28,7 +28,7 @@ from cyber_webapp import WebappBuilder, WebappPack
 from cyber_webapp.priors import default_prior
 
 from openrange.core.admit import Snapshot, admit
-from openrange.core.contracts import BuildResult, PackPrior
+from openrange.core.pack import BuildResult, PackPrior
 
 # ---------------------------------------------------------------------------
 # Build smoke

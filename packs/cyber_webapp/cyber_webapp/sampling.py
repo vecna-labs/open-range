@@ -27,8 +27,8 @@ from typing import Any
 
 from cyber_webapp.ontology_v2 import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
-from openrange.core.contracts import PackPrior
 from openrange.core.errors import PackError
+from openrange.core.pack import PackPrior
 from openrange.world_ir import Edge, Node, Role, Visibility, WorldGraph
 
 # Secret formats — modeled on real production credentials so the

@@ -1,7 +1,7 @@
 """Tests for the new admission loop (openrange.core.admit), against a stub pack.
 
 These tests don't touch the existing pack/runtime layer — they exercise
-the new `openrange.core.admit` + `openrange.core.contracts` shapes
+the new `openrange.core.admit` + `openrange.core.pack` shapes
 through a minimal inline stub pack. The cyber pack migration (Phase 2)
 adds the end-to-end test on the real pack.
 """
@@ -21,7 +21,7 @@ from openrange.core.admit import (
     snapshot_to_dict,
     validate_task_bindings,
 )
-from openrange.core.contracts import (
+from openrange.core.pack import (
     Backing,
     Builder,
     BuildResult,
@@ -591,7 +591,7 @@ def test_validate_task_bindings_flags_dangling_goal() -> None:
 def test_builder_evolve_default_returns_patch_verbatim() -> None:
     """`Builder.evolve` default just returns the mutation's patch; a
     pack can override to refine it."""
-    from openrange.core.contracts import Mutation
+    from openrange.core.pack import Mutation
 
     g = _build_test_graph()
     g_copy = WorldGraph(ontology=g.ontology, nodes=dict(g.nodes), edges=dict(g.edges))

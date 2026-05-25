@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from openrange.core.contracts import (
+from openrange.core.pack import (
     EpisodeReportLike,
     EpisodeResult,
     FeasibilityVerdict,

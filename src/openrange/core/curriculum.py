@@ -18,7 +18,7 @@ Boundary:
     evolved graph.
 
 Shape change vs the pre-refactor module:
-    - ``Mutation`` now lives in ``openrange.core.contracts`` and carries
+    - ``Mutation`` now lives in ``openrange.core.pack`` and carries
       a ``GraphPatch`` + ``family`` tag (not an opaque ``directive``
       mapping).
     - The pack-level ``Pack.available_mutations`` is gone. Aggregation
@@ -39,7 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from openrange.core.contracts import (
+from openrange.core.pack import (
     Backing,
     Builder,
     BuildResult,

@@ -41,7 +41,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from cyber_webapp.ontology_v2 import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
-from openrange.core.contracts import EpisodeReportLike, Mutation
+from openrange.core.pack import EpisodeReportLike, Mutation
 from openrange.world_ir import Edge, GraphPatch, Node, Visibility, WorldGraph
 
 # Avoid noise about the ontology import: it's used as a sanity reference

@@ -1,9 +1,9 @@
 """Episode service: the agent harness's seam into running worlds.
 
 This is the second of the two CORE/PACK boundaries (the first is
-``admit``). The pack ships a :class:`~openrange.core.contracts.Pack`
+``admit``). The pack ships a :class:`~openrange.core.pack.Pack`
 whose ``realize(graph, backing)`` produces a
-:class:`~openrange.core.contracts.RuntimeHandle` implementing the
+:class:`~openrange.core.pack.RuntimeHandle` implementing the
 eight-method Protocol. Core's :class:`EpisodeService` drives that
 handle through the episode lifecycle:
 
@@ -21,7 +21,7 @@ handle through the episode lifecycle:
 
 Episode end dispatches to ``pack.task_family(task.success_check)`` so
 the family decides success against ``(graph, task, final_state)`` and
-returns an :class:`~openrange.core.contracts.EpisodeResult`. Core never
+returns an :class:`~openrange.core.pack.EpisodeResult`. Core never
 inspects the structured fields itself — :class:`EpisodeReport` carries
 the result through; whoever consumes it (curriculum, training loops,
 tests) reads the typed ``success`` / ``subgoals`` / ``reason``.
@@ -48,14 +48,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from openrange.agent_backend import AgentBackend, StrandsAgentBackend
 from openrange.core.admit import Snapshot
-from openrange.core.contracts import (
+from openrange.core.errors import OpenRangeError
+from openrange.core.pack import (
     Backing,
     EpisodeResult,
     Pack,
     RuntimeHandle,
     TaskSpec,
 )
-from openrange.core.errors import OpenRangeError
 from openrange.core.turn import ActorTurn
 from openrange.npc import NPC, resolve_manifest_npcs
 
@@ -325,7 +325,7 @@ class EpisodeService:
     ) -> EpisodeHandle:
         """Realize ``snapshot.graph`` and prepare a running episode.
 
-        The pack's :meth:`~openrange.core.contracts.Pack.realize`
+        The pack's :meth:`~openrange.core.pack.Pack.realize`
         returns a handle, ``reset()`` boots the world, ``surface()``
         seeds the IO surface cached for ``observe`` / ``base_url`` /
         ``agent_root`` reads. NPCs are constructed from the manifest

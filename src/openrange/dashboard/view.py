@@ -11,7 +11,7 @@ from typing import cast
 
 from openrange.core import ActorTurn
 from openrange.core.admit import Snapshot
-from openrange.core.contracts import TaskSpec
+from openrange.core.pack import TaskSpec
 from openrange.dashboard.events import (
     DashboardEvent,
     EventBridge,

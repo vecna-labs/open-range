@@ -60,7 +60,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from openrange.core.contracts import PackPrior, TaskSeed
+from openrange.core.pack import PackPrior, TaskSeed
 from openrange.world_ir import (
     NodeKind,
     Ontology,

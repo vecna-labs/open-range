@@ -35,7 +35,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from openrange.core.contracts import (
+from openrange.core.pack import (
     FeasibilityVerdict,
     Pack,
     PackPrior,

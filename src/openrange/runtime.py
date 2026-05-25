@@ -19,15 +19,13 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from openrange.agent_backend import AgentBackend
-from openrange.core._registry import iter_entry_points
 from openrange.core.admit import AdmissionFailure, Snapshot, admit
-from openrange.core.contracts import Pack
 from openrange.core.episode import EpisodeService
-from openrange.core.errors import EpisodeRuntimeError, PackError
-from openrange.core.pack import PACK_ENTRY_POINT_GROUP, PACKS
+from openrange.core.errors import EpisodeRuntimeError
+from openrange.core.pack import PACKS, Pack
 from openrange.dashboard import (
     DashboardArtifactLog,
     DashboardHTTPServer,
@@ -205,7 +203,10 @@ def _resolve_pack(manifest: Mapping[str, Any]) -> Pack:
         raise EpisodeRuntimeError(
             "manifest must declare a pack via 'pack.id' or 'pack' (string)",
         )
-    return _resolve_pack_by_id(pack_id)
+    try:
+        return PACKS.resolve(pack_id)
+    except Exception as exc:
+        raise EpisodeRuntimeError(f"unknown pack {pack_id!r}") from exc
 
 
 def _resolve_pack_from_snapshot(snapshot: Snapshot) -> Pack:
@@ -215,34 +216,7 @@ def _resolve_pack_from_snapshot(snapshot: Snapshot) -> Pack:
         raise EpisodeRuntimeError(
             f"snapshot {snapshot.snapshot_id!r} lineage missing 'pack' id",
         )
-    return _resolve_pack_by_id(pack_id)
-
-
-def _resolve_pack_by_id(pack_id: str) -> Pack:
-    """Resolve a registered pack by id, falling back to entry-point load.
-
-    Goes through :data:`PACKS` first because that's the canonical
-    registry. The legacy ``PackRegistry.resolve`` rejects new-shape
-    Pack instances on its ``isinstance(pack, core.pack.Pack)`` check,
-    though, which is a known parallel-paths inconsistency Phase 4
-    cleans up. As a fallback we walk
-    :data:`PACK_ENTRY_POINT_GROUP` directly and instantiate the
-    registered factory ourselves — packs ship via the same entry
-    point either way, so this stays a single-source-of-truth lookup.
-    """
     try:
-        return cast(Pack, PACKS.resolve(pack_id))
-    except PackError:
-        pass
+        return PACKS.resolve(pack_id)
     except Exception as exc:
         raise EpisodeRuntimeError(f"unknown pack {pack_id!r}") from exc
-    for name, value in iter_entry_points(
-        PACK_ENTRY_POINT_GROUP,
-        error_cls=PackError,
-        kind="pack",
-    ):
-        if name != pack_id:
-            continue
-        pack = value() if callable(value) else value
-        return cast(Pack, pack)
-    raise EpisodeRuntimeError(f"unknown pack {pack_id!r}")

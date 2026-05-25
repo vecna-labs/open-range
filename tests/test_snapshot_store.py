@@ -34,7 +34,8 @@ from openrange.core.admit import (
     admit,
     snapshot_to_dict,
 )
-from openrange.core.contracts import (
+from openrange.core.errors import StoreError
+from openrange.core.pack import (
     Backing,
     Builder,
     BuildResult,
@@ -47,7 +48,6 @@ from openrange.core.contracts import (
     TaskFamily,
     TaskSpec,
 )
-from openrange.core.errors import StoreError
 from openrange.core.store import SnapshotStore, snapshot_from_dict
 from openrange.world_ir import (
     AttrSpec,
