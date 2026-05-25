@@ -46,7 +46,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from cyber_webapp.builder import WebappBuilder
 from cyber_webapp.families import WebappBuild, WebappPentest
@@ -66,9 +65,6 @@ from openrange.core.pack import (
     TaskFamily,
 )
 from openrange.world_ir import Issue, Ontology, WorldGraph
-
-if TYPE_CHECKING:
-    pass
 
 
 class WebappPack(Pack):
