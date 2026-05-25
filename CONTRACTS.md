@@ -60,7 +60,7 @@ in the same graph.
 
 ```json
 {
-  "ontology": "webapp@0.3.0",
+  "ontology": "webapp@0.1.0",
   "nodes": [ ...Node... ],
   "edges": [ ...Edge... ],
   "meta": { "...": "manifest ref, pack version, ..." }
@@ -80,7 +80,7 @@ A declared schema, also plain data.
 
 ```json
 {
-  "id": "webapp@0.3.0",
+  "id": "webapp@0.1.0",
   "node_kinds": {
     "service": { "parent": "component",
                  "attrs": { "port": { "type": "int", "required": true } } }
@@ -96,7 +96,7 @@ A declared schema, also plain data.
 `required`, `enum`, `ref_kinds`, `default`, `description`.
 
 OpenRange ships one ontology as built-in data: `bbg@0.1.0` (returned by
-`openrange.ontologies.bbg.wayfinder_ontology()`). Any harness recording
+`openrange.ontologies.bbg.bbg_ontology()`). Any harness recording
 agent memory in the BBG shape declares this id; OpenRange's `distill()`
 recognises it.
 
@@ -141,11 +141,11 @@ Carries only generic graph statistics — never pack-specific config keys.
 ```json
 {
   "snapshot_id": "sha256:...",
-  "ontology_id": "webapp@0.3.0",
+  "ontology_id": "webapp@0.1.0",
   "graph": { ...WorldGraph... },
   "tasks": [ ...TaskSpec... ],
   "lineage": { "manifest": {...}, "pack": "webapp",
-               "pack_version": "0.3.0", "attempts": 1 },
+               "pack_version": "0.1.0", "attempts": 1 },
   "history": [
     { "seq": 0, "phase": "build",
       "detail": "builder produced 10 nodes, 2 tasks",
@@ -214,8 +214,8 @@ into a `WorldGraph` (already covered by §1) plus an optional
 trajectory.
 
 This is the only wire format OpenRange *consumes* from another system.
-It is OpenRange's contract — not vecna's, not anyone else's — so anyone
-emitting it can drive distillation.
+The shape lives in this document, not in any specific harness, so any
+harness emitting it can drive distillation.
 
 ```json
 {

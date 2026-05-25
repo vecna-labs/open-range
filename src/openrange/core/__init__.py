@@ -25,11 +25,8 @@ from openrange.core.distill import (
     distill,
 )
 from openrange.core.errors import (
-    AdmissionError,
-    ManifestError,
     OpenRangeError,
     PackError,
-    StoreError,
 )
 from openrange.core.pack import (
     Backing,
@@ -73,9 +70,6 @@ __all__ = [
     "TaskSeed",
     "TaskSpec",
     # errors
-    "AdmissionError",
-    "ManifestError",
     "OpenRangeError",
     "PackError",
-    "StoreError",
 ]

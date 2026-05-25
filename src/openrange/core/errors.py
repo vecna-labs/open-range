@@ -1,23 +1,22 @@
-"""OpenRange core errors."""
+"""OpenRange core errors.
+
+Minimum surface for the v0.1.0 foundation. Subclasses come back when the
+runtime layer re-introduces the code paths that raise them — only one
+subclass (`PackError`) is needed today, signalling pack-contract bugs
+that admission can't recover from.
+"""
 
 from __future__ import annotations
 
 
 class OpenRangeError(Exception):
-    """Base OpenRange error."""
-
-
-class ManifestError(OpenRangeError):
-    """Raised when a manifest is invalid."""
+    """Base for every error OpenRange raises."""
 
 
 class PackError(OpenRangeError):
-    """Raised when a pack cannot build an admissible world."""
+    """Raised when a pack violates the Pack/Builder/TaskFamily contract.
 
-
-class AdmissionError(OpenRangeError):
-    """Raised when generated world artifacts fail admission."""
-
-
-class StoreError(OpenRangeError):
-    """Raised when snapshots cannot be loaded from storage."""
+    Distinct from `AdmissionFailure` (which is a returned VALUE describing
+    a candidate world that didn't admit): a `PackError` is a programming
+    bug in the pack, not a recoverable admission failure.
+    """

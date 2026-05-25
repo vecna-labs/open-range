@@ -6,12 +6,14 @@ its context window. The ontology defined here is the *declarative schema*
 for that shape — two node kinds, four edge kinds, the attribute slots and
 their enums. It is plain data; no runtime, no perception, no NavPack.
 
-The runtime that *uses* this ontology — the Wayfinder, with its three-tier
-perception model, status-event log, NavPack proposer, and SDK adapters —
-lives in `vecna/wayfinder`. That runtime vendors this module from OpenRange
-so neither repo imports the other. The wire format (the `bbg@0.1.0` id and
-the JSON shape declared in `CONTRACTS.md`) is the contract; this Python
-module is its reference value.
+The runtime that *uses* this ontology — maintaining the graph as the
+agent explores, recording the agent's belief changes, surfacing knowledge
+back into the agent's context — lives outside OpenRange in whatever
+agent-memory harness the user chooses. An OpenRange consumer (a builder
+or a curriculum policy) only ever sees the JSON wire format declared in
+`CONTRACTS.md` §6, parsed back into a `WorldGraph` and an optional
+status-event log. This Python module is the reference value of that wire
+format; the contract is the JSON shape and the `bbg@0.1.0` id.
 
 Cognitive primitives, intentional minimum:
 
@@ -43,7 +45,7 @@ from openrange.world_ir import AttrSpec, AttrType, EdgeKind, NodeKind, Ontology
 BBG_ONTOLOGY_ID = "bbg@0.1.0"
 
 
-def wayfinder_ontology() -> Ontology:
+def bbg_ontology() -> Ontology:
     """Return the `bbg@0.1.0` ontology value.
 
     Returns a fresh `Ontology` each call so callers can mutate the result

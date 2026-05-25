@@ -1,9 +1,9 @@
 """distill(graph, status_log=None) -> PackPrior — the BBG → Builder seam.
 
-This is the one function that turns observed agent experience into a
-generation prior. It operates on a `WorldGraph` plus an optional
-status-event log (the BBG's transaction-time changelog) and emits a
-`PackPrior` carrying only GENERIC graph statistics. The builder INTERPRETS
+The one function that turns observed agent experience into a generation
+prior. It operates on a BBG-shaped `WorldGraph` (any harness emitting the
+wire format declared in `CONTRACTS.md` §6 can drive this) and emits a
+`PackPrior` carrying only GENERIC graph statistics. A builder INTERPRETS
 those statistics into domain decisions — never the other way around.
 
 OpenRange owns `distill` because:
@@ -12,43 +12,45 @@ OpenRange owns `distill` because:
 - It produces a `PackPrior` (an OpenRange consumer concept).
 - Putting it anywhere else would invert one of those dependency arrows.
 
-The seam is deliberately wide — JSON in, JSON out, with optional Python
-typed shapes for in-process callers. Any agent harness that emits the BBG
-state dump shape declared in `CONTRACTS.md` can drive the flywheel; the
-harness does not need to depend on OpenRange in code.
+What v1 extracts:
 
-Four extractions, mapping the thing/thought seam onto OpenRange:
+  topology     `node_kind_freq`     — count of things per `kind_hint`
+               `salient_kind_freq`  — same restricted to status=salient
+               `dead_end_ratio`     — fraction of traversed edges marked
+                                      `outcome=dead_end`
+               `hidden_signal`      — per-`kind_hint` count of anchors of
+                                      confirmed thoughts; signals where
+                                      a builder should place hidden state
 
-  things   -> ontology induction + topology prior
-              `kind_hint` clusters become world node kinds. Topology
-              comes from `part_of` containment edges (reliable observed
-              structure) and from *classified* multi-anchor `thought`
-              nodes whose claim is structural. `traversed` edges are the
-              AGENT'S PATH, not the world's shape — they contribute only
-              difficulty and coverage signal, NEVER edge endpoints.
+  task_seeds   one per thought-cluster (union-find over shared anchors
+               and `revises` chains). Each seed carries `anchor_kinds`
+               (kinds of things the cluster anchored on),
+               `suggested_goal_kinds` (kinds at the sinks of productive
+               paths), and a `difficulty` raised by refuted thoughts and
+               dead-end traversals in the source graph
 
-  thoughts -> world nodes + task seeds + difficulty
-              thoughts are not uniform. distill classifies them:
-                * structural (multi-anchor) -> candidate world edges
-                * evaluative (a property of one thing) -> a HIDDEN world
-                  node promoted onto that thing (e.g. a vuln node)
-                * objective -> a task goal + GOAL role on its anchor
-              clusters of `refuted` thoughts and dense `open` regions mark
-              where the world is non-obvious; trajectory length and
-              backtracking around a cluster set its difficulty.
+  coverage     explored ratio per `kind_hint`; thin regions tell the
+               builder where to extrapolate rather than replay
 
-  coverage -> per-region observation density, so the builder knows where
-              to *extrapolate* rather than replay — avoiding the
-              survivorship bias of training on the shape of past success.
+  induced      with `into=None`, a proposed `Ontology` carrying just the
+   ontology    observed `kind_hint`s as node kinds (no edge induction in
+               v1 — pure-bootstrap callers should pass `into=<existing
+               pack ontology>` for the working refinement path)
 
-  goal     -> kinds of things at the END of productive paths become
-              candidate goal kinds. Generic heuristic, no domain knowledge.
+What v1 does NOT yet do (tracked in ROADMAP.md):
+
+- Multi-trajectory `distill` (merging evidence across many graphs).
+- Edge induction in the `into=None` path.
+- Status-log mining ("the agent believed X for N steps before
+  discovering not-X"). The `status_log` parameter is accepted but
+  currently unused — distill reads only each node's latest `status`
+  attribute. The parameter is kept in the signature so the wire format
+  stays stable; the contract widens, not narrows, when v2 starts
+  consuming the log.
 
 Everything `distill` produces is GENERIC GRAPH STATISTICS — node-kind
-frequencies, a dead-end ratio, a confirmed-thought density per thing-kind.
-It never emits pack-specific config keys. If `distill` emitted
-`{"decoy_endpoints": 2}` it would have to know the cyber builder wants
-that key.
+frequencies, a dead-end ratio, a confirmed-thought density per
+thing-kind. It never emits a pack-specific config key.
 """
 
 from __future__ import annotations
@@ -73,10 +75,9 @@ from openrange.world_ir import (
 class StatusEvent:
     """One entry in a BBG's status-event log.
 
-    OpenRange does NOT maintain status logs (the BBG runtime — vecna's
-    Wayfinder — owns that). But OpenRange consumes them, so this is the
-    Python shape `distill()` expects when a status log accompanies a graph
-    dump. The wire format is declared in `CONTRACTS.md`.
+    OpenRange does not maintain status logs — that is the harness's job.
+    OpenRange consumes them via `distill()`, so this is the Python shape
+    of the wire format declared in `CONTRACTS.md` §6.
     """
 
     node_id: str
@@ -95,22 +96,24 @@ def distill(
     status_log: Sequence[StatusEvent] | None = None,
     into: Ontology | None = None,
 ) -> PackPrior:
-    """Turn an accreted graph into an optional generation prior.
+    """Turn an accreted BBG-shaped graph into a `PackPrior`.
 
-    `graph` is the BBG state being distilled. `status_log` is the optional
-    transaction-time changelog (used to mine "agents believed X for N steps
-    before discovering not-X" signals); when omitted, distill falls back to
-    the node attrs' current `status` only.
+    `graph` is the BBG state being distilled — a `WorldGraph` conforming
+    to the `bbg@0.1.0` ontology (`openrange.ontologies.bbg`).
+
+    `status_log` is the optional transaction-time changelog. **Currently
+    unused** in the v1 stats (distill reads only each node's latest
+    `status` attr); the parameter is reserved for a future signal —
+    "agents believed X for N steps before discovering not-X" — without
+    breaking the wire format. See module docstring.
 
     `into` is the target world ontology:
-      * given -> the prior is refined to conform to an existing pack.
-      * None  -> the prior carries a *proposed* induced ontology that a
-                 human or scaffolding step turns into a new pack.
-
-    Note: with `into=None`, the induced ontology has node kinds but NO
-    edge kinds — edge induction from observed pairs is not done here. So
-    `into=None` (the pack-PROPOSAL flow) yields an un-buildable ontology
-    by itself; the working bootstrap path is `into=<existing ontology>`.
+      * given → the prior is refined to conform to an existing pack.
+      * None  → the prior carries a *proposed* induced ontology built
+                from observed `kind_hint`s. v1 induces node kinds only,
+                no edge kinds, so `into=None` is not yet a buildable
+                bootstrap path on its own; the working path is
+                `into=<existing pack ontology>`.
     """
     things = [n for n in graph.nodes.values() if n.kind == "thing"]
     thoughts = [n for n in graph.nodes.values() if n.kind == "thought"]

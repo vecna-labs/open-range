@@ -250,19 +250,22 @@ property of the dependency graph.
 
 OpenRange (this repo, open-source) **owns**: the graph meta-model
 (`world_ir.py`), the `bbg@0.1.0` ontology data (`ontologies/bbg.py`),
-pack/builder/family contracts (`core/pack.py`), admission (`core/admit.py`),
-the distill seam (`core/distill.py`), the snapshot/episode lifecycle,
-observability, and ships built-in packs.
+pack/builder/family contracts (`core/pack.py`), admission
+(`core/admit.py`), the distill seam (`core/distill.py`), and ships
+built-in packs. The episode lifecycle / observability layers were
+removed in this refactor and are tracked for re-wiring in
+[ROADMAP.md](ROADMAP.md).
 
 OpenRange **does not own**: the agent, the model, the tool harness, the
-training algorithm, reward shaping, the wayfinder runtime, persistent
-BBG storage, agent-SDK adapters.
+training algorithm, reward shaping, the BBG runtime that maintains the
+agent's spatial memory, persistent BBG storage, agent-SDK adapters.
 
-A BBG-producing harness (e.g. vecna's wayfinder) is **harness-side**. It
-depends on `openrange.world_ir` and `openrange.ontologies.bbg` *only* if
-it wants to share Python types; otherwise it implements those shapes
-itself and communicates with OpenRange purely through the JSON wire
-formats in `CONTRACTS.md`.
+A BBG-producing harness is **harness-side**. It either **vendors** a
+copy of `world_ir.py` and `ontologies/bbg.py` from OpenRange and keeps
+its own implementations of the meta-model and the BBG ontology, or
+implements those shapes from scratch against the JSON wire format in
+`CONTRACTS.md` §1, §6. Either way, the harness does not import
+OpenRange; the two sides meet only at the JSON wire format.
 
 ### 5.1 Time: where it lives, and where it does not
 

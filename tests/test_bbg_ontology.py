@@ -14,7 +14,7 @@ The ontology is a value, not a runtime — these tests check:
 
 from __future__ import annotations
 
-from openrange.ontologies.bbg import BBG_ONTOLOGY_ID, wayfinder_ontology
+from openrange.ontologies.bbg import BBG_ONTOLOGY_ID, bbg_ontology
 from openrange.world_ir import (
     AttrType,
     Edge,
@@ -32,12 +32,12 @@ def test_ontology_id_is_bbg_0_1_0() -> None:
     """The id is a wire-format version handle; changing it is a deliberate
     breaking change that consumers must explicitly notice."""
     assert BBG_ONTOLOGY_ID == "bbg@0.1.0"
-    assert wayfinder_ontology().id == "bbg@0.1.0"
+    assert bbg_ontology().id == "bbg@0.1.0"
 
 
 def test_ontology_returns_a_fresh_instance() -> None:
-    a = wayfinder_ontology()
-    b = wayfinder_ontology()
+    a = bbg_ontology()
+    b = bbg_ontology()
     # not the same object — mutating one must not leak to the other
     assert a is not b
     a.node_kinds["thing"].attrs.pop("label", None)
@@ -45,12 +45,12 @@ def test_ontology_returns_a_fresh_instance() -> None:
 
 
 def test_node_kinds_thing_and_thought_only() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     assert set(onto.node_kinds) == {"thing", "thought"}
 
 
 def test_edge_kinds_are_the_four() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     assert set(onto.edge_kinds) == {
         "traversed",
         "part_of",
@@ -65,22 +65,22 @@ def test_edge_kinds_are_the_four() -> None:
 
 
 def test_traversed_endpoints_are_thing_to_thing() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     assert onto.edge_kinds["traversed"].endpoints == [("thing", "thing")]
 
 
 def test_part_of_endpoints_are_thing_to_thing() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     assert onto.edge_kinds["part_of"].endpoints == [("thing", "thing")]
 
 
 def test_anchored_to_endpoints_are_thought_to_thing() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     assert onto.edge_kinds["anchored_to"].endpoints == [("thought", "thing")]
 
 
 def test_revises_endpoints_are_thought_to_thought() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     assert onto.edge_kinds["revises"].endpoints == [("thought", "thought")]
 
 
@@ -90,7 +90,7 @@ def test_revises_endpoints_are_thought_to_thought() -> None:
 
 
 def test_thing_required_attrs() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     thing = onto.node_kinds["thing"]
     assert thing.attrs["label"].required
     assert thing.attrs["status"].required
@@ -98,7 +98,7 @@ def test_thing_required_attrs() -> None:
 
 
 def test_thought_required_attrs() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     thought = onto.node_kinds["thought"]
     assert thought.attrs["claim"].required
     assert thought.attrs["status"].required
@@ -106,26 +106,26 @@ def test_thought_required_attrs() -> None:
 
 
 def test_provenance_enum_is_three_values() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     prov = onto.node_kinds["thing"].attrs["provenance"]
     assert prov.type is AttrType.ENUM
     assert sorted(prov.enum or []) == sorted(["trajectory", "referenced", "inferred"])
 
 
 def test_thing_status_enum() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     status = onto.node_kinds["thing"].attrs["status"]
     assert sorted(status.enum or []) == sorted(["incidental", "salient"])
 
 
 def test_thought_status_enum() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     status = onto.node_kinds["thought"].attrs["status"]
     assert sorted(status.enum or []) == sorted(["open", "confirmed", "refuted"])
 
 
 def test_traversed_outcome_enum() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     outcome = onto.edge_kinds["traversed"].attrs["outcome"]
     assert sorted(outcome.enum or []) == sorted(["productive", "dead_end", "neutral"])
 
@@ -210,14 +210,14 @@ def _tiny_bbg() -> WorldGraph:
 
 
 def test_tiny_bbg_passes_validation() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     issues = validate(_tiny_bbg(), onto)
     errors = [i for i in issues if i.severity == "error"]
     assert errors == [], "valid BBG should have no errors; got: " + repr(errors)
 
 
 def test_invalid_outcome_value_is_rejected() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     g = _tiny_bbg()
     g.edges["e.a-b"].attrs["outcome"] = "weird"
     issues = validate(g, onto)
@@ -225,7 +225,7 @@ def test_invalid_outcome_value_is_rejected() -> None:
 
 
 def test_anchored_to_must_be_thought_to_thing() -> None:
-    onto = wayfinder_ontology()
+    onto = bbg_ontology()
     g = _tiny_bbg()
     # anchor a thought-to-thought via anchored_to — endpoints disallow it
     g.add_edge(Edge("e.bad", "anchored_to", "thought.0", "thought.1"))

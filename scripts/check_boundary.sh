@@ -55,24 +55,25 @@ DOMAIN_TOKENS=(
   # other plausible domains
   '\btrading\b'
   '\bpendulum\b'
-  '\bcluster\b'
   '\bnamespace\b'
 )
 
-# Allowed tokens — terms that look domain-shaped but are actually
-# generic / cognitive / algorithmic / graph-theory vocabulary used in core.
+# Allowed tokens — terms that look domain-shaped but are actually generic
+# cognitive / graph-theory vocabulary used in core. Two reasons a word
+# lands here:
 #
-# - thing, thought, traversed, etc.  : BBG ontology vocabulary (cognitive
-#                                       primitives, not a domain).
-# - cluster                          : union-find cluster in distill, NOT a
-#                                       k8s cluster — purely algorithmic.
-# - endpoint                         : OVERLOADED. In core, `endpoint(s)` is
-#                                       a graph-theory term (edge endpoints:
-#                                       `EdgeKind.endpoints: list[(src,dst)]`).
-#                                       The cyber pack happens to use the
-#                                       same word for HTTP endpoints, but
-#                                       that's domain context not the core's.
-ALLOWED_TOKENS_RE='(thing|thought|traversed|anchored_to|revises|part_of|cluster|endpoint)'
+# - thing, thought, traversed, anchored_to, revises, part_of
+#     The BBG ontology vocabulary. These are cognitive primitives shipped
+#     as built-in data in `openrange.ontologies.bbg`; they are not a
+#     "domain" and so appearing in core (especially in distill, which
+#     operates on the BBG shape by design) is correct.
+#
+# - endpoint
+#     OVERLOADED. In core, `endpoint(s)` is a graph-theory term — see
+#     `EdgeKind.endpoints: list[(src_kind, dst_kind)]`. The cyber pack
+#     uses the same word for HTTP endpoints; that's domain context, not
+#     core's.
+ALLOWED_TOKENS_RE='\b(thing|thought|traversed|anchored_to|revises|part_of|endpoint)\b'
 
 leaks_found=0
 for token in "${DOMAIN_TOKENS[@]}"; do

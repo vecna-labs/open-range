@@ -19,7 +19,7 @@ fixtures here build one inline.
 from __future__ import annotations
 
 from openrange.core.distill import StatusEvent, distill
-from openrange.ontologies.bbg import BBG_ONTOLOGY_ID, wayfinder_ontology
+from openrange.ontologies.bbg import BBG_ONTOLOGY_ID, bbg_ontology
 from openrange.world_ir import Edge, Node, Ontology, WorldGraph
 
 # ---------------------------------------------------------------------------
@@ -159,24 +159,24 @@ def _small_bbg() -> WorldGraph:
 
 
 def test_topology_counts_node_kind_freq_by_kind_hint() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     assert p.topology["node_kind_freq"] == {"endpoint": 2, "db": 1, "cred": 1}
 
 
 def test_topology_salient_kind_freq_only_counts_salient_things() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     # thing.dash (salient) + thing.cred (salient)
     assert p.topology["salient_kind_freq"] == {"endpoint": 1, "cred": 1}
 
 
 def test_topology_dead_end_ratio() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     # 1 dead_end out of 3 traversals
     assert p.topology["dead_end_ratio"] == round(1 / 3, 3)
 
 
 def test_topology_hidden_signal_counts_confirmed_thought_anchors() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     # thought.2 (confirmed) anchored to thing.cred (kind_hint=cred)
     assert p.topology["hidden_signal"] == {"cred": 1}
 
@@ -184,7 +184,7 @@ def test_topology_hidden_signal_counts_confirmed_thought_anchors() -> None:
 def test_topology_dead_end_ratio_zero_when_no_traversals() -> None:
     g = _new_bbg()
     _add_thing(g, "thing.x", kind_hint="x")
-    p = distill(g, into=wayfinder_ontology())
+    p = distill(g, into=bbg_ontology())
     assert p.topology["dead_end_ratio"] == 0.0
 
 
@@ -195,14 +195,14 @@ def test_topology_dead_end_ratio_zero_when_no_traversals() -> None:
 
 def test_task_seed_clusters_revises_chain() -> None:
     """Two thoughts on the same anchor + a revises edge => one cluster."""
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     # thought.0 + thought.1 (refuted/open on thing.dash) cluster together;
     # thought.2 (confirmed on thing.cred) is its own cluster
     assert len(p.task_seeds) == 2
 
 
 def test_task_seed_anchor_kinds_collected() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     by_theme = {s.theme: s for s in p.task_seeds}
     # one cluster anchors on "endpoint" (thing.dash);
     # the other anchors on "cred" (thing.cred)
@@ -214,7 +214,7 @@ def test_task_seed_anchor_kinds_collected() -> None:
 
 
 def test_task_seed_difficulty_rises_with_refuted_count_and_dead_ends() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     # the refuted-thought cluster (containing thought.0, status=refuted)
     # should have higher difficulty than the all-confirmed cred cluster.
     seeds_by_kinds = {tuple(s.anchor_kinds): s.difficulty for s in p.task_seeds}
@@ -222,7 +222,7 @@ def test_task_seed_difficulty_rises_with_refuted_count_and_dead_ends() -> None:
 
 
 def test_task_seed_family_is_never_set_by_distill() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     # distill must never tag a seed with a family — that's a harness call
     for s in p.task_seeds:
         assert s.family is None
@@ -234,7 +234,7 @@ def test_task_seed_family_is_never_set_by_distill() -> None:
 
 
 def test_goal_kinds_collected_from_productive_path_sinks() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     # thing.cred is a productive-path sink (no out-edges)
     sinks = {kind for s in p.task_seeds for kind in s.suggested_goal_kinds}
     assert "cred" in sinks
@@ -250,7 +250,7 @@ def test_goal_kinds_collected_from_productive_path_sinks() -> None:
 
 
 def test_coverage_is_explored_density_per_kind() -> None:
-    p = distill(_small_bbg(), into=wayfinder_ontology())
+    p = distill(_small_bbg(), into=bbg_ontology())
     # all endpoints and the db are explored=True; thing.cred is explored=False
     assert p.coverage["endpoint"] == 1.0
     assert p.coverage["db"] == 1.0
@@ -283,7 +283,7 @@ def test_distill_into_existing_ontology_keeps_it() -> None:
 
 def test_source_string_carries_ontology_and_content_hash() -> None:
     g = _small_bbg()
-    p = distill(g, into=wayfinder_ontology())
+    p = distill(g, into=bbg_ontology())
     assert p.source.startswith(f"{BBG_ONTOLOGY_ID} :: sha256:")
     assert g.content_hash() in p.source
 
@@ -301,8 +301,8 @@ def test_status_log_argument_is_accepted_without_changing_stats() -> None:
         StatusEvent("thought.0", "open", 0, "formed"),
         StatusEvent("thought.0", "refuted", 2, "revised-by:thought.1"),
     ]
-    p_with_log = distill(g, status_log=log, into=wayfinder_ontology())
-    p_without = distill(g, into=wayfinder_ontology())
+    p_with_log = distill(g, status_log=log, into=bbg_ontology())
+    p_without = distill(g, into=bbg_ontology())
     # topology is derived from node attrs (the latest state); the log is a
     # forward-compat hook for richer extraction. Today's stats should match.
     assert p_with_log.topology == p_without.topology
@@ -316,7 +316,7 @@ def test_status_log_argument_is_accepted_without_changing_stats() -> None:
 
 def test_distill_on_empty_graph_is_valid() -> None:
     g = _new_bbg()
-    p = distill(g, into=wayfinder_ontology())
+    p = distill(g, into=bbg_ontology())
     assert p.topology["node_kind_freq"] == {}
     assert p.topology["dead_end_ratio"] == 0.0
     assert p.task_seeds == ()

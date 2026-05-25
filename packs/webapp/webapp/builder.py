@@ -30,9 +30,11 @@ from openrange import (
     Node,
     PackPrior,
     Role,
+    TaskSpec,
     Visibility,
     WorldGraph,
 )
+from webapp.families import WebappBuild, WebappPentest
 from webapp.ontology import ONTOLOGY_ID
 
 
@@ -150,17 +152,10 @@ class WebappBuilder(Builder):
         )
         g.add_edge(Edge("e.wk-ep", "affects", "wk.sqli", "ep.login"))
 
-        # --- tasks come from the families, not from the builder ---
-        # The builder produces the graph; the Pack stitches family-generated
-        # tasks against it in admit(). v1 builder.build leaves tasks=[]
-        # and admit's `_run_feasibility` reads pack.task_families() to
-        # generate per-family tasks at call time. See WebappPack.
-        # Actually: admit() does NOT call family.generate(); it only
-        # checks the tasks that BuildResult carried. So the Builder is
-        # the one that asks each family to contribute.
-        from webapp.families import WebappBuild, WebappPentest
-
-        tasks = []
+        # Builder asks each TaskFamily to contribute tasks against this
+        # graph; admit() only validates the result. The builder is the
+        # one place that knows to ask every family.
+        tasks: list[TaskSpec] = []
         tasks.extend(WebappBuild().generate(g, manifest, self._prior))
         tasks.extend(WebappPentest().generate(g, manifest, self._prior))
 

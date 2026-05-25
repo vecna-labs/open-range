@@ -73,7 +73,10 @@ manifest + Pack
      4. per-task feasibility (each TaskFamily.check_feasibility)
         ↓
    Snapshot  (content-addressed, frozen)
-        ↓
+
+   ┄┄┄┄┄┄┄┄┄ shipped above this line ┄┄┄┄┄┄┄┄┄
+   ┄┄┄┄┄┄┄┄┄ runtime layer below — v0.2 ┄┄┄┄┄┄
+
    run_episode  (agent acts; family.check_success scores)
         ↓
    EpisodeResult  (structured; not a scalar reward)

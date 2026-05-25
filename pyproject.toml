@@ -20,12 +20,12 @@ strands = [
     "strands-agents-tools>=0.4.1",
 ]
 
-[project.scripts]
-openrange = "openrange.__main__:main"
-
 # Built-in packs live in their own workspace members under packs/ — they
-# register themselves via openrange.packs / openrange.npcs entry points
+# register themselves via the openrange.packs entry-point group declared
 # in their own pyproject.toml. Core has none.
+#
+# A console script (`openrange = "openrange.__main__:main"`) returns when
+# the runtime CLI is re-wired against the new shape; see ROADMAP.md.
 
 [dependency-groups]
 dev = [
@@ -69,14 +69,6 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["openrange"]
-omit = [
-    # manifest.py is the runtime-layer manifest parser. It's intact but
-    # not wired to the new admission loop yet — the runtime side
-    # (episode service, dashboard) was removed during this refactor and
-    # will be re-built against the new shape; manifest.py comes back into
-    # the coverage set when that happens.
-    "src/openrange/core/manifest.py",
-]
 
 [tool.coverage.report]
 # Will climb back toward 100 as the runtime side gets re-wired against

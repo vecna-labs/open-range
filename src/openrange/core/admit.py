@@ -39,17 +39,18 @@ from typing import Any
 from openrange.core.pack import (
     FeasibilityVerdict,
     Pack,
+    PackPrior,
+    TaskFamily,
     TaskSpec,
 )
 from openrange.world_ir import (
+    Edge,
     Issue,
+    Node,
     Visibility,
     WorldGraph,
     validate,
 )
-
-PackPrior = "openrange.core.pack.PackPrior"  # used only in annotation
-
 
 # ---------------------------------------------------------------------------
 # frozen output
@@ -67,11 +68,12 @@ class BuildEvent:
     difficulty change) — which an in-graph log never could.
     """
 
-    seq: int  # 0, 1, 2, ... order of build events
-    phase: str  # "build" | "validate" | "feasibility"
-    #  | "repair" | "freeze" | "evolve"
-    detail: str  # human-readable what-happened
-    refs: tuple[str, ...] = ()  # node/edge/task ids this event touched
+    # phase is one of: "build", "validate", "feasibility", "repair",
+    # "freeze", "evolve".
+    seq: int
+    phase: str
+    detail: str
+    refs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -110,8 +112,8 @@ class Snapshot:
 class AdmissionFailure:
     """Returned when a candidate cannot be admitted within the repair budget.
 
-    Carries the structured failure detail so callers and dashboards can show
-    what went wrong without re-running validation.
+    Carries the structured failure detail so a caller can inspect what
+    went wrong without re-running validation.
     """
 
     issues: list[Issue]
@@ -181,7 +183,10 @@ def validate_task_bindings(graph: WorldGraph, tasks: list[TaskSpec]) -> list[Iss
 
 
 def admit(
-    pack: Pack, manifest: Mapping[str, Any], prior: Any = None, max_repairs: int = 2
+    pack: Pack,
+    manifest: Mapping[str, Any],
+    prior: PackPrior | None = None,
+    max_repairs: int = 2,
 ) -> Snapshot | AdmissionFailure:
     """Turn a manifest into a frozen Snapshot, or fail.
 
@@ -196,7 +201,7 @@ def admit(
     # PACK: the ontology VALUE.
     ontology = pack.ontology()
 
-    # PACK: construct a builder. `prior` is the optional BBG seam.
+    # PACK: construct a builder. `prior` is the optional PackPrior seam.
     builder = pack.make_builder(prior)
 
     # PACK: families that will be admitted.
@@ -293,7 +298,9 @@ def admit(
 
 
 def _run_feasibility(
-    families: Mapping[str, Any], graph: WorldGraph, tasks: list[TaskSpec]
+    families: Mapping[str, TaskFamily],
+    graph: WorldGraph,
+    tasks: list[TaskSpec],
 ) -> list[str]:
     """Dispatch each task to its TaskFamily's `check_feasibility`.
 
@@ -320,8 +327,9 @@ def _run_feasibility(
 def snapshot_to_dict(snap: Snapshot) -> dict[str, Any]:
     """JSON-ready projection of a Snapshot.
 
-    Matches the wire shape declared in `CONTRACTS.md` §5. Used by the
-    snapshot store and by the dashboard's read API.
+    Matches the wire shape declared in `CONTRACTS.md` §4. The natural
+    consumer is a snapshot store or any read API that needs to ship
+    snapshots over the wire.
     """
     return {
         "snapshot_id": snap.snapshot_id,
@@ -354,7 +362,7 @@ def snapshot_to_dict(snap: Snapshot) -> dict[str, Any]:
     }
 
 
-def _node_dict(n: Any) -> dict[str, Any]:
+def _node_dict(n: Node) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": n.id,
         "kind": n.kind,
@@ -367,7 +375,7 @@ def _node_dict(n: Any) -> dict[str, Any]:
     return out
 
 
-def _edge_dict(e: Any) -> dict[str, Any]:
+def _edge_dict(e: Edge) -> dict[str, Any]:
     out: dict[str, Any] = {"id": e.id, "kind": e.kind, "src": e.src, "dst": e.dst}
     if e.attrs:
         out["attrs"] = dict(sorted(e.attrs.items()))

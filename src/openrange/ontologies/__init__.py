@@ -18,6 +18,6 @@ enough as a cognitive primitive that pinning it once eliminates a class
 of mistakes.
 """
 
-from openrange.ontologies.bbg import BBG_ONTOLOGY_ID, wayfinder_ontology
+from openrange.ontologies.bbg import BBG_ONTOLOGY_ID, bbg_ontology
 
-__all__ = ["BBG_ONTOLOGY_ID", "wayfinder_ontology"]
+__all__ = ["BBG_ONTOLOGY_ID", "bbg_ontology"]

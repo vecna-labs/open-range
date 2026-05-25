@@ -5,9 +5,10 @@ layered admission loop, then runs agent episodes against admitted
 snapshots. Domain lives in Packs (one per world-family) and TaskFamilies
 (one per domain of tasks against that world).
 
-The seam to long-horizon agent memory (BBG / Wayfinder runtimes) is
-`distill()`: it consumes a graph + status-event log and produces a
-`PackPrior` that any builder can use to bias generation.
+The seam to long-horizon agent memory is `distill()`: it consumes a
+BBG-shaped graph (any harness emitting the wire format declared in
+`CONTRACTS.md` §6) and produces a `PackPrior` that any builder can use
+to bias generation.
 
 This module re-exports the most useful types. The full surface is in
 `openrange.core` and `openrange.world_ir`. The BBG ontology is in
@@ -15,7 +16,6 @@ This module re-exports the most useful types. The full surface is in
 """
 
 from openrange.core import (
-    AdmissionError,
     AdmissionFailure,
     Backing,
     Builder,
@@ -24,7 +24,6 @@ from openrange.core import (
     EpisodeResult,
     FeasibilityVerdict,
     Manifest,
-    ManifestError,
     Mutation,
     OpenRangeError,
     Pack,
@@ -33,7 +32,6 @@ from openrange.core import (
     RuntimeHandle,
     Snapshot,
     StatusEvent,
-    StoreError,
     TaskFamily,
     TaskSeed,
     TaskSpec,
@@ -42,7 +40,7 @@ from openrange.core import (
     snapshot_to_dict,
     validate_task_bindings,
 )
-from openrange.ontologies.bbg import BBG_ONTOLOGY_ID, wayfinder_ontology
+from openrange.ontologies.bbg import BBG_ONTOLOGY_ID, bbg_ontology
 from openrange.world_ir import (
     AttrSpec,
     AttrType,
@@ -78,7 +76,7 @@ __all__ = [
     "validate",
     # BBG ontology data
     "BBG_ONTOLOGY_ID",
-    "wayfinder_ontology",
+    "bbg_ontology",
     # pack protocols + wire shapes
     "Backing",
     "BuildResult",
@@ -104,9 +102,6 @@ __all__ = [
     "StatusEvent",
     "distill",
     # errors
-    "AdmissionError",
-    "ManifestError",
     "OpenRangeError",
     "PackError",
-    "StoreError",
 ]

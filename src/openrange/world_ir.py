@@ -9,11 +9,11 @@ specific domain, nor any specific cognitive ontology. A graph's domain
 meaning lives entirely in its `Ontology`, declared as data; one generic
 validator checks any graph against any ontology.
 
-OpenRange is the canonical home for this meta-model. Other consumers — most
-notably vecna's wayfinder runtime — vendor a copy of this file rather than
-import from OpenRange directly, so neither repo imports the other. The wire
-format (see CONTRACTS.md) is the contract; this code is its reference
-implementation.
+OpenRange is the canonical home for this meta-model. An agent-memory
+harness that wants to share these Python types should vendor a copy of
+this file rather than depend on OpenRange directly, so neither side
+imports the other. The JSON wire format (see CONTRACTS.md §1) is the
+contract; this code is its reference implementation.
 
 See `CONTRACTS.md` for the JSON wire formats this module implements, and
 `DESIGN.md` for *why* the meta-model is split from the ontology.
@@ -128,11 +128,16 @@ class EdgeKind:
 
 @dataclass
 class Ontology:
-    """A declared schema for one graph: node kinds, edge kinds, constraints.
+    """A declared schema for one graph: node kinds and edge kinds.
 
-    The schema is itself plain data so a single generic validator can check any
-    graph against any ontology. Nothing hard-codes what a `service` or a
-    `thought` means.
+    The schema is itself plain data so a single generic validator can check
+    any graph against any ontology. Nothing hard-codes the meaning of a
+    specific kind.
+
+    Graph-wide invariants beyond the declared node/edge shape live on the
+    Pack (`Pack.invariants()`), not on the Ontology — they are functions,
+    not data, and they depend on pack-specific reasoning that an Ontology
+    deliberately cannot express.
     """
 
     id: str
@@ -309,12 +314,12 @@ def apply_patch(graph: WorldGraph, patch: GraphPatch) -> WorldGraph:
     """Apply a `GraphPatch` to `graph` IN PLACE and return it.
 
     Mutates in place because a `WorldGraph` is already mutable and copying
-    would be wasted work for the common builder-repair / wayfinder-update use
-    case. The return value is the same object — returned only so callers can
-    chain. Order: removals, then updates, then additions, so an update that
-    happens to share an id with a removal in the same patch keeps the new
-    value and an addition cannot collide with something the patch itself just
-    removed.
+    would be wasted work for the common builder-repair / accreting-memory
+    update use case. The return value is the same object — returned only so
+    callers can chain. Order: removals, then updates, then additions, so an
+    update that happens to share an id with a removal in the same patch keeps
+    the new value and an addition cannot collide with something the patch
+    itself just removed.
     """
     for nid in patch.nodes_removed:
         graph.nodes.pop(nid, None)

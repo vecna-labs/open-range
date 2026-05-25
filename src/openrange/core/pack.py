@@ -190,14 +190,17 @@ class EpisodeResult:
 class Mutation:
     """One curriculum move proposed by a TaskFamily.
 
-    Carries a GraphPatch (not a dict directive — the patch is the universal
-    diff type), a direction tag (harden / soften / diversify), a relevance
-    score (0..1) reflecting how well the move responds to recent episode
-    reports, the family that proposed it, and an optional note.
+    Carries a `GraphPatch` (the universal diff type), a direction tag
+    (`harden` / `soften` / `diversify`), a relevance score (0..1)
+    reflecting how well the move responds to recent episode reports,
+    the family that proposed it, and an optional note.
 
-    Core's curriculum policy picks a direction from aggregate pass-rate,
-    scores candidate mutations against it, and applies the winning patch
-    via `Builder.evolve(snapshot, mutation)`.
+    A future curriculum policy in the runtime layer will pick a
+    direction from aggregate pass-rate, score candidate `Mutation`s
+    against it, and apply the winning patch via
+    `Builder.evolve(snapshot, mutation)`. Today's foundation ships the
+    type and the `evolve()` contract; the policy lands when the runtime
+    layer is re-wired.
     """
 
     patch: GraphPatch
@@ -325,6 +328,12 @@ class TaskFamily(ABC):
         Default returns `()` — families without curriculum support opt out
         cleanly. `llm` is offered so a family can re-score relevance with
         a semantic pass; families that don't use LLMs ignore it.
+
+        `reports` and `llm` are typed as `Sequence[Any]` / `Any | None`
+        on purpose: the concrete `EpisodeReport` and `LLMBackend` types
+        live in the runtime layer which is currently being re-wired
+        against this shape. When that layer lands, the annotation
+        narrows to those concrete types without changing this signature.
         """
         del snapshot, reports, llm
         return ()
@@ -383,9 +392,9 @@ class Pack(ABC):
       - a `realize()` that turns an admitted graph into a `RuntimeHandle`
       - one or more `TaskFamily` classes
 
-    Core depends on this Protocol; it never imports a concrete pack. A
-    pack registers via the `openrange.packs` entry point group (see
-    `openrange.core.registry`).
+    Core depends on this Protocol; it never imports a concrete pack.
+    Packs ship as their own Python packages and register via the
+    `openrange.packs` entry point group declared in their `pyproject.toml`.
     """
 
     id: str = ""  # e.g. "webapp"
