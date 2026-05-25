@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import subprocess
-import sys
 import textwrap
 import threading
 import time
@@ -15,15 +13,10 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
+from cyber_webapp import WebappPack
 
 import openrange as OR
-from openrange.core.runtime_helpers import (
-    read_base_url,
-    read_requests,
-    read_result,
-    start_runtime_process,
-    stop_process,
-)
+from openrange.core.admit_loop import Snapshot, admit
 from openrange.dashboard import (
     DashboardArtifactLog,
     DashboardEvent,
@@ -37,10 +30,29 @@ from openrange.dashboard import (
 )
 from openrange.llm import LLMBackendError, parse_json_object, run_codex
 
+# Manifest shape under the new pack/admission contract: the pack id is
+# the entry-point name registered in packs/cyber_webapp/pyproject.toml
+# (``"webapp"``). A ``world`` block is optional — packs that don't
+# pre-bake topology under that key (the webapp pack doesn't) leave it
+# blank; the dashboard topology view falls back to the world graph for
+# its services / edges / zones projection.
 MANIFEST = {
     "world": {"goal": "find the admin flag", "title": "Ops Portal"},
-    "pack": {"id": "cyber.webapp"},
+    "pack": {"id": "webapp"},
+    "seed": 0,
 }
+
+
+def _admit(manifest: dict[str, object] | None = None) -> Snapshot:
+    """Admit the webapp pack against ``manifest``, asserting success.
+
+    Centralizes the cast-or-fail pattern so individual tests don't
+    branch on ``AdmissionFailure``; admission against the real
+    ``WebappPack`` with ``seed=0`` is expected to succeed.
+    """
+    result = admit(WebappPack(), manifest if manifest is not None else MANIFEST)
+    assert isinstance(result, Snapshot), result
+    return result
 
 
 class LineReader(Protocol):
@@ -276,20 +288,37 @@ def test_run_codex_reports_os_errors_and_timeouts(tmp_path: Path) -> None:
 
 
 def test_dashboard_http_server_can_start_without_snapshot() -> None:
+    """Empty dashboard view exposes the new-shape topology / lineage.
+
+    The pre-refactor topology had ``artifact_paths`` (per-artifact
+    files admitted alongside the snapshot); the new admission shape
+    doesn't materialize artifacts at admit time so the key is gone.
+    The pre-refactor lineage had ``admission`` and ``nodes`` (a parent
+    chain of LineageNode); the new shape replaces those with
+    ``lineage`` (the flat provenance mapping ``admit()`` builds) plus
+    ``history`` (the ordered ``BuildEvent`` tuple) and a forward-compat
+    ``parent_snapshot_id`` hook.
+    """
     view = DashboardView()
 
-    assert view.topology() == {
+    empty_topology = {
         "snapshot_id": None,
         "world": {},
         "tasks": [],
-        "artifact_paths": [],
         "services": [],
         "edges": [],
         "zones": [],
         "users": [],
         "green_personas": [],
     }
-    assert view.lineage() == {"snapshot_id": None, "admission": None, "nodes": []}
+    empty_lineage = {
+        "snapshot_id": None,
+        "lineage": {},
+        "history": [],
+        "parent_snapshot_id": None,
+    }
+    assert view.topology() == empty_topology
+    assert view.lineage() == empty_lineage
     assert view.briefing() == {
         "snapshot_id": None,
         "title": "",
@@ -307,23 +336,13 @@ def test_dashboard_http_server_can_start_without_snapshot() -> None:
         inspection = read_http_json(base_url + "/api/inspect")
         reset = read_http_json(base_url + "/api/episode/reset", method="POST")
 
-        assert topology == {
-            "snapshot_id": None,
-            "world": {},
-            "tasks": [],
-            "artifact_paths": [],
-            "services": [],
-            "edges": [],
-            "zones": [],
-            "users": [],
-            "green_personas": [],
-        }
+        assert topology == empty_topology
         assert briefing["snapshot_id"] is None
         assert actors == []
         assert state["snapshot_id"] is None
         assert state["status"] == "waiting_for_snapshot"
         assert state["latest_event"] is None
-        assert lineage == {"snapshot_id": None, "admission": None, "nodes": []}
+        assert lineage == empty_lineage
         assert inspection["topology"] == topology
         assert reset == {
             "status": "waiting_for_snapshot",
@@ -335,7 +354,7 @@ def test_dashboard_http_server_can_start_without_snapshot() -> None:
 def test_dashboard_http_server_serves_static_assets_and_routes(
     tmp_path: Path,
 ) -> None:
-    snapshot = OR.build(MANIFEST)
+    snapshot = _admit()
     view = DashboardView(snapshot)
     view.record_event(
         "agent_step",
@@ -383,9 +402,14 @@ def test_dashboard_http_server_serves_static_assets_and_routes(
         assert "--bg-0" in css
         assert ".dash-callout" in css
         assert ".rail-tab" in css
-        assert briefing["snapshot_id"] == snapshot.id
-        assert topology["snapshot_id"] == snapshot.id
-        assert lineage["admission"] == snapshot.admission.as_dict()
+        assert briefing["snapshot_id"] == snapshot.snapshot_id
+        assert topology["snapshot_id"] == snapshot.snapshot_id
+        # The pre-refactor ``snapshot.admission`` attribute is replaced
+        # by ``snapshot.lineage`` (the flat provenance Mapping) plus
+        # ``snapshot.history`` (the ordered ``BuildEvent`` tuple); the
+        # dashboard surfaces both under their own keys.
+        assert lineage["lineage"] == dict(snapshot.lineage)
+        assert lineage["history"] == [event.to_dict() for event in snapshot.history]
         assert cast(list[dict[str, object]], state["events"])[0]["data"] == {
             "action": "browse",
         }
@@ -407,7 +431,7 @@ def test_dashboard_http_server_serves_static_assets_and_routes(
 def test_dashboard_http_server_streams_events_and_narration(
     tmp_path: Path,
 ) -> None:
-    snapshot = OR.build(MANIFEST)
+    snapshot = _admit()
     view = DashboardView(snapshot)
     first = view.record_event("agent_step", actor="red", target="webapp")
 
@@ -502,6 +526,15 @@ def test_dashboard_artifact_log_writes_builder_steps(tmp_path: Path) -> None:
 def test_dashboard_view_can_open_persisted_run_artifacts(
     tmp_path: Path,
 ) -> None:
+    """Persisted dashboard.json round-trips into a stored-state DashboardView.
+
+    Fixture uses the new wire shape: ``entrypoints`` is a list of
+    node-id strings (the pre-refactor ``Entrypoint(kind, target)``
+    object is gone), ``artifact_paths`` is no longer surfaced on the
+    topology view (admission stopped materializing per-artifact files),
+    and ``lineage`` carries a flat ``{lineage, history, parent_snapshot_id}``
+    set instead of the pre-refactor ``admission`` / ``nodes`` chain.
+    """
     event_log = tmp_path / "dashboard.events.jsonl"
     state_path = tmp_path / "dashboard.json"
     event_log.write_text(
@@ -533,10 +566,9 @@ def test_dashboard_view_can_open_persisted_run_artifacts(
                         {
                             "id": "task-1",
                             "instruction": "Inspect the saved run",
-                            "entrypoints": [{"kind": "http", "target": "webapp"}],
+                            "entrypoints": ["webapp"],
                         },
                     ],
-                    "artifact_paths": [],
                     "services": [
                         {"id": "webapp", "kind": "http", "zone": "episode"},
                     ],
@@ -547,8 +579,9 @@ def test_dashboard_view_can_open_persisted_run_artifacts(
                 },
                 "lineage": {
                     "snapshot_id": "saved",
-                    "admission": None,
-                    "nodes": [],
+                    "lineage": {},
+                    "history": [],
+                    "parent_snapshot_id": None,
                 },
             },
             sort_keys=True,
@@ -564,8 +597,11 @@ def test_dashboard_view_can_open_persisted_run_artifacts(
 
     assert view.topology()["snapshot_id"] == "saved"
     assert view.briefing()["title"] == "Saved Ops"
+    # Stored-state entrypoints can't resolve ``node_kind`` (no live
+    # graph) so the dashboard records it as an empty string — the
+    # ``stored_entrypoints`` helper handles the degradation.
     assert view.briefing()["entrypoints"] == [
-        {"task_id": "task-1", "kind": "http", "target": "webapp"},
+        {"task_id": "task-1", "node_id": "webapp", "node_kind": ""},
     ]
     assert view.lineage()["snapshot_id"] == "saved"
     assert view.state()["snapshot_id"] == "saved"
@@ -597,20 +633,31 @@ def test_dashboard_view_can_open_persisted_run_artifacts(
         ),
         encoding="utf-8",
     )
-    assert DashboardView(state_path=state_path, reset_artifacts=False).briefing() == {
-        "snapshot_id": "sparse",
-        "title": "Sparse",
-        "goal": "",
-        "entrypoints": [],
-        "missions": [
-            {"task_id": "task-2", "instruction": ""},
-            {"task_id": "task-3", "instruction": ""},
-        ],
-    }
+    # Malformed stored tasks still surface as missions (with empty
+    # instruction strings) but skip the non-string entrypoints — the
+    # new ``stored_task_entrypoints`` helper requires str ids, so
+    # ``["bad"]`` becomes a valid entrypoint while non-list / string
+    # ``entrypoints: "bad"`` is dropped.
+    sparse_briefing = DashboardView(
+        state_path=state_path,
+        reset_artifacts=False,
+    ).briefing()
+    assert sparse_briefing["snapshot_id"] == "sparse"
+    assert sparse_briefing["title"] == "Sparse"
+    assert sparse_briefing["goal"] == ""
+    assert sparse_briefing["missions"] == [
+        {"task_id": "task-2", "instruction": ""},
+        {"task_id": "task-3", "instruction": ""},
+    ]
+    # task-3's ``["bad"]`` is a valid list-of-strings entrypoint, so
+    # it surfaces; task-2's ``"bad"`` (not a list) does not.
+    assert sparse_briefing["entrypoints"] == [
+        {"task_id": "task-3", "node_id": "bad", "node_kind": ""},
+    ]
 
 
 def test_dashboard_records_actor_turns_from_env_actors(tmp_path: Path) -> None:
-    snapshot = OR.build(MANIFEST)
+    snapshot = _admit()
     view = DashboardView(snapshot)
     agent_turn = OR.ActorTurn(
         task_id="find_admin_flag",
@@ -700,10 +747,18 @@ def test_dashboard_records_actor_turns_from_env_actors(tmp_path: Path) -> None:
 
 
 def test_openrange_run_can_disable_dashboard_artifacts(tmp_path: Path) -> None:
+    """``dashboard=False`` keeps the run root free of dashboard artifacts.
+
+    The pre-refactor assertion that ``agent_root.parent.parent ==
+    run_root`` is no longer load-bearing: the new
+    ``WebappRuntimeHandle`` realizer owns its own scratch dir (under
+    the system temp tree) and surfaces ``agent_root`` from there, so
+    the harness's run root only carries the dashboard / log artifacts.
+    """
     run_root = tmp_path / "run"
     run = OR.OpenRangeRun(OR.RunConfig(run_root, dashboard=False))
     snapshot = run.build(MANIFEST)
-    task = snapshot.get_tasks()[0]
+    task = snapshot.tasks[0]
     svc = run.episode_service(snapshot)
 
     try:
@@ -712,7 +767,7 @@ def test_openrange_run_can_disable_dashboard_artifacts(tmp_path: Path) -> None:
     finally:
         svc.close()
 
-    assert agent_root.parent.parent == run_root
+    assert agent_root.exists()
     assert not (run_root / "dashboard.events.jsonl").exists()
     assert not (run_root / "dashboard.json").exists()
 
@@ -721,7 +776,7 @@ def test_run_config_starts_live_dashboard_internally(tmp_path: Path) -> None:
     run_root = tmp_path / "run"
     run = OR.OpenRangeRun(OR.RunConfig(run_root, dashboard_port=0))
     snapshot = run.build(MANIFEST)
-    task = snapshot.get_tasks()[0]
+    task = snapshot.tasks[0]
     svc = run.episode_service(snapshot)
     dashboard_handle = run.serve_dashboard(snapshot, port=0)
 
@@ -733,7 +788,7 @@ def test_run_config_starts_live_dashboard_internally(tmp_path: Path) -> None:
         svc.close()
         dashboard_handle.close()
 
-    assert state["snapshot_id"] == snapshot.id
+    assert state["snapshot_id"] == snapshot.snapshot_id
     # Two start_episode calls × 2 system turns each = 4 turns
     assert cast(int, state["turn_count"]) >= 2
 
@@ -741,8 +796,8 @@ def test_run_config_starts_live_dashboard_internally(tmp_path: Path) -> None:
 def test_episode_each_start_gives_fresh_roots(tmp_path: Path) -> None:
     from openrange.dashboard import DashboardView
 
-    snapshot = OR.build(MANIFEST)
-    task = snapshot.get_tasks()[0]
+    snapshot = _admit()
+    task = snapshot.tasks[0]
     run_root = tmp_path / "episode"
     run_root.mkdir()
     dashboard = DashboardView(
@@ -751,7 +806,10 @@ def test_episode_each_start_gives_fresh_roots(tmp_path: Path) -> None:
         state_path=run_root / "dashboard.json",
         reset_artifacts=True,
     )
-    svc = OR.EpisodeService(run_root, dashboard=dashboard)
+    # ``EpisodeService`` now takes the Pack as the first positional arg
+    # (resolved design Q1 — one service per Pack) so a service can
+    # never realize a snapshot built by a different pack.
+    svc = OR.EpisodeService(WebappPack(), run_root, dashboard=dashboard)
     first = svc.start_episode(snapshot, task.id)
     first_root = svc.agent_root(first)
     marker = first_root / "old.txt"
@@ -768,94 +826,27 @@ def test_episode_each_start_gives_fresh_roots(tmp_path: Path) -> None:
 
 
 def test_runtime_error_and_reader_paths(tmp_path: Path) -> None:
-    snapshot = OR.build(MANIFEST)
-    task = snapshot.get_tasks()[0]
-    svc = OR.EpisodeService(tmp_path / "episode")
+    """``EpisodeService.stop_episode`` raises on an unknown episode handle.
 
-    bogus_handle = OR.EpisodeHandle("missing", snapshot.id, task.id)
+    The pre-refactor version of this test also exercised
+    ``openrange.core.runtime_helpers`` (process spawning + stdout
+    parsing + result/requests file readers) against the old-shape
+    ``Entrypoint(kind, target, metadata)`` object and the old
+    ``snapshot.world`` flat dict. Both seams are gone under the new
+    pack shape: the entrypoint is now a node-id string on the task,
+    the world is a graph not a flat dict, and the realizer (a
+    ``RuntimeHandle`` returned by ``Pack.realize``) owns process /
+    file mechanics directly. The helper-level error paths are
+    covered by the pack's own ``WebappRuntimeHandle`` tests; this
+    test only keeps the pack-agnostic surface.
+    """
+    snapshot = _admit()
+    task = snapshot.tasks[0]
+    svc = OR.EpisodeService(WebappPack(), tmp_path / "episode")
+
+    bogus_handle = OR.EpisodeHandle("missing", snapshot.snapshot_id, task.id)
     with pytest.raises(OR.EpisodeError, match="unknown episode"):
         svc.stop_episode(bogus_handle)
-    with pytest.raises(OR.EpisodeRuntimeError, match="missing.py"):
-        start_runtime_process(
-            tmp_path / "missing.py",
-            task.entrypoints[0],
-            snapshot.world,
-            tmp_path / "log.jsonl",
-        )
-
-    app = tmp_path / "app.py"
-    app.write_text("", encoding="utf-8")
-    bad_entrypoint = OR.Entrypoint(
-        "http",
-        "webapp",
-        {"argv": [{"bad": "value"}]},
-    )
-    with pytest.raises(OR.EpisodeRuntimeError, match="argv"):
-        start_runtime_process(app, bad_entrypoint, snapshot.world, tmp_path / "log")
-    bad_argv_shape = OR.Entrypoint("http", "webapp", {"argv": "bad"})
-    with pytest.raises(OR.EpisodeRuntimeError, match="argv"):
-        start_runtime_process(app, bad_argv_shape, snapshot.world, tmp_path / "log")
-
-    no_stdout = subprocess.Popen([sys.executable, "-c", ""], text=True)
-    with pytest.raises(OR.EpisodeRuntimeError, match="stdout"):
-        read_base_url(no_stdout)
-    no_stdout.wait()
-
-    no_line = subprocess.Popen(
-        [sys.executable, "-c", ""],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    with pytest.raises(OR.EpisodeRuntimeError, match="listening"):
-        read_base_url(no_line)
-
-    invalid_line = subprocess.Popen(
-        [sys.executable, "-c", "print('[]')"],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    with pytest.raises(OR.EpisodeRuntimeError, match="invalid"):
-        read_base_url(invalid_line)
-
-    assert read_result(tmp_path, "result.json") == {}
-    (tmp_path / "result.json").write_text("{", encoding="utf-8")
-    assert read_result(tmp_path, "result.json") == {}
-    (tmp_path / "result.json").write_text("[]", encoding="utf-8")
-    assert read_result(tmp_path, "result.json") == {}
-    (tmp_path / "result.json").write_text('{"flag": "FLAG"}', encoding="utf-8")
-    assert read_result(tmp_path, "result.json") == {"flag": "FLAG"}
-
-    requests_path = tmp_path / "requests.jsonl"
-    assert read_requests(requests_path) == ()
-    requests_path.write_text(
-        '[]\n{\n{"path": "/admin/debug"}\n',
-        encoding="utf-8",
-    )
-    assert read_requests(requests_path) == ({"path": "/admin/debug"},)
-
-    blocker = executable(
-        tmp_path,
-        "ignore_term.py",
-        """
-        import signal
-        import time
-
-        signal.signal(signal.SIGTERM, lambda *_: None)
-        print("ready", flush=True)
-        while True:
-            time.sleep(1)
-        """,
-    )
-    process = subprocess.Popen([str(blocker)], stdout=subprocess.PIPE, text=True)
-    assert process.stdout is not None
-    assert process.stdout.readline().strip() == "ready"
-    try:
-        stop_process(process)
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-    assert process.poll() is not None
 
 
 def test_topology_surfaces_personas_from_manifest_when_pack_silent() -> None:
@@ -895,7 +886,7 @@ def test_topology_surfaces_personas_from_manifest_when_pack_silent() -> None:
             },
         ],
     }
-    snapshot = OR.build(manifest)
+    snapshot = _admit(manifest)
     view = DashboardView(snapshot)
     topology = view.topology()
     personas = cast(list[dict[str, object]], topology["green_personas"])
@@ -923,7 +914,7 @@ def test_topology_persona_count_matches_manifest_count() -> None:
             },
         ],
     }
-    snapshot = OR.build(manifest)
+    snapshot = _admit(manifest)
     view = DashboardView(snapshot)
     personas = cast(
         list[dict[str, object]],
@@ -950,7 +941,7 @@ def test_topology_skips_npc_entries_without_name() -> None:
             },
         ],
     }
-    snapshot = OR.build(manifest)
+    snapshot = _admit(manifest)
     view = DashboardView(snapshot)
     personas = view.topology()["green_personas"]
     assert personas == []

@@ -1,10 +1,16 @@
 """User-facing runtime convenience layer.
 
-``OpenRangeRun`` ties build + episode + dashboard together for example
-scripts and the CLI. The episode primitives (subprocess spawning, log
-parsing, file materialization, final-state assembly) live in
-``openrange.core.runtime_helpers``; this module is the wrapper around
-them, not their owner.
+``OpenRangeRun`` ties admit + episode + dashboard together for example
+scripts and the CLI. The admission seam is now
+:func:`openrange.core.admit_loop.admit`; the episode seam is the
+``EpisodeService(pack, run_root, ...)`` constructor whose first
+positional arg is the resolved Pack. This module is the wrapper around
+both, not their owner.
+
+The LLM seam moved into ``TaskFamily.generate()`` under the new pack
+shape — there is no top-level ``prompt`` / ``llm`` kwarg on the build
+call anymore. A pack that wants LLM-enriched task instructions reaches
+its backend through its TaskFamily configuration instead.
 """
 
 from __future__ import annotations
@@ -13,23 +19,20 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from openrange.agent_backend import AgentBackend
-from openrange.core import (
-    Manifest,
-    Snapshot,
-)
-from openrange.core import (
-    build as core_build,
-)
+from openrange.core._registry import iter_entry_points
+from openrange.core.admit_loop import AdmissionFailure, Snapshot, admit
+from openrange.core.contracts import Pack
 from openrange.core.episode import EpisodeService
-from openrange.core.runtime_helpers import EpisodeRuntimeError
+from openrange.core.errors import EpisodeRuntimeError, PackError
+from openrange.core.pack import PACK_ENTRY_POINT_GROUP, PACKS
 from openrange.dashboard import (
     DashboardArtifactLog,
     DashboardHTTPServer,
     DashboardView,
 )
-from openrange.llm import LLMBackend
 
 __all__ = [
     "DashboardServerHandle",
@@ -80,7 +83,7 @@ class DashboardServerHandle:
 
 
 class OpenRangeRun:
-    """Convenience wrapper: build + episode + optional dashboard."""
+    """Convenience wrapper: admit + episode + optional dashboard."""
 
     def __init__(self, config: str | Path | RunConfig) -> None:
         self.config = (
@@ -109,27 +112,36 @@ class OpenRangeRun:
 
     def build(
         self,
-        manifest: str | Path | Mapping[str, object] | Manifest,
+        manifest: Mapping[str, Any],
         *,
-        prompt: str = "",
-        llm: LLMBackend | None = None,
-        max_repairs: int = 3,
+        max_repairs: int = 2,
     ) -> Snapshot:
-        snapshot = core_build(
-            manifest,
-            prompt=prompt,
-            llm=llm,
-            max_repairs=max_repairs,
-            event_sink=(
-                None if self._dashboard is None else self._dashboard.record_builder_step
-            ),
-        )
+        """Admit ``manifest`` into a frozen :class:`Snapshot`.
+
+        Resolves the pack from ``manifest["pack"]["id"]`` (or
+        ``manifest["pack"]`` as a string fallback) through the global
+        :data:`PACKS` registry, then dispatches to
+        :func:`openrange.core.admit_loop.admit`. Raises
+        :class:`EpisodeRuntimeError` if the manifest doesn't name a
+        pack or the admission loop fails within the repair budget.
+        """
+        pack = _resolve_pack(manifest)
+        result = admit(pack, manifest, max_repairs=max_repairs)
+        if isinstance(result, AdmissionFailure):
+            raise EpisodeRuntimeError(
+                f"admission failed after {result.attempts} attempt(s): "
+                f"{len(result.issues)} error(s), "
+                f"{len(result.infeasible_tasks)} infeasible task(s)",
+            )
         if self._dashboard is not None:
             self._dashboard.record_builder_step(
                 "builder_finished",
-                {"snapshot_id": snapshot.id, "task_count": len(snapshot.tasks)},
+                {
+                    "snapshot_id": result.snapshot_id,
+                    "task_count": len(result.tasks),
+                },
             )
-        return snapshot
+        return result
 
     def _ensure_dashboard_view(self, snapshot: Snapshot) -> DashboardView | None:
         if not self.config.dashboard:
@@ -144,8 +156,17 @@ class OpenRangeRun:
         return self._dashboard_view
 
     def episode_service(self, snapshot: Snapshot) -> EpisodeService:
+        """Construct an :class:`EpisodeService` bound to ``snapshot``'s pack.
+
+        The pack is resolved from ``snapshot.lineage["pack"]`` so a run
+        can serve replayed snapshots it didn't build. The lineage key
+        is set by :func:`admit` at freeze time; missing or unknown ids
+        raise :class:`EpisodeRuntimeError`.
+        """
+        pack = _resolve_pack_from_snapshot(snapshot)
         view = self._ensure_dashboard_view(snapshot)
         return EpisodeService(
+            pack,
             self.root,
             dashboard=view,
             npc_agent_backend=self.config.npc_agent_backend,
@@ -163,3 +184,65 @@ class OpenRangeRun:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return DashboardServerHandle(server, thread)
+
+
+def _resolve_pack(manifest: Mapping[str, Any]) -> Pack:
+    """Resolve a Pack from a manifest's ``pack`` field.
+
+    Accepts the typical dict shape ``{"pack": {"id": "..."}}`` and the
+    string shorthand ``{"pack": "..."}``. Raises
+    :class:`EpisodeRuntimeError` if the manifest doesn't name a pack
+    or the id is not registered.
+    """
+    pack_field = manifest.get("pack")
+    if isinstance(pack_field, Mapping):
+        pack_id = pack_field.get("id")
+    elif isinstance(pack_field, str):
+        pack_id = pack_field
+    else:
+        pack_id = None
+    if not isinstance(pack_id, str) or not pack_id:
+        raise EpisodeRuntimeError(
+            "manifest must declare a pack via 'pack.id' or 'pack' (string)",
+        )
+    return _resolve_pack_by_id(pack_id)
+
+
+def _resolve_pack_from_snapshot(snapshot: Snapshot) -> Pack:
+    """Resolve a Pack from ``snapshot.lineage["pack"]``."""
+    pack_id = snapshot.lineage.get("pack")
+    if not isinstance(pack_id, str) or not pack_id:
+        raise EpisodeRuntimeError(
+            f"snapshot {snapshot.snapshot_id!r} lineage missing 'pack' id",
+        )
+    return _resolve_pack_by_id(pack_id)
+
+
+def _resolve_pack_by_id(pack_id: str) -> Pack:
+    """Resolve a registered pack by id, falling back to entry-point load.
+
+    Goes through :data:`PACKS` first because that's the canonical
+    registry. The legacy ``PackRegistry.resolve`` rejects new-shape
+    Pack instances on its ``isinstance(pack, core.pack.Pack)`` check,
+    though, which is a known parallel-paths inconsistency Phase 4
+    cleans up. As a fallback we walk
+    :data:`PACK_ENTRY_POINT_GROUP` directly and instantiate the
+    registered factory ourselves — packs ship via the same entry
+    point either way, so this stays a single-source-of-truth lookup.
+    """
+    try:
+        return cast(Pack, PACKS.resolve(pack_id))
+    except PackError:
+        pass
+    except Exception as exc:
+        raise EpisodeRuntimeError(f"unknown pack {pack_id!r}") from exc
+    for name, value in iter_entry_points(
+        PACK_ENTRY_POINT_GROUP,
+        error_cls=PackError,
+        kind="pack",
+    ):
+        if name != pack_id:
+            continue
+        pack = value() if callable(value) else value
+        return cast(Pack, pack)
+    raise EpisodeRuntimeError(f"unknown pack {pack_id!r}")

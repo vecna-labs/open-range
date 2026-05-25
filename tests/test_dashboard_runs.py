@@ -318,15 +318,20 @@ def test_topology_carries_new_snapshot_id_and_no_artifact_paths() -> None:
     view = DashboardView(snap)
     try:
         payload = view.topology()
-        assert payload["snapshot_id"] == snap.snapshot_id
-        assert payload["snapshot_id"].startswith("sha256:")
+        snapshot_id = payload["snapshot_id"]
+        assert isinstance(snapshot_id, str)
+        assert snapshot_id == snap.snapshot_id
+        assert snapshot_id.startswith("sha256:")
         assert "artifact_paths" not in payload
         # `tasks` projection mirrors `snapshot_to_dict`'s TaskSpec shape:
         # each task entrypoint is a node-id string, not an Entrypoint dict.
-        for task_dict in payload["tasks"]:
+        tasks = payload["tasks"]
+        assert isinstance(tasks, list)
+        for task_dict in tasks:
             assert isinstance(task_dict, Mapping)
-            assert isinstance(task_dict["entrypoints"], list)
-            for ep in task_dict["entrypoints"]:
+            entrypoints = task_dict["entrypoints"]
+            assert isinstance(entrypoints, list)
+            for ep in entrypoints:
                 assert isinstance(ep, str)
     finally:
         view.close()
