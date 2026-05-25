@@ -260,7 +260,7 @@ def write_dashboard_state(
         if snapshot is None
         else snapshot.state()
     )
-    payload: dict[str, object] = {
+    data: dict[str, object] = {
         "topology": {} if snapshot is None else snapshot.topology(),
         "lineage": {} if snapshot is None else snapshot.lineage(),
         "state": state,
@@ -270,7 +270,7 @@ def write_dashboard_state(
     }
     temporary = path.with_name(f"{path.name}.tmp")
     temporary.write_text(
-        json.dumps(json_safe(payload), indent=2, sort_keys=True) + "\n",
+        json.dumps(json_safe(data), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     temporary.replace(path)

@@ -61,8 +61,8 @@ class Backing(StrEnum):
     graph identity.
 
     PROCESS    : in-process simulation (NPCs as threads, file artifacts in /tmp)
-    CONTAINER  : docker / podman / k8s per service
-    SIMULATOR  : a pack-provided simulator (no real services)
+    CONTAINER  : docker / podman / k8s, one container per node
+    SIMULATOR  : a pack-provided simulator (no external processes)
     HYBRID     : a mix — process for cheap parts, container for expensive ones
     """
 
@@ -230,23 +230,23 @@ class RuntimeHandle(Protocol):
 
     `reset()`            : prepare a clean run state.
     `surface()`          : agent-facing IO surface (base URLs, file
-                           roots, MCP endpoints, NPC adapters). Shape is
+                           roots, MCP adapters, NPC handles). Shape is
                            pack-defined; harness binds against keys it
                            expects.
     `poll_events()`      : drain any side-effect events the realized
-                           world produced since the last poll (HTTP
-                           requests, file writes, log entries). The
+                           world produced since the last poll (e.g.
+                           request logs, file writes, log entries). The
                            episode loop forwards these to the dashboard.
     `terminal()`         : has the agent finished? Returns
                            `(done, reason)`. The episode loop polls this
                            to decide when to stop.
     `checkpoint()`       : capture an opaque pack-defined state snapshot
                            for counterfactual replay.
-    `restore(state)`     : restore from a checkpoint payload.
+    `restore(state)`     : restore from a checkpoint blob.
     `collect()`          : structured final state at episode end. A
                            TaskFamily's `check_success` reads this dict
                            against world graph + task to decide success.
-    `stop()`             : tear down running processes / services.
+    `stop()`             : tear down running processes.
     """
 
     def reset(self) -> None: ...
@@ -312,11 +312,11 @@ class LLMBackendLike(Protocol):
 class TaskFamily(ABC):
     """A domain of tasks posed against a Pack's world.
 
-    A Pack owns a world-family (e.g. `webapp`); a TaskFamily owns one
-    DOMAIN of tasks against that world (e.g. `webapp.build`,
-    `webapp.pentest`). The same world graph can serve multiple families
-    with different entrypoints, different goals, and different success
-    criteria — *this* is where the word "domain" lives, not on Pack.
+    A Pack owns a world-family; a TaskFamily owns one DOMAIN of tasks
+    against that world. The same pack may ship several TaskFamilies
+    against the SAME world graph — same nodes, different entrypoints,
+    different goals, different success criteria. *That* is where the
+    word "domain" lives, not on Pack.
 
     A TaskFamily owns:
       - task generation (instruction text, entrypoint selection, goal

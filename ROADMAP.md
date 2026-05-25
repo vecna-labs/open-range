@@ -30,13 +30,13 @@ ontology, realizer, defaults. See
 
 Cyber is the first-class pack. Both **offense and defense** are
 first-class task families on the same pack — same world, different
-role, different verifier. Long-term goal: dual-mode scenarios where
+role, different success check. Long-term goal: dual-mode scenarios where
 one realized world hosts an offense agent and a defense agent in
 parallel.
 
-- 🚧 **`cyber.webapp`** — procedural builder + AST-spliced
+- 🚧 **`webapp`** — procedural builder + AST-spliced
   vuln injection + NPCs + optional LLM-enriched task instruction +
-  per-task verifier. Already shipping.
+  per-task feasibility/success checks via TaskFamily. Already shipping.
 - 🟢 **Kind / Kubernetes runtime backing**
   ([#189](https://github.com/vecna-labs/open-range/issues/189)) —
   unblocks real cross-service exploit chains.
@@ -61,7 +61,7 @@ cyber-shaped.
 
 - 🟢 **Trading starter pack**
   ([#194](https://github.com/vecna-labs/open-range/issues/194)) —
-  order book + P&L verifier. First non-HTTP runtime backing.
+  order book + P&L success check. First non-HTTP runtime backing.
 - 🔮 **Social / negotiation pack**
   ([#195](https://github.com/vecna-labs/open-range/issues/195)) —
   multi-turn dialogue with NPC counterparties.
@@ -85,7 +85,7 @@ Today the examples are *eval* loops. Closing them into actual
   format seam.
 - 🟢 **Per-domain reward adapters**
   ([#199](https://github.com/vecna-labs/open-range/issues/199)) —
-  structured verifier result → scalar / vector reward signal.
+  structured `EpisodeResult` → scalar / vector reward signal.
 - 🟢 **Curriculum-driven training demo**
   ([#200](https://github.com/vecna-labs/open-range/issues/200)) —
   notebook showing success-rate curves as `evolve(...)` hardens worlds.
@@ -96,10 +96,17 @@ Primitives every pack and harness depends on.
 
 - 🟢 **Restore 100% test coverage**
   ([#201](https://github.com/vecna-labs/open-range/issues/201)) —
-  v0 deletion + v1 work temporarily dropped coverage to 85.
-- 🟡 **Verifier sandboxing**
+  v0 deletion + the v1 pack/admission refactor temporarily dropped
+  coverage.
+- 🟢 **Second non-cyber pack to validate domain-agnostic shape** —
+  today only `webapp` ships, so the design's domain-agnosticism is
+  unverified end-to-end. A second pack against a non-HTTP backing is
+  the load-bearing proof.
+- 🟡 **TaskFamily check sandboxing**
   ([#202](https://github.com/vecna-labs/open-range/issues/202)) —
-  today's `exec` with empty builtins is a security concern at scale.
+  the pack/admission refactor replaced exec'd verifier source with
+  regular Python methods on TaskFamily; revisit isolation/timeouts at
+  training scale.
 - 🟡 **Lineage as a pool, not a chain**
   ([#203](https://github.com/vecna-labs/open-range/issues/203)) —
   multi-parent reference graph for curriculum / multi-snapshot training.
@@ -138,7 +145,7 @@ See [docs/dashboard.md](docs/dashboard.md).
 
 1. Pick something tagged 🟢 → comment on the issue saying you want it.
 2. For new packs (trading, social, robotics, anything else), open the
-   issue with a sketch of the ontology + verifier shape; we'll work
+   issue with a sketch of the ontology + TaskFamily shape; we'll work
    through the contract with you.
 3. 🟡 items want a design doc PR before code — saves cycles.
 4. Friday community call — link in

@@ -301,7 +301,7 @@ def test_dashboard_http_server_can_start_without_snapshot() -> None:
     """
     view = DashboardView()
 
-    empty_topology = {
+    empty_topology: dict[str, object] = {
         "snapshot_id": None,
         "world": {},
         "tasks": [],
@@ -311,7 +311,7 @@ def test_dashboard_http_server_can_start_without_snapshot() -> None:
         "users": [],
         "green_personas": [],
     }
-    empty_lineage = {
+    empty_lineage: dict[str, object] = {
         "snapshot_id": None,
         "lineage": {},
         "history": [],

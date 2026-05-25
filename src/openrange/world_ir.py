@@ -49,9 +49,9 @@ class Visibility(StrEnum):
     """Whether a node is part of the surface an agent can observe directly.
 
     `PUBLIC` is the default and is omitted on the wire. `HIDDEN` nodes still
-    exist in the graph (an internal secret, an undisclosed asset), but a
-    task's entrypoint cannot reference them — discovering hidden state is
-    the point.
+    exist in the graph (an undisclosed asset, a private piece of state),
+    but a task's entrypoint cannot reference them — discovering hidden
+    state is the point.
     A task's `goal_nodes` MAY point at a hidden node — that's the discovery
     target.
     """
@@ -169,7 +169,7 @@ class Node:
 class Edge:
     """A directed typed edge from `src` to `dst`.
 
-    Both endpoint ids must reference nodes in the same graph. `attrs` is the
+    Both `src` and `dst` must reference nodes in the same graph. `attrs` is the
     property bag, type-checked against the ontology's `EdgeKind.attrs`.
     """
 
@@ -253,22 +253,22 @@ class WorldGraph:
         manifest produced them. The serialization is deterministic: keys sorted,
         no whitespace, empty optional fields omitted.
         """
-        nodes_payload = [
-            _node_payload(n) for n in sorted(self.nodes.values(), key=lambda n: n.id)
+        nodes_data = [
+            _node_data(n) for n in sorted(self.nodes.values(), key=lambda n: n.id)
         ]
-        edges_payload = [
-            _edge_payload(e) for e in sorted(self.edges.values(), key=lambda e: e.id)
+        edges_data = [
+            _edge_data(e) for e in sorted(self.edges.values(), key=lambda e: e.id)
         ]
-        payload = {
+        data = {
             "ontology": self.ontology,
-            "nodes": nodes_payload,
-            "edges": edges_payload,
+            "nodes": nodes_data,
+            "edges": edges_data,
         }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
         return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def _node_payload(node: Node) -> dict[str, Any]:
+def _node_data(node: Node) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": node.id,
         "kind": node.kind,
@@ -281,7 +281,7 @@ def _node_payload(node: Node) -> dict[str, Any]:
     return out
 
 
-def _edge_payload(edge: Edge) -> dict[str, Any]:
+def _edge_data(edge: Edge) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": edge.id,
         "kind": edge.kind,
@@ -498,7 +498,7 @@ def _validate_conformance(graph: WorldGraph, ontology: Ontology) -> list[Issue]:
         src_node = graph.nodes.get(edge.src)
         dst_node = graph.nodes.get(edge.dst)
         # dangling endpoints were already flagged structurally; skip the
-        # endpoint-pair check rather than emit a redundant cascade.
+        # edge-kind pair check rather than emit a redundant cascade.
         if src_node is None or dst_node is None:
             continue
         pair = (src_node.kind, dst_node.kind)

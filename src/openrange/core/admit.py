@@ -3,8 +3,8 @@
 Admission is a LAYERED gate, on purpose:
 
     1. structural       : ids / edge-to-node shape (`_validate_structural`)
-    2. ontology         : kinds, required attrs, enum/REF, endpoint pairs
-                          (`_validate_conformance`)
+    2. ontology         : kinds, required attrs, enum/REF, edge-kind
+                          pairs (`_validate_conformance`)
     3. pack invariants  : Tier-3 callables the pack ships (`Pack.invariants()`)
     4. task bindings    : entrypoints/goal_nodes exist; entrypoints not HIDDEN
     5. task feasibility : each TaskFamily's `check_feasibility(graph, task)`

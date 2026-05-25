@@ -39,9 +39,9 @@ class SnapshotStore:
         """Write a Snapshot to disk and return the absolute path written."""
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / f"{snapshot.snapshot_id}.json"
-        payload = snapshot_to_dict(snapshot)
+        data = snapshot_to_dict(snapshot)
         path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            json.dumps(data, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         return path

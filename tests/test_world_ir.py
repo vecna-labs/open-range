@@ -504,18 +504,14 @@ def test_hash_payload_is_canonical_json() -> None:
     g.add_node(Node("b", "thing", attrs={"label": "B"}))
     g.add_edge(Edge("e1", "rel", "a", "b", attrs={"k": "v"}))
     # Reconstruct what the hasher would build by recomputing.
-    from openrange.world_ir import _edge_payload, _node_payload
+    from openrange.world_ir import _edge_data, _node_data
 
-    payload = {
+    data = {
         "ontology": g.ontology,
-        "nodes": [
-            _node_payload(n) for n in sorted(g.nodes.values(), key=lambda n: n.id)
-        ],
-        "edges": [
-            _edge_payload(e) for e in sorted(g.edges.values(), key=lambda e: e.id)
-        ],
+        "nodes": [_node_data(n) for n in sorted(g.nodes.values(), key=lambda n: n.id)],
+        "edges": [_edge_data(e) for e in sorted(g.edges.values(), key=lambda e: e.id)],
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(data, sort_keys=True, separators=(",", ":"))
     # round-trips: parsing the canonical JSON gives back the same shape
     decoded = json.loads(encoded)
     assert decoded["ontology"] == "x@1"

@@ -1,4 +1,4 @@
-"""HTTP server that exposes a runs-aware dashboard and serves the SPA frontend.
+"""Dashboard server — exposes a runs-aware dashboard and serves the SPA.
 
 The server holds a ``RunsRegistry`` and resolves ``DashboardView`` per
 request via the ``?run=<id>`` query param (falling back to the
@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http import HTTPStatus  # ALLOWED_DOMAIN_LEAK: stdlib transport
+from http.server import (  # ALLOWED_DOMAIN_LEAK: stdlib transport
+    BaseHTTPRequestHandler,
+    ThreadingHTTPServer,
+)
 from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, urlsplit
@@ -176,10 +179,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
     def _write_json(
         self,
-        payload: object,
+        data: object,
         status: HTTPStatus = HTTPStatus.OK,
     ) -> None:
-        body = json.dumps(payload, sort_keys=True).encode()
+        body = json.dumps(data, sort_keys=True).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -210,7 +213,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
     def _write_sse(
         self,
-        payload: Mapping[str, object],
+        data: Mapping[str, object],
         *,
         event: str,
         event_id: str,
@@ -218,7 +221,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         body = (
             f"id: {event_id}\n"
             f"event: {event}\n"
-            f"data: {json.dumps(payload, sort_keys=True)}\n\n"
+            f"data: {json.dumps(data, sort_keys=True)}\n\n"
         ).encode()
         try:
             self.wfile.write(body)

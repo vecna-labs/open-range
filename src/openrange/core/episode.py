@@ -1,4 +1,4 @@
-"""Episode service: the agent harness's seam into running worlds.
+"""EpisodeService — the agent harness's seam into running worlds.
 
 This is the second of the two CORE/PACK boundaries (the first is
 ``admit``). The pack ships a :class:`~openrange.core.pack.Pack`
@@ -8,14 +8,14 @@ eight-method Protocol. Core's :class:`EpisodeService` drives that
 handle through the episode lifecycle:
 
   ``reset()``       prepare a clean run state
-  ``surface()``     return the agent-facing IO surface (HTTP base_url,
+  ``surface()``     return the agent-facing IO surface (e.g. base URL,
                     file roots, MCP endpoints, NPC adapter dicts) —
                     consumed by the agent harness and the NPCs
   ``poll_events()`` drain side-effect events the realized world
                     produced; forwarded to the dashboard
   ``terminal()``    has the agent finished? ``(done, reason)``
   ``checkpoint()``  opaque pack-defined state for counterfactual replay
-  ``restore(state)``reverse a checkpoint payload
+  ``restore(state)``reverse a checkpoint blob
   ``collect()``     structured final-state mapping for ``check_success``
   ``stop()``        tear the realized world down
 
@@ -30,7 +30,7 @@ The agent acts on the world through whatever surface the pack exposes.
 OpenRange does not own agent action: ``record_turn`` is observational
 only. ``tick`` drains events + decides terminal; ``advance`` is the
 multi-tick wrapper. ``checkpoint`` / ``restore`` / ``fork`` enable
-counterfactual training by riding the handle's opaque state payload.
+counterfactual training by riding the handle's opaque state blob.
 """
 
 from __future__ import annotations
@@ -219,7 +219,7 @@ class EpisodeReport:
 class EpisodeCheckpoint:
     """Captured state for a running episode.
 
-    Wraps the opaque payload :meth:`RuntimeHandle.checkpoint` returned.
+    Wraps the opaque blob :meth:`RuntimeHandle.checkpoint` returned.
     The shape is pack-defined; core just shuttles it back into
     :meth:`RuntimeHandle.restore`. The four identifier fields are
     enough to recover the (snapshot, task, episode) context without
@@ -273,9 +273,10 @@ class EpisodeService:
     """Owns running worlds; provides start, observe, advance, checkpoint, fork.
 
     One :class:`EpisodeService` runs against one :class:`Pack` — the
-    pack is fixed at construction (resolved design Q1) so a service
-    can never realize a snapshot built by a different pack. A run that
-    needs multiple packs constructs one service per pack.
+    pack is fixed at construction (resolved design Q1) so an
+    EpisodeService can never realize a snapshot built by a different
+    pack. A run that needs multiple packs constructs one
+    EpisodeService per pack.
 
     The constructor pre-resolves the NPC agent backend: an explicit
     backend wins; the ``npc_llm_model`` shorthand auto-promotes to a
@@ -452,10 +453,10 @@ class EpisodeService:
         return self._require(episode).surface_cache
 
     def base_url(self, episode: EpisodeHandle) -> str:
-        """The HTTP base URL, when the surface declares one.
+        """The base URL of the agent-facing IO surface, when one is declared.
 
-        Convenience for HTTP-backed packs (the cyber webapp's
-        :class:`WebappRuntimeHandle` surfaces this key); raises if the
+        Convenience accessor for URL-backed packs whose realizer
+        exposes a ``base_url`` key on its surface; raises if the
         surface omits it so a typo doesn't return an empty string.
         """
         surface = self._require(episode).surface_cache
@@ -568,7 +569,7 @@ class EpisodeService:
     def checkpoint(self, episode: EpisodeHandle) -> EpisodeCheckpoint:
         """Capture an opaque pack-defined snapshot of episode state.
 
-        The payload is whatever :meth:`RuntimeHandle.checkpoint`
+        The blob is whatever :meth:`RuntimeHandle.checkpoint`
         returned. Core never inspects it; the only thing it knows is
         the four identifier fields. The caller passes the checkpoint
         back to :meth:`restore` or stashes it for counterfactual
@@ -588,9 +589,9 @@ class EpisodeService:
         """Spin up a fresh episode whose handle is restored from state.
 
         The original episode must still be registered with the
-        service (so we can find its snapshot/task); the new episode
-        gets a fresh runtime handle, fresh ``reset()``, then the
-        opaque payload is replayed via :meth:`RuntimeHandle.restore`.
+        EpisodeService (so we can find its snapshot/task); the new
+        episode gets a fresh runtime handle, fresh ``reset()``, then
+        the opaque blob is replayed via :meth:`RuntimeHandle.restore`.
         Process-state semantics are the pack's call: cheap-checkpoint
         packs replay filesystem state, stateful-backing packs replay
         the in-process state machine.
@@ -989,11 +990,11 @@ def _manifest_auto_tick_rate(snapshot: Snapshot) -> float | None:
     return None
 
 
-def _atexit_stop_episodes(service_ref: weakref.ref[EpisodeService]) -> None:
-    service = service_ref()
-    if service is None:
+def _atexit_stop_episodes(svc_ref: weakref.ref[EpisodeService]) -> None:
+    svc = svc_ref()
+    if svc is None:
         return
-    for running in list(service._episodes.values()):
+    for running in list(svc._episodes.values()):
         if running.stopped:
             continue
         try:
@@ -1004,7 +1005,7 @@ def _atexit_stop_episodes(service_ref: weakref.ref[EpisodeService]) -> None:
 
 
 def _auto_tick_loop(
-    service: EpisodeService,
+    svc: EpisodeService,
     running: _RunningEpisode,
     rate_hz: float,
 ) -> None:
@@ -1013,6 +1014,6 @@ def _auto_tick_loop(
     interval = 1.0 / rate_hz
     while not running.tick_stop.wait(interval):
         try:
-            service.tick(running.handle)
+            svc.tick(running.handle)
         except EpisodeError:
             return  # episode was stopped

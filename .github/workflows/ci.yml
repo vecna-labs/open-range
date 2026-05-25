@@ -32,6 +32,9 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: Check core/pack boundary
+        run: bash scripts/check_boundary.sh
+
       - name: Typecheck
         run: uv run mypy src tests examples main.py
 
