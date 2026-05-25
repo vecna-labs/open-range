@@ -9,7 +9,7 @@ demonstration that "domain" lives on the TaskFamily, not on the Pack.
 
 Module map:
 
-  - `ontology_v2.py`   the declarative `Ontology` (cyber.webapp@v1)
+  - `ontology.py`      the declarative `Ontology` (cyber.webapp@v1)
                        with 10 node kinds + 11 edge kinds and rich
                        AttrSpec (enums, refs, required flags)
   - `invariants.py`    pack-level invariants: no orphan nodes, every
@@ -55,7 +55,7 @@ from cyber_webapp.invariants import (
     oracle_path_exists,
     secret_must_be_held,
 )
-from cyber_webapp.ontology_v2 import ONTOLOGY_ID, webapp_ontology
+from cyber_webapp.ontology import ONTOLOGY_ID, webapp_ontology
 from cyber_webapp.realize import WebappRuntimeError, WebappRuntimeHandle
 from openrange.core.pack import (
     Backing,

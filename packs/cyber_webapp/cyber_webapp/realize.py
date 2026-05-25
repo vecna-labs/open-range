@@ -446,9 +446,8 @@ def _stop_process(process: subprocess.Popen[str] | None) -> None:
     that share the caller's pgid — group-killing those would terminate
     the caller. SIGKILL after 2s if still alive.
 
-    Inlined here (rather than imported from
-    ``openrange.core.runtime_helpers``) so the handle stays
-    self-sufficient when Phase 4 deletes the runtime-helpers module.
+    Lives here in the pack so each realizer ships its own subprocess
+    teardown — core no longer mediates runtime-process lifecycle.
     """
     if process is None or process.poll() is not None:
         return

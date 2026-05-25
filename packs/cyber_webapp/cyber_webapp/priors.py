@@ -30,10 +30,9 @@ without affecting other consumers.
 
 from __future__ import annotations
 
-from types import MappingProxyType
 from typing import Any
 
-from cyber_webapp.ontology_v2 import webapp_ontology
+from cyber_webapp.ontology import webapp_ontology
 from openrange.core.pack import PackPrior, TaskSeed
 
 # ---------------------------------------------------------------------------
@@ -186,20 +185,3 @@ def default_prior() -> PackPrior:
         difficulty=difficulty,
         coverage=coverage,
     )
-
-
-# ---------------------------------------------------------------------------
-# BACK-COMPAT SHIM — TEMPORARY (Phase 2-only)
-# ---------------------------------------------------------------------------
-#
-# Old code paths (cyber_webapp/__init__.py's `generation_priors()` returning
-# a Mapping for the legacy `CyberWebappPack`, plus the legacy
-# sampling/mutation/builder/tests) still import a constant named ``PRIORS``
-# from this module. They expect a flat ``Mapping[str, object]`` of
-# cyber-specific knobs. Those consumers are being migrated in parallel by
-# other agents; until they switch to ``default_prior()`` /
-# ``_CYBER_GENERATION_CONFIG``, this alias keeps them compiling.
-#
-# Phase 2e (new ``__init__.py``) + Phase 4 (delete legacy modules) remove
-# the last consumer. At that point this alias is unused and gets dropped.
-PRIORS: MappingProxyType[str, object] = MappingProxyType(dict(_CYBER_GENERATION_CONFIG))

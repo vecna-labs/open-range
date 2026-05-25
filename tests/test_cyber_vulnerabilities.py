@@ -12,7 +12,7 @@ Four concerns:
 
 The catalog module itself is unchanged from the old pack shape; this
 file's only migration is the bridge test in §4 that confirms catalog
-entries still drive ``cyber_webapp.ontology_v2``-shaped vulnerability
+entries still drive ``cyber_webapp.ontology``-shaped vulnerability
 nodes through the new ``Node`` / ``Visibility`` API.
 """
 

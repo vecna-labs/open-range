@@ -30,7 +30,7 @@ from cyber_webapp.invariants import (
     oracle_path_exists,
     secret_must_be_held,
 )
-from cyber_webapp.ontology_v2 import ONTOLOGY_ID, webapp_ontology
+from cyber_webapp.ontology import ONTOLOGY_ID, webapp_ontology
 
 from openrange.core.admit import Snapshot, admit
 from openrange.core.pack import (
@@ -251,7 +251,7 @@ class _StubWebappPack(Pack):
 # ---------------------------------------------------------------------------
 
 
-def test_cyber_ontology_v2_is_valid() -> None:
+def test_cyber_ontology_is_valid() -> None:
     """The new cyber ontology declares 10 node kinds + 11 edge kinds
     (the two old `affects` rows collapse into one EdgeKind with 2
     endpoint pairs)."""

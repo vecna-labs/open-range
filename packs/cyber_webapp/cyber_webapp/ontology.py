@@ -1,17 +1,11 @@
-"""Cyber webapp ontology — declarative typed-property-graph schema (NEW shape).
+"""Cyber webapp ontology — declarative typed-property-graph schema.
 
-This module is the new-shape replacement for `ontology.py`'s
-WorldSchema/NodeType/EdgeType/GraphConstraint declarations. It lives at
-a parallel path during the migration; Phase 4 will rename
-`ontology_v2.py` → `ontology.py` (replacing the old) once every
-consumer in the pack (builder.py, sampling.py, mutation.py, codegen/)
-is migrated to consume the new types.
-
-Same 10 node kinds, 12 edge kinds (the two `affects` rows collapse
-into one EdgeKind with two endpoint-pairs), plus richer typed AttrSpec
-(enums become enums, BOOLs become BOOLs, JSON blobs are explicit).
-Identical semantics to v1 ontology so existing sampling/mutation logic
-can be wired in mechanically once it's migrated.
+The `cyber.webapp@v1` ontology: 10 node kinds, 11 edge kinds, with
+typed `AttrSpec` declarations (enums, REFs, required flags, JSON
+blobs). Consumed by the procedural builder (`sampling.py`), the
+curriculum enumerator (`mutation.py`), the realizer (`realize.py`),
+and the `WebappPack` itself. Pack invariants beyond the declared
+node/edge shape live on the Pack (`invariants.py`), not here.
 """
 
 from __future__ import annotations

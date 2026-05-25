@@ -39,7 +39,7 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
-from cyber_webapp.ontology_v2 import ONTOLOGY_ID
+from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 from openrange.core.pack import EpisodeReportLike, Mutation
 from openrange.world_ir import Edge, GraphPatch, Node, Visibility, WorldGraph

@@ -3,7 +3,7 @@
 Pure functions. Given an ``rng`` and an optional ``PackPrior``, produce
 a fresh :class:`~openrange.world_ir.WorldGraph` that conforms to the
 ``cyber.webapp@v1`` ontology declared in
-:mod:`cyber_webapp.ontology_v2`.
+:mod:`cyber_webapp.ontology`.
 
 This is the post-refactor sibling of the old tuple-shape sampler. The
 procedural / rejection-sampling logic is unchanged — same world shapes
@@ -25,7 +25,7 @@ import random
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from cyber_webapp.ontology_v2 import ONTOLOGY_ID
+from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 from openrange.core.errors import PackError
 from openrange.core.pack import PackPrior

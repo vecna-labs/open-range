@@ -828,9 +828,9 @@ def test_episode_each_start_gives_fresh_roots(tmp_path: Path) -> None:
 def test_runtime_error_and_reader_paths(tmp_path: Path) -> None:
     """``EpisodeService.stop_episode`` raises on an unknown episode handle.
 
-    The pre-refactor version of this test also exercised
-    ``openrange.core.runtime_helpers`` (process spawning + stdout
-    parsing + result/requests file readers) against the old-shape
+    The pre-refactor version of this test also exercised the legacy
+    ``runtime_helpers`` module (process spawning + stdout parsing +
+    result/requests file readers) against the old-shape
     ``Entrypoint(kind, target, metadata)`` object and the old
     ``snapshot.world`` flat dict. Both seams are gone under the new
     pack shape: the entrypoint is now a node-id string on the task,
