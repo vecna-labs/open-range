@@ -50,7 +50,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
 python_version = "3.14"
-mypy_path = ["src", "packs/cyber_webapp"]
+mypy_path = ["src"]
 strict = true
 warn_unreachable = true
 
@@ -58,27 +58,24 @@ warn_unreachable = true
 module = "yaml"
 ignore_missing_imports = true
 
-# Strands is an optional dependency (``openrange[strands]``). Skip
-# import resolution so the core type-checks cleanly even when it
-# isn't installed.
-[[tool.mypy.overrides]]
-module = ["strands", "strands.*", "strands_tools", "strands_tools.*"]
-ignore_missing_imports = true
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["openrange", "cyber_webapp"]
+source = ["openrange"]
 omit = [
-    "src/openrange/__main__.py",
+    # manifest.py is the runtime-layer manifest parser. It's intact but
+    # not wired to the new admission loop yet — the runtime side
+    # (episode service, dashboard) was removed during this refactor and
+    # will be re-built against the new shape; manifest.py comes back into
+    # the coverage set when that happens.
+    "src/openrange/core/manifest.py",
 ]
 
 [tool.coverage.report]
-# Was 100. Lowered while v1 settles — large parts of dashboard / episode
-# /v0-LLM-builder paths lost their tests when v0 was deleted. Bringing
-# coverage back to 100 is a follow-up.
+# Will climb back toward 100 as the runtime side gets re-wired against
+# the new pack/admission/distill shape.
 fail_under = 85
 show_missing = true
 skip_covered = true

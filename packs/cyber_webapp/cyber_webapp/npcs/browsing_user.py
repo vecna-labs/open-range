@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from cyber_webapp.npcs import _HTTPCadenceNPC
 from openrange.npc import NPC
+
+from cyber_webapp.npcs import _HTTPCadenceNPC
 
 _DEFAULT_PATHS: tuple[str, ...] = ("/",)
 

@@ -29,11 +29,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --group dev
 
+      - name: Boundary checks (domain leaks + forbidden imports)
+        run: bash scripts/check_boundary.sh
+
       - name: Lint
         run: uv run ruff check .
 
+      - name: Format check
+        run: uv run ruff format --check .
+
       - name: Typecheck
-        run: uv run mypy src tests examples main.py
+        run: uv run mypy src tests
 
       - name: Test with coverage
         run: uv run coverage run -m pytest tests

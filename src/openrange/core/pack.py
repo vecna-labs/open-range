@@ -10,8 +10,9 @@ that flow through them. The two boundaries:
           the realizer, the task families, the checks. Everything
           domain-specific.
 
-The split is enforceable: `grep` this file for any domain string (`host`,
-`vuln`, `endpoint`, `trading`, `pendulum`); there should be zero hits.
+The split is enforceable: a CI check (`scripts/check_boundary.sh`) greps
+this file (and all of core) for the forbidden domain vocabulary defined
+in that script. There should be zero hits.
 
 The seam to the BBG world is `PackPrior`. A `PackPrior` arrives at
 `Pack.make_builder(prior=...)` from either:

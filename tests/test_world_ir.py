@@ -504,7 +504,7 @@ def test_hash_payload_is_canonical_json() -> None:
     g.add_node(Node("b", "thing", attrs={"label": "B"}))
     g.add_edge(Edge("e1", "rel", "a", "b", attrs={"k": "v"}))
     # Reconstruct what the hasher would build by recomputing.
-    from openrange.world_ir import _edge_payload, _node_payload  # type: ignore
+    from openrange.world_ir import _edge_payload, _node_payload
 
     payload = {
         "ontology": g.ontology,

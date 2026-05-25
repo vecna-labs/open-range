@@ -5,10 +5,9 @@ owns `Node`, `Edge`, `WorldGraph`, the declarative `Ontology` schema, and the
 three-tier `validate()` (structural, ontology conformance, pack invariants).
 
 This module is deliberately ontology-agnostic — it knows nothing about any
-specific domain (`webapp`, `trading`, `pendulum`) or any specific cognitive
-ontology (`thing`/`thought` for the BBG). A graph's domain meaning lives
-entirely in its `Ontology`, declared as data; one generic validator checks
-any graph against any ontology.
+specific domain, nor any specific cognitive ontology. A graph's domain
+meaning lives entirely in its `Ontology`, declared as data; one generic
+validator checks any graph against any ontology.
 
 OpenRange is the canonical home for this meta-model. Other consumers — most
 notably vecna's wayfinder runtime — vendor a copy of this file rather than
@@ -50,8 +49,9 @@ class Visibility(StrEnum):
     """Whether a node is part of the surface an agent can observe directly.
 
     `PUBLIC` is the default and is omitted on the wire. `HIDDEN` nodes still
-    exist in the graph (a hidden credential, an internal secret), but a task's
-    entrypoint cannot reference them — discovering hidden state is the point.
+    exist in the graph (an internal secret, an undisclosed asset), but a
+    task's entrypoint cannot reference them — discovering hidden state is
+    the point.
     A task's `goal_nodes` MAY point at a hidden node — that's the discovery
     target.
     """
@@ -360,8 +360,8 @@ def validate(
 
     Tier 3 (invariants) runs each pack-supplied callable on the graph and
     concatenates its findings. A pack uses these for the domain-specific
-    invariants the generic schema cannot express (a webapp must have at least
-    one endpoint, a trading world must have at least one venue).
+    invariants the generic schema cannot express (cross-cutting structural
+    rules unique to a particular world-family).
     """
     issues: list[Issue] = []
     issues.extend(_validate_structural(graph))

@@ -249,7 +249,7 @@ class _TestPack(Pack):
     def ontology(self) -> Ontology:
         return _TEST_ONTOLOGY
 
-    def invariants(self):
+    def invariants(self) -> list[Any]:
         return list(self._invariants)
 
     def make_builder(self, prior: PackPrior | None) -> Builder:

@@ -59,7 +59,7 @@ def wayfinder_ontology() -> Ontology:
     # provenance — HOW a node entered the BBG. Shared by both kinds, immutable.
     #   trajectory : the agent stepped here (a thing, by position)
     #   referenced : named by a thought / observe() without being visited
-    #                (e.g. a hidden credential the agent only reasoned about)
+    #                (e.g. a hidden item the agent only reasoned about)
     #   inferred   : the agent produced it by thinking (every thought)
     provenance = s(
         AttrType.ENUM,
