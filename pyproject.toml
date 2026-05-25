@@ -33,10 +33,15 @@ dev = [
     "mypy>=1.19",
     "pytest>=9.0",
     "ruff>=0.15.6",
+    "openrange-webapp",
 ]
 
 [tool.uv.workspace]
-members = []
+members = ["packs/webapp"]
+
+[tool.uv.sources]
+openrange = { workspace = true }
+openrange-webapp = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openrange"]
@@ -50,7 +55,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
 python_version = "3.14"
-mypy_path = ["src"]
+mypy_path = ["src", "packs/webapp"]
 strict = true
 warn_unreachable = true
 

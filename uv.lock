@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.15'",
 ]
 
+[manifest]
+members = [
+    "openrange",
+    "openrange-webapp",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -774,6 +780,7 @@ strands = [
 dev = [
     { name = "coverage" },
     { name = "mypy" },
+    { name = "openrange-webapp" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -791,9 +798,21 @@ provides-extras = ["strands"]
 dev = [
     { name = "coverage", extras = ["toml"], specifier = ">=7.13" },
     { name = "mypy", specifier = ">=1.19" },
+    { name = "openrange-webapp", editable = "packs/webapp" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.15.6" },
 ]
+
+[[package]]
+name = "openrange-webapp"
+version = "0.1.0"
+source = { editable = "packs/webapp" }
+dependencies = [
+    { name = "openrange" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "openrange", editable = "." }]
 
 [[package]]
 name = "opentelemetry-api"
