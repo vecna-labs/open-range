@@ -1,15 +1,20 @@
-"""Integration test for the new-shape cyber webapp pack (Phase 2 in-progress).
+"""Integration test for the new-shape cyber webapp pack.
 
-Exercises the new components landed so far — ontology_v2 + invariants +
-families — through the new admit() loop using a hand-built world graph.
-This proves the new shape works end-to-end on the cyber pack's ontology
-BEFORE the full procedural builder migration; once Phase 2c lands the
-new builder, the hand-built fixture here is replaced by procedural
-output.
+Two flavors of tests:
 
-The single load-bearing assertion: one world graph admits BOTH
-`webapp.build` and `webapp.pentest` task families with different
-entrypoints. That's the cross-domain story from
+  1. Hand-built world fixtures + a stub `_StubWebappPack` exercise the
+     ontology, invariants, families, and admission against a minimal
+     graph that touches every shape we care about. Useful for testing
+     invariants in isolation and for hand-controlled coverage.
+
+  2. End-to-end tests against the REAL `WebappPack` class run the full
+     procedural builder + sampling + admission pipeline. These are the
+     load-bearing demonstrations that the new shape works at every
+     layer of the pack.
+
+The single load-bearing assertion across both: one cyber webapp world
+admits BOTH `webapp.build` and `webapp.pentest` task families with
+different entrypoint kinds. That's the cross-domain story from
 `.claude/bbg-openrange/crossdomain.py` act 3 applied to the cyber pack.
 """
 
@@ -382,3 +387,92 @@ def test_oracle_path_exists_fails_when_vuln_removed() -> None:
     g.edges.pop("e.wk-ep", None)
     issues = oracle_path_exists(g)
     assert any(i.code == "no_oracle_chain" for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end tests against the REAL WebappPack — exercises the full
+# procedural sampler + builder + families pipeline.
+# ---------------------------------------------------------------------------
+
+
+def test_real_webapp_pack_identity() -> None:
+    """The pack registers under id `webapp`, ships two families."""
+    from cyber_webapp import WebappPack
+
+    pack = WebappPack()
+    assert pack.id == "webapp"
+    assert pack.version == "v2"
+    assert pack.ontology().id == "cyber.webapp@v1"
+    assert {f.id for f in pack.task_families()} == {
+        "webapp.build",
+        "webapp.pentest",
+    }
+
+
+def test_real_webapp_pack_admits_with_procedural_sampler() -> None:
+    """The procedural sampler + builder + families pipeline produces
+    a snapshot with both families' tasks against a non-trivial graph."""
+    from cyber_webapp import WebappPack
+
+    pack = WebappPack()
+    snap = admit(pack, manifest={"seed": 0}, max_repairs=3)
+    assert isinstance(snap, Snapshot), snap
+    # The procedural sampler produces a real-shaped world.
+    assert len(snap.graph.nodes) >= 10
+    assert len(snap.graph.edges) >= 8
+    # Two tasks from two families.
+    families = {t.feasibility_check for t in snap.tasks}
+    assert families == {"webapp.build", "webapp.pentest"}
+    # Different entrypoint kinds.
+    entrypoint_kinds = {snap.graph.nodes[t.entrypoints[0]].kind for t in snap.tasks}
+    assert entrypoint_kinds == {"service", "endpoint"}
+
+
+def test_real_webapp_pack_seed_is_deterministic() -> None:
+    """Same seed -> same snapshot id (content-addressed)."""
+    from cyber_webapp import WebappPack
+
+    snap_a = admit(WebappPack(), manifest={"seed": 7})
+    snap_b = admit(WebappPack(), manifest={"seed": 7})
+    assert isinstance(snap_a, Snapshot)
+    assert isinstance(snap_b, Snapshot)
+    assert snap_a.snapshot_id == snap_b.snapshot_id
+
+
+def test_real_webapp_pack_seed_yields_distinct_worlds() -> None:
+    """Different seeds -> different snapshot ids."""
+    from cyber_webapp import WebappPack
+
+    snap_a = admit(WebappPack(), manifest={"seed": 0})
+    snap_b = admit(WebappPack(), manifest={"seed": 42})
+    assert isinstance(snap_a, Snapshot)
+    assert isinstance(snap_b, Snapshot)
+    assert snap_a.snapshot_id != snap_b.snapshot_id
+
+
+def test_real_webapp_pack_lineage_carries_pack_provenance() -> None:
+    """The Snapshot's lineage captures pack id, version, attempt count,
+    and the builder's admission_meta (seed, prior source, etc.)."""
+    from cyber_webapp import WebappPack
+
+    snap = admit(WebappPack(), manifest={"seed": 0})
+    assert isinstance(snap, Snapshot)
+    assert snap.lineage["pack"] == "webapp"
+    assert snap.lineage["pack_version"] == "v2"
+    assert snap.lineage["builder"] == "cyber.webapp.v2"
+    assert snap.lineage["seed"] == 0
+    assert "prior_source" in snap.lineage
+
+
+def test_real_webapp_pack_history_records_all_phases() -> None:
+    """admit() records build / validate / feasibility / freeze phases."""
+    from cyber_webapp import WebappPack
+
+    snap = admit(WebappPack(), manifest={"seed": 0})
+    assert isinstance(snap, Snapshot)
+    phases = [e.phase for e in snap.history]
+    # First successful pass: 4 phases. With repairs: more.
+    assert phases[0] == "build"
+    assert "validate" in phases
+    assert "feasibility" in phases
+    assert phases[-1] == "freeze"

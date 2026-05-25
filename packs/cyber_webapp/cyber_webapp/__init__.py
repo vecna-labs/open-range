@@ -1,118 +1,142 @@
-"""Cyber webapp pack — procedural builder + codegen realize.
+"""Cyber webapp pack — procedural builder + Flask realizer.
 
-This package IS the pack. It owns:
-  - ``ontology.py`` — typed graph language (10 node types, 12 edge
-    types, 3 constraints)
-  - ``priors.py`` — default sampling distributions
-  - ``sampling.py`` — fresh-graph sampler against the ontology
-  - ``mutation.py`` — curriculum-driven mutations of an existing graph
-  - ``checks.py`` — admission probe + verifier source rendering
-  - ``builder.py`` — ``ProceduralBuilder`` orchestrating the four-stage
-    Builder protocol over the modules above
-  - ``codegen/`` — ``realize_graph(graph, manifest)`` that turns a
-    world graph into a runnable ``app.py`` + ``Entrypoint`` for the
-    built-in HTTP runtime backing
-  - ``vulnerabilities/`` — shared vuln catalog used by codegen
+This package IS the pack. One Pack, two TaskFamilies, one webapp
+world-family. The same world graph admits both `webapp.build` (the
+agent implements / repairs a feature endpoint) and `webapp.pentest`
+(the agent discovers and exploits a vulnerability chain to recover a
+hidden flag). That cross-family-on-one-world story is the load-bearing
+demonstration that "domain" lives on the TaskFamily, not on the Pack.
 
-The pack class itself is small — ontology / priors / realize / default
-builder are wired here and exported via the ``openrange.packs``
-entry-point group declared in this package's pyproject.toml.
+Module map:
+
+  - `ontology_v2.py`   the declarative `Ontology` (cyber.webapp@v1)
+                       with 10 node kinds + 11 edge kinds and rich
+                       AttrSpec (enums, refs, required flags)
+  - `invariants.py`    pack-level invariants: no orphan nodes, every
+                       secret held by a record, an oracle exploitation
+                       path exists from public surface to a flag
+  - `families/`        WebappBuild + WebappPentest TaskFamilies
+  - `priors.py`        hand-authored `default_prior() -> PackPrior` and
+                       the pack-private `_CYBER_GENERATION_CONFIG`
+                       sampler knobs
+  - `sampling.py`      procedural graph sampler — emits new-shape
+                       WorldGraph against the ontology
+  - `mutation.py`      curriculum mutation enumerator — emits
+                       `Mutation` carrying `GraphPatch` per direction
+                       (harden / soften / diversify)
+  - `llm_generation.py`  optional LLM enrichment for task instructions
+                         and curriculum mutation relevance scoring
+  - `builder.py`       `WebappBuilder` orchestrating sampling +
+                       family.generate(), with repair-via-resample
+  - `realize.py`       `WebappRuntimeHandle` — the realizer, implements
+                       the `RuntimeHandle` Protocol (surface, poll_events,
+                       terminal, collect, checkpoint, restore, stop)
+  - `codegen/`         Flask app + seed.json source generation,
+                       consumed by WebappRuntimeHandle
+  - `npcs/`            per-pack NPC factories (browsing_user, admin_audit,
+                       office_persona, etc.) — bind to nodes with
+                       role=NPC in the world graph
+
+The pack registers as `openrange.packs` entry-point `webapp` via this
+package's `pyproject.toml`. The id and the entry-point name share the
+same string — `webapp`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from cyber_webapp.ontology import ONTOLOGY
-from cyber_webapp.priors import PRIORS
-from openrange import Builder, Manifest, Pack, RuntimeBundle, WorldGraph, WorldSchema
+from cyber_webapp.builder import WebappBuilder
+from cyber_webapp.families import WebappBuild, WebappPentest
+from cyber_webapp.invariants import (
+    no_orphan_nodes,
+    oracle_path_exists,
+    secret_must_be_held,
+)
+from cyber_webapp.ontology_v2 import ONTOLOGY_ID, webapp_ontology
+from cyber_webapp.realize import WebappRuntimeError, WebappRuntimeHandle
+from openrange.core.contracts import (
+    Backing,
+    Builder,
+    Pack,
+    PackPrior,
+    RuntimeHandle,
+    TaskFamily,
+)
+from openrange.world_ir import Issue, Ontology, WorldGraph
 
 if TYPE_CHECKING:
-    from openrange import BuildContext, EpisodeReport, LLMBackend, Mutation, Snapshot
+    pass
 
 
-class CyberWebappPack(Pack):
-    """Cyber webapp pack — procedural + codegen.
+class WebappPack(Pack):
+    """The cyber webapp pack.
 
-    Ships no on-disk source; everything is generated at build time
-    from the graph. ``dir`` is therefore ``None``.
+    Concrete Pack wiring together the modules in this package. Ships
+    no on-disk source — everything is generated at build/realize time
+    from the sampled graph. `dir` is therefore `None`.
+
+    Construct with no args:
+
+        from cyber_webapp import WebappPack
+        pack = WebappPack()
+        snapshot = admit(pack, manifest={"seed": 0})
+
+    Or load via the entry-point registry:
+
+        from openrange.core.registry import resolve_pack  # future
+        pack = resolve_pack({"id": "webapp"})
     """
 
-    id = "cyber.webapp"
-    version = "v1"
+    id = "webapp"
+    version = "v2"
 
     def __init__(self, dir: Path | None = None) -> None:
+        # `dir` is reserved for filesystem-backed packs; this pack
+        # generates everything at build time, so there's no on-disk
+        # source to point at. Accept the arg for parity with
+        # path-loaded pack instantiation.
         del dir
         self.dir = None
 
-    @property
-    def ontology(self) -> WorldSchema:
-        return ONTOLOGY
+    def ontology(self) -> Ontology:
+        return webapp_ontology()
 
-    def default_builder(self, context: BuildContext) -> Builder | None:
-        from cyber_webapp.builder import ProceduralBuilder
+    def invariants(self) -> list[Callable[[WorldGraph], list[Issue]]]:
+        return [
+            no_orphan_nodes,
+            secret_must_be_held,
+            oracle_path_exists,
+        ]
 
-        seed = 0
-        if context.curriculum is not None:
-            seed_value = context.curriculum.get("seed", 0)
-            if isinstance(seed_value, int):
-                seed = seed_value
-        return ProceduralBuilder(seed=seed)
+    def make_builder(self, prior: PackPrior | None) -> Builder:
+        # `prior=None` is the boot path — `WebappBuilder` falls back to
+        # the hand-authored `default_prior()` shipped in priors.py.
+        return WebappBuilder(prior)
 
-    def realize(self, graph: WorldGraph, manifest: Manifest) -> RuntimeBundle:
-        from cyber_webapp.codegen import realize_graph
-
-        return realize_graph(graph, manifest)
-
-    def generation_priors(self) -> Mapping[str, object]:
-        return PRIORS
-
-    def available_mutations(
+    def realize(
         self,
-        snapshot: Snapshot,
-        reports: Sequence[EpisodeReport],
-        *,
-        llm: LLMBackend | None = None,
-    ) -> tuple[Mutation, ...]:
-        """Procedural enumeration with optional LLM relevance enrichment.
+        graph: WorldGraph,
+        backing: Backing,
+    ) -> RuntimeHandle:
+        return WebappRuntimeHandle(graph, backing)
 
-        The procedural floor is always emitted (deterministic, fast).
-        When an ``llm`` is supplied, a single enrichment call refines
-        relevance scores and notes using semantic reading of the request
-        log; on any LLM failure the procedural list passes through.
-        """
-        from cyber_webapp.mutation import available_mutations as procedural
-
-        options = procedural(snapshot, reports)
-        if llm is None or not options:
-            return options
-        from cyber_webapp.llm_generation import enrich_mutations
-
-        return enrich_mutations(
-            options,
-            graph=snapshot.world_graph,
-            reports=reports,
-            llm=llm,
-        )
-
-    def project_world(self, graph: WorldGraph) -> Mapping[str, object]:
-        """Project the graph back to a flat world dict.
-
-        Surfaces the flag value so verifiers can compare against the
-        agent's submitted result. Other multi-node attrs are
-        intentionally omitted — the verifier only cares about the
-        flag; richer projections (service map, account index) come
-        when verifiers need them.
-        """
-        for node in graph.nodes:
-            if node.type == "secret" and node.attrs.get("kind") == "flag":
-                return MappingProxyType(
-                    {"flag": str(node.attrs.get("value_ref", ""))},
-                )
-        return MappingProxyType({})
+    def task_families(self) -> list[TaskFamily]:
+        return [WebappBuild(), WebappPentest()]
 
 
-__all__ = ["CyberWebappPack"]
+__all__ = [
+    "ONTOLOGY_ID",
+    "WebappBuild",
+    "WebappBuilder",
+    "WebappPack",
+    "WebappPentest",
+    "WebappRuntimeError",
+    "WebappRuntimeHandle",
+    "no_orphan_nodes",
+    "oracle_path_exists",
+    "secret_must_be_held",
+    "webapp_ontology",
+]

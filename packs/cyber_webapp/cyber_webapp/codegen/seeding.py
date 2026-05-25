@@ -1,4 +1,4 @@
-"""Project a v1 world graph into the seed payload the runtime loads at start.
+"""Project a webapp world graph into the seed payload the runtime loads at start.
 
 The generated runtime expects a ``seed.json`` file alongside ``app.py``
 containing the world's accounts/secrets/records and the SQL schema used
@@ -17,7 +17,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
-from openrange import Node, PackError, WorldGraph
+from openrange.core.errors import PackError
+from openrange.world_ir import Node, WorldGraph
 
 _DEFAULT_TABLE = "records"
 _DEFAULT_KEY_COLUMN = "key"
@@ -41,21 +42,21 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
     records: dict[str, dict[str, object]] = {}
 
     creds_by_account: dict[str, str] = {}
-    for edge in graph.edges:
-        if edge.relation == "has_credential":
-            creds_by_account[edge.source] = edge.target
+    for edge in graph.edges.values():
+        if edge.kind == "has_credential":
+            creds_by_account[edge.src] = edge.dst
     cred_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "credential"
+        n.id: n for n in graph.nodes.values() if n.kind == "credential"
     }
 
-    for node in graph.nodes:
-        if node.type == "secret" and node.attrs.get("kind") == "flag":
+    for node in graph.nodes.values():
+        if node.kind == "secret" and node.attrs.get("kind") == "flag":
             flag = str(node.attrs.get("value_ref", ""))
-        elif node.type == "secret":
+        elif node.kind == "secret":
             secrets[str(node.attrs.get("kind", node.id))] = str(
                 node.attrs.get("value_ref", ""),
             )
-        elif node.type == "account":
+        elif node.kind == "account":
             cred_id = creds_by_account.get(node.id)
             password = ""
             if cred_id is not None:
@@ -66,7 +67,7 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
                 "role": str(node.attrs.get("role", "user")),
                 "password": password,
             }
-        elif node.type == "record":
+        elif node.kind == "record":
             fields = node.attrs.get("fields", {})
             if isinstance(fields, Mapping):
                 records[str(node.attrs.get("key", node.id))] = {
@@ -100,8 +101,8 @@ def _derive_sql_schema(graph: WorldGraph) -> Mapping[str, str]:
     (table name, column name) without letting the records seed drift
     from what the SQLi handler queries.
     """
-    for node in graph.nodes:
-        if node.type != "vulnerability":
+    for node in graph.nodes.values():
+        if node.kind != "vulnerability":
             continue
         if str(node.attrs.get("kind", "")) != "sql_injection":
             continue

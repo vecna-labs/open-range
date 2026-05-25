@@ -1,20 +1,35 @@
-"""Graph sampling for the v1 cyber procedural builder.
+"""Graph sampling for the cyber webapp procedural builder (new-shape).
 
-Pure functions. Given an rng + priors, produce a fresh ``WorldGraph``
-that conforms to the v1 ontology. Separate from the Builder class so
-sampling logic can be tested in isolation and swapped out (an MCTS-
-driven sampler would replace this module's ``sample_graph`` while
-keeping the surrounding Builder unchanged).
+Pure functions. Given an ``rng`` and an optional ``PackPrior``, produce
+a fresh :class:`~openrange.world_ir.WorldGraph` that conforms to the
+``cyber.webapp@v1`` ontology declared in
+:mod:`cyber_webapp.ontology_v2`.
+
+This is the post-refactor sibling of the old tuple-shape sampler. The
+procedural / rejection-sampling logic is unchanged — same world shapes
+emerge as before — but every node/edge is now constructed against the
+new ``Node(id, kind, attrs, roles, visibility)`` /
+``Edge(id, kind, src, dst, attrs)`` meta-model, and the graph is
+mutated via ``add_node`` / ``add_edge`` on the dict-shape
+:class:`~openrange.world_ir.WorldGraph` rather than constructed from
+tuples.
+
+Task generation has moved out of this module. ``WebappBuild.generate``
+and ``WebappPentest.generate`` now author task specs by reading the
+sampled graph; this module only emits the world.
 """
 
 from __future__ import annotations
 
 import random
 from collections.abc import Callable, Mapping, Sequence
-from types import MappingProxyType
+from typing import Any
 
+from cyber_webapp.ontology_v2 import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
-from openrange import Edge, Node, PackError, WorldGraph
+from openrange.core.contracts import PackPrior
+from openrange.core.errors import PackError
+from openrange.world_ir import Edge, Node, Role, Visibility, WorldGraph
 
 # Secret formats — modeled on real production credentials so the
 # agent can't pattern-match a CTF-style ``ctf{...}`` / ``FLAG[...]``
@@ -59,62 +74,60 @@ def generate_flag(rng: random.Random) -> str:
 
 # Endpoint path pools per service kind. Larger pools per kind make
 # sampled endpoint sets diverge across builds.
-ENDPOINT_PATHS_BY_KIND: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {
-        "web": (
-            "/",
-            "/search",
-            "/dashboard",
-            "/profile",
-            "/settings",
-            "/account",
-            "/inbox",
-            "/reports",
-            "/help",
-            "/feed",
-            "/notifications",
-            "/portal",
-        ),
-        "api": (
-            "/api/items",
-            "/api/orders",
-            "/api/notes",
-            "/api/health",
-            "/api/users",
-            "/api/products",
-            "/api/invoices",
-            "/api/sessions",
-            "/api/audit",
-            "/api/metrics",
-            "/api/jobs",
-            "/api/webhooks",
-        ),
-        "auth": (
-            "/login",
-            "/token",
-            "/users",
-            "/me",
-            "/logout",
-            "/refresh",
-            "/sessions",
-            "/idp/authorize",
-            "/idp/callback",
-            "/whoami",
-        ),
-        "db": (
-            "/records",
-            "/query",
-            "/stats",
-            "/snapshot",
-            "/replicate",
-            "/health",
-            "/migrate",
-            "/backup",
-            "/index",
-            "/tables",
-        ),
-    },
-)
+ENDPOINT_PATHS_BY_KIND: Mapping[str, tuple[str, ...]] = {
+    "web": (
+        "/",
+        "/search",
+        "/dashboard",
+        "/profile",
+        "/settings",
+        "/account",
+        "/inbox",
+        "/reports",
+        "/help",
+        "/feed",
+        "/notifications",
+        "/portal",
+    ),
+    "api": (
+        "/api/items",
+        "/api/orders",
+        "/api/notes",
+        "/api/health",
+        "/api/users",
+        "/api/products",
+        "/api/invoices",
+        "/api/sessions",
+        "/api/audit",
+        "/api/metrics",
+        "/api/jobs",
+        "/api/webhooks",
+    ),
+    "auth": (
+        "/login",
+        "/token",
+        "/users",
+        "/me",
+        "/logout",
+        "/refresh",
+        "/sessions",
+        "/idp/authorize",
+        "/idp/callback",
+        "/whoami",
+    ),
+    "db": (
+        "/records",
+        "/query",
+        "/stats",
+        "/snapshot",
+        "/replicate",
+        "/health",
+        "/migrate",
+        "/backup",
+        "/index",
+        "/tables",
+    ),
+}
 
 
 # Record key pool — the data-store entry that holds the flag. Was
@@ -135,7 +148,9 @@ _RECORD_KEYS: tuple[str, ...] = (
 
 # Discovery payload titles — what /openapi.json reports as ``title``.
 # Was hardcoded telegraphing the scenario name; sampling produces a
-# realistic-sounding name per build.
+# realistic-sounding name per build. The title isn't part of the
+# ``network`` node kind in the new ontology, so it rides on
+# ``WorldGraph.meta`` where the codegen can still read it.
 DISCOVERY_TITLES: tuple[str, ...] = (
     "Operations Portal API",
     "Customer Services Hub",
@@ -228,167 +243,188 @@ _SSRF_PATTERNS: tuple[str, ...] = (
 
 
 # ---------------------------------------------------------------------------
-# Task / verifier id pools — keep the build's task_id from being a
-# constant so snapshots are distinguishable in lineage / dashboards.
+# Default count / weight tables — used when a ``PackPrior`` is None or
+# lacks the relevant topology hint. Same shape ``cyber_webapp.priors``
+# ships, expressed inline so this module has no PRIORS import dependency.
 # ---------------------------------------------------------------------------
 
-TASK_VERBS: tuple[str, ...] = (
-    "exfiltrate",
-    "retrieve",
-    "recover",
-    "extract",
-    "obtain",
-    "uncover",
-)
-TASK_TARGETS: tuple[str, ...] = (
-    "admin_secret",
-    "admin_flag",
-    "ops_token",
-    "vault_key",
-    "release_credential",
-    "support_override",
-)
+_DEFAULT_COUNTS: Mapping[str, tuple[int, int]] = {
+    # (min, max) inclusive
+    "service_count": (2, 5),
+    "endpoints_per_service": (1, 3),
+    "vuln_count": (1, 3),
+    "account_count": (1, 3),
+}
+
+_DEFAULT_SERVICE_KIND_WEIGHTS: Mapping[str, int] = {
+    "web": 0,  # always one web service; weight ignored
+    "api": 3,
+    "auth": 2,
+    "db": 4,
+}
+
+_DEFAULT_VULN_KIND_WEIGHTS: Mapping[str, int] = {
+    "sql_injection": 3,
+    "ssrf": 2,
+    "broken_authz": 2,
+}
 
 
-def sample_graph(rng: random.Random, priors: Mapping[str, object]) -> WorldGraph:
-    """Draw one full world graph using the supplied priors."""
-    nodes: list[Node] = []
-    edges: list[Edge] = []
-    network = Node(
-        id="net_main",
-        type="network",
-        attrs=MappingProxyType(
-            {
+def sample_graph(
+    rng: random.Random,
+    prior: PackPrior | None = None,
+) -> WorldGraph:
+    """Draw one full world graph using ``rng`` and an optional prior.
+
+    ``prior`` is read for *generic* topology hints: if its
+    ``topology["node_kind_freq"]`` map carries counts for any of our
+    kinds we use those; everything else falls back to the inline
+    defaults declared above. The prior never tells the sampler *what*
+    to do (that would couple ``distill`` to a pack); it only nudges
+    counts.
+    """
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+
+    # Network — task-neutral world meta carries the build's discovery
+    # title so the codegen can render it as the OpenAPI title.
+    network_id = "net_main"
+    graph.add_node(
+        Node(
+            id=network_id,
+            kind="network",
+            attrs={
                 "name": "main",
                 "isolation": "bridge",
                 "zone": "dmz",
-                # ``display_title`` is the human-facing label the codegen
-                # emits as the /openapi.json title — keeps each build's
-                # discovery payload from telegraphing the scenario name.
-                "display_title": rng.choice(DISCOVERY_TITLES),
             },
-        ),
+        )
     )
-    nodes.append(network)
+    graph.meta["discovery_title"] = rng.choice(DISCOVERY_TITLES)
 
-    services = _sample_services(rng, priors)
+    services = _sample_services(rng, prior)
     corp_domain = rng.choice(_CORP_DOMAINS)
     host_env = rng.choice(_HOST_ENVS)
     for index, service in enumerate(services):
-        host = Node(
-            id=f"host_{index}",
-            type="host",
-            attrs=MappingProxyType(
-                {
+        host_id = f"host_{index}"
+        host_zone = "dmz" if service["exposure"] == "public" else "corp"
+        graph.add_node(
+            Node(
+                id=host_id,
+                kind="host",
+                attrs={
                     "hostname": (
                         f"{service['name']}-{host_env}-"
                         f"{rng.randrange(1, 9):02d}.{corp_domain}"
                     ),
                     "os": "linux",
-                    "zone": "dmz" if service["exposure"] == "public" else "corp",
+                    "zone": host_zone,
                 },
-            ),
-        )
-        nodes.append(host)
-        service_node = Node(
-            id=f"svc_{service['name']}",
-            type="service",
-            attrs=MappingProxyType(dict(service)),
-        )
-        nodes.append(service_node)
-        edges.append(Edge(source=service_node.id, relation="runs_on", target=host.id))
-        edges.append(
-            Edge(
-                source=service_node.id,
-                relation="connected_to",
-                target=network.id,
-            ),
-        )
-        for endpoint in _sample_endpoints(rng, priors, service):
-            nodes.append(endpoint)
-            edges.append(
-                Edge(
-                    source=service_node.id,
-                    relation="exposes",
-                    target=endpoint.id,
-                ),
             )
+        )
+
+        service_id = f"svc_{service['name']}"
+        # Services are the agent-visible surface: the build family's
+        # entrypoint is a service. Tag with ACTOR so generic code that
+        # reads ``roles`` can locate the agent-facing surface without
+        # branching on ``kind``.
+        graph.add_node(
+            Node(
+                id=service_id,
+                kind="service",
+                attrs=dict(service),
+                roles={Role.ACTOR},
+            )
+        )
+        _add_edge(graph, "runs_on", service_id, host_id)
+        _add_edge(graph, "connected_to", service_id, network_id)
+
+        for endpoint in _sample_endpoints(rng, prior, service):
+            graph.add_node(endpoint)
+            _add_edge(graph, "exposes", service_id, endpoint.id)
 
     deepest = _pick_deepest_service(services)
-    data_store = Node(
-        id=f"ds_{deepest['name']}",
-        type="data_store",
-        attrs=MappingProxyType(
-            {"name": deepest["name"], "kind": "kv", "engine": "in_memory"},
-        ),
+    deepest_service_id = f"svc_{deepest['name']}"
+
+    data_store_id = f"ds_{deepest['name']}"
+    graph.add_node(
+        Node(
+            id=data_store_id,
+            kind="data_store",
+            attrs={
+                # ``kv`` matches the old sampler's choice. ``redis`` is
+                # the in-enum stand-in for the old "in_memory" engine
+                # value; the new ontology's engine enum doesn't list
+                # in-process stores, and the realizer treats redis as a
+                # simulated kv backend regardless.
+                "name": deepest["name"],
+                "kind": "kv",
+                "engine": "redis",
+            },
+        )
     )
-    nodes.append(data_store)
-    edges.append(
-        Edge(
-            source=f"svc_{deepest['name']}",
-            relation="backed_by",
-            target=data_store.id,
-            attrs=MappingProxyType({"mode": "readwrite"}),
-        ),
+    _add_edge(
+        graph,
+        "backed_by",
+        deepest_service_id,
+        data_store_id,
+        attrs={"mode": "readwrite"},
     )
+
     flag_value = generate_flag(rng)
     record_key = rng.choice(_RECORD_KEYS)
-    flag_record = Node(
-        id=f"rec_{record_key}",
-        type="record",
-        attrs=MappingProxyType(
-            {"key": record_key, "fields": {"value": flag_value}},
-        ),
+    record_id = f"rec_{record_key}"
+    graph.add_node(
+        Node(
+            id=record_id,
+            kind="record",
+            attrs={"key": record_key, "fields": {"value": flag_value}},
+        )
     )
-    nodes.append(flag_record)
-    edges.append(
-        Edge(source=data_store.id, relation="contains", target=flag_record.id),
-    )
-    flag_secret = Node(
-        id="secret_flag",
-        type="secret",
-        attrs=MappingProxyType(
-            {
+    _add_edge(graph, "contains", data_store_id, record_id)
+
+    flag_secret_id = "secret_flag"
+    graph.add_node(
+        Node(
+            id=flag_secret_id,
+            kind="secret",
+            attrs={
                 "kind": "flag",
                 "value_ref": flag_value,
                 "description": "admin flag awarded for retrieval",
             },
-        ),
+            visibility=Visibility.HIDDEN,
+        )
     )
-    nodes.append(flag_secret)
-    edges.append(
-        Edge(
-            source=flag_record.id,
-            relation="holds",
-            target=flag_secret.id,
-            attrs=MappingProxyType({"field": "value"}),
-        ),
+    _add_edge(
+        graph,
+        "holds",
+        record_id,
+        flag_secret_id,
+        attrs={"field": "value"},
     )
 
-    account_nodes, credential_nodes, account_edges = _sample_accounts(rng, priors)
-    nodes.extend(account_nodes)
-    nodes.extend(credential_nodes)
-    edges.extend(account_edges)
-
-    deepest_service_id = f"svc_{deepest['name']}"
-    vuln_nodes, vuln_edges = _sample_vulnerabilities(
+    _sample_accounts(graph, rng, prior)
+    _sample_vulnerabilities(
+        graph,
         rng,
-        priors,
-        nodes,
-        edges,
+        prior,
         oracle_service_id=deepest_service_id,
     )
-    nodes.extend(vuln_nodes)
-    edges.extend(vuln_edges)
-    return WorldGraph(nodes=tuple(nodes), edges=tuple(edges))
+
+    return graph
+
+
+# ---------------------------------------------------------------------------
+# Per-kind samplers — each mutates the graph in place
+# ---------------------------------------------------------------------------
 
 
 def _sample_services(
     rng: random.Random,
-    priors: Mapping[str, object],
+    prior: PackPrior | None,
 ) -> list[dict[str, str]]:
-    count = sample_int(rng, priors, "service_count")
-    kinds_pool = weighted_pool(priors, "service_kinds", exclude=("web",))
+    count = _sample_int(rng, prior, "service_count")
+    kinds_pool = _weighted_pool(prior, "service_kinds", exclude=("web",))
     services: list[dict[str, str]] = [
         {
             "name": "web",
@@ -415,7 +451,7 @@ def _sample_services(
 
 def _sample_endpoints(
     rng: random.Random,
-    priors: Mapping[str, object],
+    prior: PackPrior | None,
     service: Mapping[str, str],
 ) -> list[Node]:
     """Sample distinct endpoint paths for one service.
@@ -424,7 +460,7 @@ def _sample_endpoints(
     service would silently shadow each other in the codegen route
     table. Prefer fewer endpoints over collisions.
     """
-    count = sample_int(rng, priors, "endpoints_per_service")
+    count = _sample_int(rng, prior, "endpoints_per_service")
     pool = list(ENDPOINT_PATHS_BY_KIND.get(service["kind"], ("/",)))
     rng.shuffle(pool)
     selected = pool[: min(count, len(pool))]
@@ -433,103 +469,97 @@ def _sample_endpoints(
         endpoints.append(
             Node(
                 id=f"ep_{service['name']}_{i}",
-                type="endpoint",
-                attrs=MappingProxyType(
-                    {
-                        "path": path,
-                        "method": "GET",
-                        "auth_required": False,
-                        "behavior_ref": f"{service['kind']}.default",
-                    },
-                ),
-            ),
+                kind="endpoint",
+                attrs={
+                    "path": path,
+                    "method": "GET",
+                    "auth_required": False,
+                    "behavior_ref": f"{service['kind']}.default",
+                },
+            )
         )
     return endpoints
 
 
 def _sample_accounts(
+    graph: WorldGraph,
     rng: random.Random,
-    priors: Mapping[str, object],
-) -> tuple[list[Node], list[Node], list[Edge]]:
-    # ``can_access`` edges are deferred — placement needs to know which
-    # endpoints exist before wiring access. Today we only surface
-    # accounts/credentials so the codegen can seed login data.
-    count = sample_int(rng, priors, "account_count")
-    accounts: list[Node] = []
-    credentials: list[Node] = []
-    edges: list[Edge] = []
+    prior: PackPrior | None,
+) -> None:
+    """Place accounts + credentials directly into ``graph``.
+
+    ``can_access`` edges are deferred — placement needs to know which
+    endpoints exist before wiring access. Today we only surface
+    accounts/credentials so the codegen can seed login data.
+
+    Accounts are tagged ``Role.NPC``: they aren't the agent; they're
+    background identities the realized world is seeded with.
+    """
+    count = _sample_int(rng, prior, "account_count")
     for i in range(count):
         is_admin = i == 0
-        account = Node(
-            id=f"acct_{i}",
-            type="account",
-            attrs=MappingProxyType(
-                {
+        account_id = f"acct_{i}"
+        graph.add_node(
+            Node(
+                id=account_id,
+                kind="account",
+                attrs={
                     "username": "admin" if is_admin else f"user{i}",
                     "role": "admin" if is_admin else "user",
                     "active": True,
                 },
-            ),
+                roles={Role.NPC},
+            )
         )
-        accounts.append(account)
-        credential = Node(
-            id=f"cred_{i}",
-            type="credential",
-            attrs=MappingProxyType(
-                {"kind": "password", "value_ref": _b62(rng, 16)},
-            ),
+        credential_id = f"cred_{i}"
+        graph.add_node(
+            Node(
+                id=credential_id,
+                kind="credential",
+                attrs={"kind": "password", "value_ref": _b62(rng, 16)},
+            )
         )
-        credentials.append(credential)
-        edges.append(
-            Edge(
-                source=account.id,
-                relation="has_credential",
-                target=credential.id,
-            ),
-        )
-    return accounts, credentials, edges
+        _add_edge(graph, "has_credential", account_id, credential_id)
 
 
 def _sample_vulnerabilities(
+    graph: WorldGraph,
     rng: random.Random,
-    priors: Mapping[str, object],
-    nodes: list[Node],
-    edges: list[Edge],
+    prior: PackPrior | None,
     *,
     oracle_service_id: str | None = None,
-) -> tuple[list[Node], list[Edge]]:
+) -> None:
     """Place vulnerabilities so the oracle path is satisfiable.
 
     The first placed vuln is anchored to ``oracle_service_id`` (or one
     of its endpoints when the catalog entry targets endpoints). This
-    guarantees the ``OraclePathExistsConstraint`` can be satisfied.
-    Subsequent vulns are placed on randomly shuffled endpoints / services.
+    guarantees the pentest family's feasibility chain has a route from
+    the entrypoint into the data chain. Subsequent vulns are placed on
+    shuffled endpoints / services.
     """
-    count = sample_int(rng, priors, "vuln_count")
-    pool = weighted_pool(priors, "vuln_kinds")
+    count = _sample_int(rng, prior, "vuln_count")
+    pool = _weighted_pool(prior, "vuln_kinds")
     if not pool:
-        return [], []
-    endpoints = [n for n in nodes if n.type == "endpoint"]
-    services = [n for n in nodes if n.type == "service"]
+        return
+
+    endpoints: list[Node] = list(graph.by_kind("endpoint"))
+    services: list[Node] = list(graph.by_kind("service"))
     if not endpoints:
-        return [], []
+        return
 
     oracle_endpoints: list[Node] = []
-    for edge in edges:
-        if edge.relation == "exposes" and edge.source == oracle_service_id:
-            for endpoint in endpoints:
-                if endpoint.id == edge.target:
-                    oracle_endpoints.append(endpoint)
+    if oracle_service_id is not None:
+        for edge in graph.out_edges(oracle_service_id, "exposes"):
+            ep = graph.nodes.get(edge.dst)
+            if ep is not None:
+                oracle_endpoints.append(ep)
     oracle_service: Node | None = None
-    for service in services:
-        if service.id == oracle_service_id:
-            oracle_service = service
-            break
-
-    placed_vulns: list[Node] = []
-    placed_edges: list[Edge] = []
+    if oracle_service_id is not None:
+        oracle_service = graph.nodes.get(oracle_service_id)
 
     rng.shuffle(endpoints)
+
+    placed_vulns: list[Node] = []
     for i in range(count):
         kind = rng.choice(pool)
         if kind not in VULN_CATALOG:
@@ -552,25 +582,24 @@ def _sample_vulnerabilities(
         vuln_id = f"vuln_{kind}_{i}"
         vuln_node = Node(
             id=vuln_id,
-            type="vulnerability",
-            attrs=MappingProxyType(
-                {
-                    "kind": kind,
-                    "family": catalog_entry.family,
-                    "params": default_vuln_params(kind, target_node, rng),
-                },
-            ),
+            kind="vulnerability",
+            attrs={
+                "kind": kind,
+                "family": catalog_entry.family,
+                "params": default_vuln_params(kind, target_node, rng),
+            },
+            visibility=Visibility.HIDDEN,
         )
+        graph.add_node(vuln_node)
         placed_vulns.append(vuln_node)
-        placed_edges.append(
-            Edge(
-                source=vuln_id,
-                relation="affects",
-                target=target_node.id,
-                attrs=MappingProxyType(
-                    {"injection_site": str(target_node.attrs.get("path", "service"))},
-                ),
-            ),
+        _add_edge(
+            graph,
+            "affects",
+            vuln_id,
+            target_node.id,
+            attrs={
+                "injection_site": str(target_node.attrs.get("path", "service")),
+            },
         )
 
     by_kind: dict[str, str] = {}
@@ -583,10 +612,7 @@ def _sample_vulnerabilities(
         for next_kind in catalog_entry.enables:
             target_vuln = by_kind.get(next_kind)
             if target_vuln is not None and target_vuln != vuln.id:
-                placed_edges.append(
-                    Edge(source=vuln.id, relation="enables", target=target_vuln),
-                )
-    return placed_vulns, placed_edges
+                _add_edge(graph, "enables", vuln.id, target_vuln)
 
 
 def default_vuln_params(
@@ -622,44 +648,140 @@ def default_vuln_params(
 
 
 # ---------------------------------------------------------------------------
-# Helpers (also reused by mutation.py)
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-def sample_int(
+def _add_edge(
+    graph: WorldGraph,
+    kind: str,
+    src: str,
+    dst: str,
+    *,
+    attrs: Mapping[str, Any] | None = None,
+) -> Edge:
+    """Add a deterministic-id edge and return it.
+
+    Edge ids are minted from ``kind:src->dst`` with a numeric suffix on
+    collision; this keeps two builds that emit the same edge set
+    content-addressed to the same snapshot id even though the edge id
+    space is new in the meta-model.
+    """
+    base = f"{kind}:{src}->{dst}"
+    edge_id = base
+    suffix = 1
+    while edge_id in graph.edges:
+        edge_id = f"{base}#{suffix}"
+        suffix += 1
+    edge = Edge(
+        id=edge_id,
+        kind=kind,
+        src=src,
+        dst=dst,
+        attrs=dict(attrs) if attrs else {},
+    )
+    graph.add_edge(edge)
+    return edge
+
+
+def _sample_int(
     rng: random.Random,
-    priors: Mapping[str, object],
+    prior: PackPrior | None,
     key: str,
 ) -> int:
-    spec = priors.get(key, {})
+    """Sample an int count for ``key`` from the prior, or fall back.
+
+    The prior's ``topology["count_ranges"][key]`` is read first when
+    present (shape: ``{"min": int, "max": int}``); otherwise the
+    inline default from ``_DEFAULT_COUNTS`` applies. This keeps
+    ``distill``'s output domain-agnostic — the *fact* that a key has
+    a range is generic, the *meaning* of the key is the sampler's.
+    """
+    spec = _prior_count_range(prior, key)
+    if spec is None:
+        minimum, maximum = _DEFAULT_COUNTS.get(key, (1, 1))
+    else:
+        minimum, maximum = spec
+    if maximum < minimum:
+        return minimum
+    return rng.randint(minimum, maximum)
+
+
+def _prior_count_range(
+    prior: PackPrior | None,
+    key: str,
+) -> tuple[int, int] | None:
+    if prior is None:
+        return None
+    ranges_obj: Any = prior.topology.get("count_ranges")
+    if not isinstance(ranges_obj, Mapping):
+        return None
+    spec: Any = ranges_obj.get(key)
     if not isinstance(spec, Mapping):
-        raise PackError(f"prior {key!r} must be a mapping")
-    minimum_raw = spec.get("min", 1)
-    maximum_raw = spec.get("max", 1)
-    if not isinstance(minimum_raw, int) or not isinstance(maximum_raw, int):
-        raise PackError(f"prior {key!r} bounds must be integers")
-    if maximum_raw < minimum_raw:
-        return minimum_raw
-    return rng.randint(minimum_raw, maximum_raw)
+        return None
+    minimum_raw = spec.get("min")
+    maximum_raw = spec.get("max")
+    if not isinstance(minimum_raw, int) or isinstance(minimum_raw, bool):
+        raise PackError(f"prior count_ranges[{key!r}].min must be an int")
+    if not isinstance(maximum_raw, int) or isinstance(maximum_raw, bool):
+        raise PackError(f"prior count_ranges[{key!r}].max must be an int")
+    return minimum_raw, maximum_raw
 
 
-def weighted_pool(
-    priors: Mapping[str, object],
+def _weighted_pool(
+    prior: PackPrior | None,
     key: str,
     *,
     exclude: tuple[str, ...] = (),
 ) -> list[str]:
-    weights = priors.get(key, {})
-    if not isinstance(weights, Mapping):
-        raise PackError(f"prior {key!r} must be a mapping")
+    """Build a flat weighted pool for sampling.
+
+    Reads ``prior.topology["kind_weights"][key]`` (a
+    ``{name: weight}`` map) when present; otherwise falls back to the
+    inline defaults. Names whose weight is non-positive contribute
+    nothing — the legacy "web has weight 0 but is always present"
+    pattern stays a sampler decision, not a prior decision.
+    """
+    weights = _prior_weights(prior, key)
+    if weights is None:
+        if key == "service_kinds":
+            weights = _DEFAULT_SERVICE_KIND_WEIGHTS
+        elif key == "vuln_kinds":
+            weights = _DEFAULT_VULN_KIND_WEIGHTS
+        else:
+            return []
     pool: list[str] = []
     for name, weight in weights.items():
         if name in exclude:
             continue
-        if not isinstance(weight, int):
+        if not isinstance(weight, int) or isinstance(weight, bool):
             continue
         pool.extend([str(name)] * max(0, weight))
     return pool
+
+
+def _prior_weights(
+    prior: PackPrior | None,
+    key: str,
+) -> Mapping[str, int] | None:
+    if prior is None:
+        return None
+    weights_obj: Any = prior.topology.get("kind_weights")
+    if not isinstance(weights_obj, Mapping):
+        return None
+    spec: Any = weights_obj.get(key)
+    if not isinstance(spec, Mapping):
+        return None
+    # The PackPrior topology is a Mapping[str, Any]; narrow the value
+    # types here so callers see a well-typed weights map.
+    out: dict[str, int] = {}
+    for name, weight in spec.items():
+        if not isinstance(name, str):
+            continue
+        if not isinstance(weight, int) or isinstance(weight, bool):
+            continue
+        out[name] = weight
+    return out
 
 
 def _unique_name(kind: str, used: set[str]) -> str:

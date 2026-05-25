@@ -1,4 +1,4 @@
-"""Build the ``/openapi.json`` discovery payload from a v1 world graph.
+"""Build the ``/openapi.json`` discovery payload from a webapp world graph.
 
 The realized app exposes this at ``/openapi.json`` so agents (and the
 ``cyber.admin_audit`` NPC) can enumerate routes without having to
@@ -9,7 +9,7 @@ endpoints are public.
 
 from __future__ import annotations
 
-from openrange import Node, WorldGraph
+from openrange.world_ir import Node, WorldGraph
 
 
 def build_discovery(graph: WorldGraph) -> dict[str, object]:
@@ -21,23 +21,23 @@ def build_discovery(graph: WorldGraph) -> dict[str, object]:
     as ``discovery`` and embedded in the generated app.
     """
     services_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "service"
+        n.id: n for n in graph.nodes.values() if n.kind == "service"
     }
     endpoints_by_service: dict[str, list[Node]] = {sid: [] for sid in services_by_id}
-    for edge in graph.edges:
-        if edge.relation != "exposes":
+    for edge in graph.edges.values():
+        if edge.kind != "exposes":
             continue
-        if edge.source in endpoints_by_service:
+        if edge.src in endpoints_by_service:
             endpoint = next(
                 (
                     n
-                    for n in graph.nodes
-                    if n.type == "endpoint" and n.id == edge.target
+                    for n in graph.nodes.values()
+                    if n.kind == "endpoint" and n.id == edge.dst
                 ),
                 None,
             )
             if endpoint is not None:
-                endpoints_by_service[edge.source].append(endpoint)
+                endpoints_by_service[edge.src].append(endpoint)
 
     services_payload: list[dict[str, object]] = []
     for service_id, service in services_by_id.items():
@@ -77,8 +77,8 @@ def _discovery_title(graph: WorldGraph) -> str:
     back to a generic string if the graph wasn't built by the v1
     sampler (e.g. tests assembling minimal graphs).
     """
-    for node in graph.nodes:
-        if node.type == "network":
+    for node in graph.nodes.values():
+        if node.kind == "network":
             title = node.attrs.get("display_title")
             if isinstance(title, str) and title:
                 return title

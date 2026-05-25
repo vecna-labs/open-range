@@ -286,14 +286,21 @@ class EpisodeReportLike(Protocol):
 
 @runtime_checkable
 class LLMBackendLike(Protocol):
-    """Minimal LLM-backend shape a TaskFamily may optionally call.
+    """LLM-backend Protocol the family layer depends on.
 
-    The full `LLMBackend` lives in `openrange.llm`. This protocol is the
-    seam — TaskFamilies that want LLM enrichment depend on this shape,
-    not on the concrete backend.
+    Matches `openrange.llm.LLMBackend` exactly so the two are
+    interchangeable at the call site — a TaskFamily that wants LLM
+    enrichment annotates against this Protocol; the concrete
+    `LLMBackend` (or any duck-typed alternative) satisfies it.
+
+    The `request` arg is duck-typed as `Any` here to avoid an import of
+    `openrange.llm` from core (the LLM module is a runtime concern, not
+    a core protocol). In `openrange.llm`, `LLMBackend.complete` takes
+    `LLMRequest` and returns `LLMResult` — those concrete shapes are
+    what packs hand around.
     """
 
-    def complete(self, prompt: str, /, **kwargs: Any) -> str: ...
+    def complete(self, request: Any) -> Any: ...
 
 
 # ---------------------------------------------------------------------------

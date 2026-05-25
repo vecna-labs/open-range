@@ -1,58 +1,27 @@
-"""HTTP entrypoint metadata for the v1 codegen-realized runtime.
+"""Filesystem conventions for the generated webapp runtime.
 
-The realized ``app.py`` runs as a single Python subprocess via the
-built-in ``HTTPBacking``. This module owns the metadata schema the
-backing reads to spawn the process: argv template, request log,
-result/task file paths, final-state collection spec.
+The generated ``app.py`` runs as a single Python subprocess managed by
+``WebappRuntimeHandle``. This module owns the path conventions shared
+between the codegen template (``--log`` argv, ``seed.json`` location)
+and the runtime handle (request-log offset polling, ``result.json``
+collection). Keeping these as module constants pins one source of
+truth — the realizer and the generated app cannot disagree on a path.
+
+Pre-refactor this module also returned an ``Entrypoint`` dataclass
+consumed by the now-deleted ``HTTPBacking``; per-pack runtime is
+``RuntimeHandle``-owned now, so the dataclass is gone but the
+conventions it encoded survive here.
 """
 
 from __future__ import annotations
 
-from types import MappingProxyType
-
-from openrange import Entrypoint, Manifest
-
-
-def http_entrypoint(manifest: Manifest) -> Entrypoint:
-    """Build the HTTP ``Entrypoint`` for a realized v1 app.
-
-    The argv carries ``--host``/``--port``/``--log`` only — the flag
-    is baked into the generated ``app.py`` source by codegen, not
-    passed at runtime.
-    """
-    task_file = "OPENRANGE_TASK.json"
-    result_file = "result.json"
-    request_log = "requests.jsonl"
-    return Entrypoint(
-        "http",
-        "web",
-        MappingProxyType(
-            {
-                "mode": manifest.mode,
-                "artifact": "app.py",
-                "argv": [
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    "0",
-                    "--log",
-                    {"run": "request_log"},
-                ],
-                "request_log": request_log,
-                "result_schema": {
-                    "type": "object",
-                    "required": ["flag"],
-                    "properties": {
-                        "flag": {"type": "string", "world_field": "flag"},
-                    },
-                },
-                "result_file": result_file,
-                "task_file": task_file,
-                "final_state": {
-                    "result": {"kind": "json_file", "path": result_file},
-                    "world": {"kind": "world"},
-                    "requests": {"kind": "request_log", "path": request_log},
-                },
-            },
-        ),
-    )
+# Names the runtime handle reads / writes inside the per-episode workspace.
+# The codegen template embeds ``REQUEST_LOG_NAME`` as the ``--log`` argv,
+# and ``SEED_FILE_NAME`` is the default sibling file the generated app
+# loads then unlinks. ``RESULT_FILE_NAME`` is the agent-written terminal
+# signal the handle polls in ``terminal()`` / reads in ``collect()``.
+APP_FILE_NAME = "app.py"
+SEED_FILE_NAME = "seed.json"
+REQUEST_LOG_NAME = "requests.jsonl"
+RESULT_FILE_NAME = "result.json"
+TASK_FILE_NAME = "OPENRANGE_TASK.json"

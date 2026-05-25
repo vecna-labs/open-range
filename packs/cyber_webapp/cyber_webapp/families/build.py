@@ -21,18 +21,24 @@ That's the load-bearing demo that "domain" lives on the TaskFamily.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from openrange.core.contracts import (
+    EpisodeReportLike,
     EpisodeResult,
     FeasibilityVerdict,
+    LLMBackendLike,
     Manifest,
+    Mutation,
     PackPrior,
     TaskFamily,
     TaskSpec,
 )
 from openrange.world_ir import Node, WorldGraph
+
+if TYPE_CHECKING:
+    from openrange.core.admit_loop import Snapshot
 
 
 class WebappBuild(TaskFamily):
@@ -130,6 +136,32 @@ class WebappBuild(TaskFamily):
                 else "endpoint did not serve 200 to the smoke test"
             ),
         )
+
+    def available_mutations(
+        self,
+        snapshot: Snapshot,
+        reports: Sequence[EpisodeReportLike],
+        *,
+        llm: LLMBackendLike | None = None,
+    ) -> tuple[Mutation, ...]:
+        """Delegate to the pack's procedural mutation enumerator.
+
+        The cyber pack ships a single `available_mutations(graph,
+        family_id, reports)` in `cyber_webapp.mutation` that enumerates
+        candidates for any family. We tag each Mutation with our own
+        `family` so curriculum aggregation can route patches back to
+        the right family.
+
+        LLM enrichment is currently a no-op for this family — the
+        build-side mutations are deterministic enough that LLM re-scoring
+        adds little. The `llm` parameter is accepted for protocol
+        conformance and reserved for v2 (LLM-driven novel mutation
+        proposals beyond the procedural floor).
+        """
+        del llm
+        from cyber_webapp.mutation import available_mutations as _enumerate
+
+        return _enumerate(snapshot.graph, self.id, reports)
 
     # ----- helpers -------------------------------------------------------
 

@@ -1,4 +1,4 @@
-"""Handler + route generation from a v1 world graph.
+"""Handler + route generation from a webapp world graph.
 
 Each ``endpoint`` becomes a Python ``def`` rendered into ``app.py``;
 each ``vulnerability`` with an ``affects`` edge to that endpoint (or
@@ -22,7 +22,8 @@ from cyber_webapp.vulnerabilities import (
     CATALOG as VULN_CATALOG,
 )
 from cyber_webapp.vulnerabilities import render_vulnerability
-from openrange import Node, PackError, WorldGraph
+from openrange.core.errors import PackError
+from openrange.world_ir import Node, WorldGraph
 
 
 def build_handlers_and_routes(
@@ -36,22 +37,22 @@ def build_handlers_and_routes(
     table. Web-service endpoints also mount at the public root.
     """
     services_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "service"
+        n.id: n for n in graph.nodes.values() if n.kind == "service"
     }
     endpoints_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "endpoint"
+        n.id: n for n in graph.nodes.values() if n.kind == "endpoint"
     }
     vulns_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "vulnerability"
+        n.id: n for n in graph.nodes.values() if n.kind == "vulnerability"
     }
     service_for_endpoint: dict[str, str] = {}
-    for edge in graph.edges:
-        if edge.relation == "exposes":
-            service_for_endpoint[edge.target] = edge.source
+    for edge in graph.edges.values():
+        if edge.kind == "exposes":
+            service_for_endpoint[edge.dst] = edge.src
     vuln_for_target: dict[str, str] = {}  # target_id -> vuln_id (first wins)
-    for edge in graph.edges:
-        if edge.relation == "affects":
-            vuln_for_target.setdefault(edge.target, edge.source)
+    for edge in graph.edges.values():
+        if edge.kind == "affects":
+            vuln_for_target.setdefault(edge.dst, edge.src)
 
     handlers: list[dict[str, str]] = []
     routes: list[dict[str, str]] = []
