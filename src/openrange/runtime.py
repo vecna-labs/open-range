@@ -55,6 +55,17 @@ class RunConfig:
     # with ``npc_agent_backend``.
     npc_llm_model: str | None = None
 
+    def __post_init__(self) -> None:
+        # Accept ``str`` for ``root`` and coerce — saves callers the
+        # boilerplate of wrapping a path literal in ``Path()`` at every
+        # call site. The dataclass is frozen, so we go through
+        # ``object.__setattr__``. ``isinstance`` is the cheap defensive
+        # check; the type hint is ``Path`` so mypy flags the str branch
+        # as unreachable — that's correct from the static view; we still
+        # want the runtime guard for the README-style ergonomic case.
+        if not isinstance(self.root, Path):
+            object.__setattr__(self, "root", Path(self.root))  # type: ignore[unreachable]
+
 
 @dataclass(frozen=True, slots=True)
 class DashboardServerHandle:

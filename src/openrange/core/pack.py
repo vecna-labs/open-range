@@ -225,7 +225,7 @@ class RuntimeHandle(Protocol):
     episode loop (core territory: doesn't care how, only that the agent
     can act and the final state can be read).
 
-    The seven methods carve the lifecycle / observation surface a generic
+    The eight methods carve the lifecycle / observation surface a generic
     episode loop needs from any backing:
 
     `reset()`            : prepare a clean run state.
