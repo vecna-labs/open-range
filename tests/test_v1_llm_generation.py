@@ -18,9 +18,14 @@ from graphschema import (
     Visibility,
     WorldGraph,
 )
-
-from openrange.core.pack import EpisodeReportLike, Mutation
-from openrange.llm import LLMBackend, LLMError, LLMRequest, LLMResult
+from openrange_pack_sdk import (
+    EpisodeReportLike,
+    LLMBackend,
+    LLMError,
+    LLMRequest,
+    LLMResult,
+    Mutation,
+)
 
 
 class _FakeLLMBackend:

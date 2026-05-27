@@ -16,8 +16,9 @@ from typing import Any
 
 from cyber_webapp import WebappPack
 from graphschema import Visibility
+from openrange_pack_sdk import Snapshot
 
-from openrange.core.admit import Snapshot, admit, snapshot_to_dict
+from openrange.core.admit import admit, snapshot_to_dict
 
 
 def _admit_snapshot() -> Snapshot:

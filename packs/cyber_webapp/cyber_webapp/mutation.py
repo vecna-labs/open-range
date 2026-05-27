@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, runtime_checkable
 
 from graphschema import Edge, GraphPatch, Node, Visibility, WorldGraph
+from openrange_pack_sdk import EpisodeReportLike, Mutation
 
 from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
-from openrange.core.pack import EpisodeReportLike, Mutation
 
 # Keep the import alive even though only the validator reads ONTOLOGY_ID.
 _ = ONTOLOGY_ID
@@ -309,24 +308,12 @@ def _oracle_path_targets(graph: WorldGraph) -> tuple[set[str], set[str]]:
     return oracle_endpoint_ids, backing_service_ids
 
 
-@runtime_checkable
-class _ReportWithFinalState(Protocol):
-    # Core's EpisodeReportLike only declares ``passed``; the relevance
-    # heuristic here needs ``final_state["requests_made"]``. Reports
-    # lacking the attribute contribute no signal.
-
-    @property
-    def final_state(self) -> Mapping[str, Any]: ...
-
-
 def _successful_path_hits(
     reports: Sequence[EpisodeReportLike],
 ) -> dict[str, int]:
     # Status filtering already happened upstream — `requests_made` is the kept set.
     counts: dict[str, int] = {}
     for report in reports:
-        if not isinstance(report, _ReportWithFinalState):
-            continue
         requests_value = report.final_state.get("requests_made")
         if not isinstance(requests_value, list | tuple):
             continue
@@ -489,9 +476,3 @@ def _default_vuln_params(kind: str, target_id: str) -> dict[str, object]:
             ],
         }
     return {}
-
-
-__all__ = [
-    "available_mutations",
-    "coerce_string_list",
-]

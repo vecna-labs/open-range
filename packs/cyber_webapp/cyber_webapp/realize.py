@@ -16,6 +16,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from graphschema import WorldGraph
+from openrange_pack_sdk import Backing, OpenRangeError
 
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.codegen.entrypoint import (
@@ -23,8 +24,6 @@ from cyber_webapp.codegen.entrypoint import (
     REQUEST_LOG_NAME,
     RESULT_FILE_NAME,
 )
-from openrange.core.errors import OpenRangeError
-from openrange.core.pack import Backing
 
 
 class WebappRuntimeError(OpenRangeError):

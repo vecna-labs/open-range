@@ -6,12 +6,11 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from graphschema import Node, WorldGraph
-
-from openrange.core.pack import (
+from openrange_pack_sdk import (
     EpisodeReportLike,
     EpisodeResult,
     FeasibilityVerdict,
-    LLMBackendLike,
+    LLMBackend,
     Manifest,
     Mutation,
     PackPrior,
@@ -20,7 +19,7 @@ from openrange.core.pack import (
 )
 
 if TYPE_CHECKING:
-    from openrange.core.admit import Snapshot
+    from openrange_pack_sdk import Snapshot
 
 
 class WebappBuild(TaskFamily):
@@ -113,7 +112,7 @@ class WebappBuild(TaskFamily):
         snapshot: Snapshot,
         reports: Sequence[EpisodeReportLike],
         *,
-        llm: LLMBackendLike | None = None,
+        llm: LLMBackend | None = None,
     ) -> tuple[Mutation, ...]:
         del llm
         from cyber_webapp.mutation import available_mutations as _enumerate

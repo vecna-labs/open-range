@@ -13,13 +13,12 @@ from graphschema import (
     WorldGraph,
     apply_patch,
 )
-
-from openrange.core.pack import (
+from openrange_pack_sdk import (
     Backing,
     Builder,
     BuildResult,
     EpisodeReportLike,
-    LLMBackendLike,
+    LLMBackend,
     Manifest,
     Mutation,
     Pack,
@@ -30,7 +29,7 @@ from openrange.core.pack import (
 )
 
 if TYPE_CHECKING:
-    from openrange.core.admit import Snapshot
+    from openrange_pack_sdk import Snapshot
 
 
 Direction = Literal["harden", "soften", "diversify"]
@@ -68,7 +67,7 @@ def auto_evolve(
     *reports: EpisodeReportLike,
     pack: Pack,
     policy: CurriculumPolicy = direction_from_reports,
-    llm: LLMBackendLike | None = None,
+    llm: LLMBackend | None = None,
     max_repairs: int = 2,
 ) -> Snapshot | None:
     """Pick a Mutation by `policy`, apply it, re-admit. Returns the next
@@ -113,7 +112,7 @@ def _enumerate_options(
     snapshot: Snapshot,
     reports: Sequence[EpisodeReportLike],
     *,
-    llm: LLMBackendLike | None,
+    llm: LLMBackend | None,
 ) -> list[Mutation]:
     options: list[Mutation] = []
     for family in pack.task_families():
@@ -128,8 +127,9 @@ def _evolve_snapshot(
     *,
     max_repairs: int,
 ) -> Snapshot | None:
+    from openrange_pack_sdk import Snapshot as _Snapshot
+
     from openrange.core.admit import AdmissionFailure, admit
-    from openrange.core.admit import Snapshot as _Snapshot
 
     builder = pack.make_builder(None)
     patch = builder.evolve(snapshot, mutation)
@@ -158,7 +158,7 @@ def _evolve_snapshot(
     if isinstance(result, AdmissionFailure):
         return None
     assert isinstance(result, _Snapshot)
-    from openrange.core.admit import BuildEvent
+    from openrange_pack_sdk import BuildEvent
 
     evolve_event = BuildEvent(
         seq=len(result.history),
@@ -249,11 +249,3 @@ class _PreBuiltPack(Pack):
 
     def task_families(self) -> list[TaskFamily]:
         return self._inner.task_families()
-
-
-__all__ = [
-    "CurriculumPolicy",
-    "Direction",
-    "auto_evolve",
-    "direction_from_reports",
-]

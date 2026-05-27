@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openrange-pack-sdk"
+version = "0.1.0"
+description = "Pack-author SDK for OpenRange: Protocols, value types, and base errors that packs depend on. Zero runtime deps on OpenRange."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+    "graphschema",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openrange_pack_sdk"]
+
+[tool.uv.sources]
+graphschema = { git = "https://github.com/vecna-labs/graphschema.git", rev = "main" }

@@ -6,20 +6,20 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import pytest
-
-from openrange.agent_backend import AgentBackendError
-from openrange.npc import (
+from openrange_pack_sdk import (
     NPC,
+    AgentBackendError,
     AgentNPC,
     NPCError,
+)
+
+from openrange.npc import (
     NPCRegistry,
     resolve_manifest_npcs,
 )
 
 
 class _RecordingNPC(NPC):
-    """Test double: records every step + lifecycle call."""
-
     def __init__(self, label: str = "rec") -> None:
         self.label = label
         self.started_with: Mapping[str, Any] | None = None
@@ -192,9 +192,7 @@ def test_npc_requires_llm_defaults_false() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _FakeAgent:
-    """Records every ``__call__`` it receives (no LLM)."""
-
+class _RecordingAgent:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
@@ -203,15 +201,13 @@ class _FakeAgent:
         return {"message": "ok"}
 
 
-class _FakeBackend:
-    """AgentBackend test double — returns a _FakeAgent, never raises."""
-
-    def __init__(self, *, label: str = "fake", reject_tools: bool = False) -> None:
+class _RecordingBackend:
+    def __init__(self, *, label: str = "recording", reject_tools: bool = False) -> None:
         self.label = label
         self.reject_tools = reject_tools
         self.preflight_calls = 0
         self.builds: list[tuple[str, tuple[Callable[..., Any], ...]]] = []
-        self.fake = _FakeAgent()
+        self.agent = _RecordingAgent()
 
     def preflight(self) -> None:
         self.preflight_calls += 1
@@ -223,14 +219,12 @@ class _FakeBackend:
         tools: Sequence[Callable[..., Any]] = (),
     ) -> Any:
         if self.reject_tools and tools:
-            raise AgentBackendError("this fake backend rejects tools")
+            raise AgentBackendError("this backend rejects tools")
         self.builds.append((system_prompt, tuple(tools)))
-        return self.fake
+        return self.agent
 
 
 class _StubAgentNPC(AgentNPC):
-    """AgentNPC subclass with a single trivial tool."""
-
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.tool_calls: list[Mapping[str, Any]] = []
@@ -253,23 +247,23 @@ def test_agent_npc_requires_llm_is_true_by_default() -> None:
 
 def test_agent_npc_rejects_invalid_construction() -> None:
     with pytest.raises(ValueError, match="system_prompt"):
-        _StubAgentNPC(system_prompt="", agent_backend=_FakeBackend())
+        _StubAgentNPC(system_prompt="", agent_backend=_RecordingBackend())
     with pytest.raises(ValueError, match="cadence_ticks"):
         _StubAgentNPC(
             system_prompt="x",
             cadence_ticks=0,
-            agent_backend=_FakeBackend(),
+            agent_backend=_RecordingBackend(),
         )
 
 
 def test_agent_npc_preflights_constructor_backend() -> None:
-    backend = _FakeBackend()
+    backend = _RecordingBackend()
     _StubAgentNPC(system_prompt="x", agent_backend=backend)
     assert backend.preflight_calls == 1
 
 
 def test_agent_npc_marks_broken_when_constructor_preflight_fails() -> None:
-    class _BadBackend(_FakeBackend):
+    class _BadBackend(_RecordingBackend):
         def preflight(self) -> None:
             raise AgentBackendError("boom")
 
@@ -280,7 +274,7 @@ def test_agent_npc_marks_broken_when_constructor_preflight_fails() -> None:
 
 
 def test_agent_npc_acts_on_first_step_then_obeys_cadence() -> None:
-    backend = _FakeBackend()
+    backend = _RecordingBackend()
     npc = _StubAgentNPC(
         system_prompt="be curious",
         cadence_ticks=3,
@@ -289,20 +283,20 @@ def test_agent_npc_acts_on_first_step_then_obeys_cadence() -> None:
     iface: dict[str, Any] = {"base_url": "http://x"}
 
     npc.step(iface)
-    assert backend.fake.calls == [npc._user_prompt(iface)]
+    assert backend.agent.calls == [npc._user_prompt(iface)]
     assert len(backend.builds) == 1
 
     npc.step(iface)
     npc.step(iface)
-    assert len(backend.fake.calls) == 1  # cooldown
+    assert len(backend.agent.calls) == 1  # cooldown
 
     npc.step(iface)
-    assert len(backend.fake.calls) == 2
+    assert len(backend.agent.calls) == 2
     assert len(backend.builds) == 1  # agent built once, reused
 
 
 def test_agent_npc_captures_runtime_backend_from_context() -> None:
-    runtime_backend = _FakeBackend(label="runtime")
+    runtime_backend = _RecordingBackend(label="runtime")
     npc = _StubAgentNPC(system_prompt="x", cadence_ticks=1)
     npc.start({"episode_id": "e", "agent_backend": runtime_backend})
     assert npc._runtime_backend is runtime_backend
@@ -312,8 +306,8 @@ def test_agent_npc_captures_runtime_backend_from_context() -> None:
 
 
 def test_agent_npc_constructor_backend_overrides_runtime() -> None:
-    explicit = _FakeBackend(label="explicit")
-    runtime_backend = _FakeBackend(label="runtime")
+    explicit = _RecordingBackend(label="explicit")
+    runtime_backend = _RecordingBackend(label="runtime")
     npc = _StubAgentNPC(
         system_prompt="x",
         cadence_ticks=1,
@@ -337,7 +331,7 @@ def test_agent_npc_marks_broken_when_no_backend_anywhere() -> None:
 
 
 def test_agent_npc_marks_broken_when_runtime_preflight_fails() -> None:
-    class _BadRuntimeBackend(_FakeBackend):
+    class _BadRuntimeBackend(_RecordingBackend):
         def preflight(self) -> None:
             raise AgentBackendError("runtime boom")
 
@@ -350,7 +344,7 @@ def test_agent_npc_marks_broken_when_runtime_preflight_fails() -> None:
 def test_agent_npc_marks_broken_on_build_failure() -> None:
     """If backend.build_agent raises, NPC stays silent."""
 
-    class _BuildFailBackend(_FakeBackend):
+    class _BuildFailBackend(_RecordingBackend):
         def build_agent(self, **_kwargs: Any) -> Any:
             raise AgentBackendError("build failed")
 
@@ -368,11 +362,11 @@ def test_agent_npc_marks_broken_on_build_failure() -> None:
 def test_agent_npc_swallows_invocation_errors() -> None:
     """A throwing agent does not sink the episode."""
 
-    class _ThrowingAgent(_FakeAgent):
+    class _ThrowingAgent(_RecordingAgent):
         def __call__(self, prompt: str) -> object:
             raise RuntimeError("model went poof")
 
-    class _ThrowingBackend(_FakeBackend):
+    class _ThrowingBackend(_RecordingBackend):
         def build_agent(self, **kwargs: Any) -> Any:
             return _ThrowingAgent()
 
@@ -390,7 +384,7 @@ def test_agent_npc_stop_clears_agent_reference() -> None:
     npc = _StubAgentNPC(
         system_prompt="x",
         cadence_ticks=1,
-        agent_backend=_FakeBackend(),
+        agent_backend=_RecordingBackend(),
     )
     npc.step({})
     assert npc._agent is not None
@@ -399,7 +393,7 @@ def test_agent_npc_stop_clears_agent_reference() -> None:
 
 
 def test_agent_npc_passes_system_prompt_and_tools_to_backend() -> None:
-    backend = _FakeBackend()
+    backend = _RecordingBackend()
     npc = _StubAgentNPC(
         system_prompt="be curious",
         cadence_ticks=1,

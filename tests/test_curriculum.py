@@ -16,7 +16,7 @@ Three layers:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -34,40 +34,43 @@ from graphschema import (
     WorldGraph,
     apply_patch,
 )
-
-from openrange.core.admit import Snapshot, admit
-from openrange.core.curriculum import (
-    auto_evolve,
-    direction_from_reports,
-)
-from openrange.core.pack import (
+from openrange_pack_sdk import (
     Backing,
     Builder,
     BuildResult,
     EpisodeReportLike,
     EpisodeResult,
     FeasibilityVerdict,
-    LLMBackendLike,
+    LLMBackend,
     Manifest,
     Mutation,
     Pack,
     PackPrior,
     RuntimeHandle,
+    Snapshot,
     TaskFamily,
     TaskSpec,
+)
+
+from openrange.core.admit import admit
+from openrange.core.curriculum import (
+    auto_evolve,
+    direction_from_reports,
 )
 
 
 @dataclass(frozen=True)
 class _Report:
-    """Minimal ``EpisodeReportLike`` — just the ``passed`` property.
+    """Concrete `EpisodeReportLike` — `passed` + `final_state`.
 
-    A frozen dataclass with one bool field is the smallest thing that
-    satisfies the Protocol. Tests use this so they don't depend on the
-    runtime ``EpisodeReport`` class (which lives one layer up).
+    Tests use this so they don't depend on the runtime ``EpisodeReport``
+    class. ``final_state`` defaults to ``{}`` because the curriculum
+    policy under test only reads ``passed``; pack-side mutation heuristics
+    that interrogate final_state pass it explicitly.
     """
 
     passed: bool
+    final_state: Mapping[str, object] = field(default_factory=dict)
 
 
 def test_direction_none_when_no_reports() -> None:
@@ -105,6 +108,8 @@ def test_direction_treats_missing_passed_as_failure() -> None:
     direction."""
 
     class _MissingPassed:
+        final_state: Mapping[str, object] = {}
+
         @property
         def passed(self) -> bool:
             raise AttributeError("passed not yet set")
@@ -248,7 +253,7 @@ class _StubFamily(TaskFamily):
         snapshot: Snapshot,
         reports: Sequence[EpisodeReportLike],
         *,
-        llm: LLMBackendLike | None = None,
+        llm: LLMBackend | None = None,
     ) -> tuple[Mutation, ...]:
         del snapshot, reports, llm
         self.calls += 1

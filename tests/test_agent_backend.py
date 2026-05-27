@@ -5,56 +5,40 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from openrange_pack_sdk import (
+    AgentBackendError,
+    LLMRequest,
+    LLMResult,
+)
 
 from openrange.agent_backend import (
-    AgentBackendError,
     CodexAgentBackend,
     StrandsAgentBackend,
 )
-from openrange.llm import LLMRequest, LLMResult
 
 # ---------------------------------------------------------------------------
 # StrandsAgentBackend
 # ---------------------------------------------------------------------------
 
 
-def test_strands_backend_preflight_raises_when_strands_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Without ``strands-agents``, preflight fails with a clear install hint."""
-    import builtins
+class _NoStrandsBackend(StrandsAgentBackend):
+    # Override the import seams to raise — no monkey-patching needed.
 
-    real_import = builtins.__import__
+    def _probe_strands(self) -> None:
+        raise ImportError("No module named 'strands'")
 
-    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "strands" or name.startswith("strands."):
-            raise ImportError(f"No module named {name!r}")
-        return real_import(name, *args, **kwargs)
+    def _import_agent_class(self) -> type:
+        raise ImportError("No module named 'strands'")
 
-    monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    backend = StrandsAgentBackend()
+def test_strands_backend_preflight_raises_when_strands_missing() -> None:
     with pytest.raises(AgentBackendError, match="strands-agents"):
-        backend.preflight()
+        _NoStrandsBackend().preflight()
 
 
-def test_strands_backend_build_agent_raises_when_strands_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import builtins
-
-    real_import = builtins.__import__
-
-    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "strands" or name.startswith("strands."):
-            raise ImportError(f"No module named {name!r}")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    backend = StrandsAgentBackend()
+def test_strands_backend_build_agent_raises_when_strands_missing() -> None:
     with pytest.raises(AgentBackendError, match="strands-agents"):
-        backend.build_agent(system_prompt="x", tools=())
+        _NoStrandsBackend().build_agent(system_prompt="x", tools=())
 
 
 def test_strands_backend_preflight_passes_when_strands_installed() -> None:
@@ -86,9 +70,7 @@ def test_strands_backend_builds_agent_when_installed() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _FakeLLMBackend:
-    """Test double for :class:`openrange.llm.LLMBackend`."""
-
+class _RecordingLLMBackend:
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
         self.canned = LLMResult("ok")
@@ -106,7 +88,7 @@ class _FakeLLMBackend:
 
 def test_codex_backend_rejects_tools() -> None:
     """CodexAgentBackend errors loudly if handed any tools."""
-    backend = CodexAgentBackend(backend=_FakeLLMBackend())
+    backend = CodexAgentBackend(backend=_RecordingLLMBackend())
 
     def some_tool() -> None:
         return None
@@ -117,7 +99,7 @@ def test_codex_backend_rejects_tools() -> None:
 
 def test_codex_backend_drives_llm_for_tool_less_prompts() -> None:
     """Without tools, build_agent returns a callable that hits the LLM backend."""
-    fake = _FakeLLMBackend()
+    fake = _RecordingLLMBackend()
     backend = CodexAgentBackend(backend=fake)
     session = backend.build_agent(system_prompt="be terse", tools=())
     result = session("hello")
@@ -130,12 +112,12 @@ def test_codex_backend_drives_llm_for_tool_less_prompts() -> None:
 
 def test_codex_backend_rejects_both_backend_and_model_args() -> None:
     with pytest.raises(AgentBackendError, match="not both"):
-        CodexAgentBackend(backend=_FakeLLMBackend(), model="some-model")
+        CodexAgentBackend(backend=_RecordingLLMBackend(), model="some-model")
 
 
 def test_codex_backend_preflight_delegates_to_custom_llm_backend() -> None:
     """A caller-supplied LLMBackend gets its own preflight called."""
-    fake = _FakeLLMBackend()
+    fake = _RecordingLLMBackend()
     backend = CodexAgentBackend(backend=fake)
     backend.preflight()
     assert fake.preflight_calls == 1
@@ -143,9 +125,9 @@ def test_codex_backend_preflight_delegates_to_custom_llm_backend() -> None:
 
 def test_codex_backend_preflight_surfaces_custom_llm_backend_failures() -> None:
     """A failing custom backend preflight raises AgentBackendError."""
-    from openrange.llm import LLMBackendError
+    from openrange_pack_sdk import LLMBackendError
 
-    class _BadBackend(_FakeLLMBackend):
+    class _BadBackend(_RecordingLLMBackend):
         def preflight(self) -> None:
             raise LLMBackendError("custom probe failed")
 
@@ -154,13 +136,12 @@ def test_codex_backend_preflight_surfaces_custom_llm_backend_failures() -> None:
         backend.preflight()
 
 
-def test_codex_backend_preflight_errors_if_codex_cli_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Default CodexBackend → preflight checks PATH for the codex binary."""
-    import shutil as _shutil
+def test_codex_backend_preflight_errors_if_codex_cli_missing(tmp_path: Any) -> None:
+    # A real-but-absent path makes ``shutil.which`` return None without
+    # monkey-patching the resolver.
+    from openrange.llm import CodexBackend
 
-    monkeypatch.setattr(_shutil, "which", lambda _cmd: None)
-    backend = CodexAgentBackend()  # constructs default CodexBackend internally
+    nonexistent = tmp_path / "codex_does_not_exist"
+    backend = CodexAgentBackend(backend=CodexBackend(command=nonexistent))
     with pytest.raises(AgentBackendError, match="codex CLI not found"):
         backend.preflight()

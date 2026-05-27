@@ -7,11 +7,10 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from graphschema import Edge, Node, Role, Visibility, WorldGraph
+from openrange_pack_sdk import PackError, PackPrior
 
 from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
-from openrange.core.errors import PackError
-from openrange.core.pack import PackPrior
 
 # Secret formats modeled on real production credentials so the agent
 # can't pattern-match a CTF-style ``ctf{...}`` / ``FLAG[...]`` wrapper.

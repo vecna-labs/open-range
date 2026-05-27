@@ -4,6 +4,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from graphschema import Issue, Ontology, WorldGraph
+from openrange_pack_sdk import (
+    Backing,
+    Builder,
+    Pack,
+    PackPrior,
+    RuntimeHandle,
+    TaskFamily,
+)
 
 from cyber_webapp.builder import WebappBuilder
 from cyber_webapp.families import WebappBuild, WebappPentest
@@ -15,14 +23,6 @@ from cyber_webapp.invariants import (
 )
 from cyber_webapp.ontology import ONTOLOGY_ID, webapp_ontology
 from cyber_webapp.realize import WebappRuntimeError, WebappRuntimeHandle
-from openrange.core.pack import (
-    Backing,
-    Builder,
-    Pack,
-    PackPrior,
-    RuntimeHandle,
-    TaskFamily,
-)
 
 
 class WebappPack(Pack):

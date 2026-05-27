@@ -6,8 +6,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from graphschema import Node, WorldGraph
-
-from openrange.core.errors import PackError
+from openrange_pack_sdk import PackError
 
 _DEFAULT_TABLE = "records"
 _DEFAULT_KEY_COLUMN = "key"

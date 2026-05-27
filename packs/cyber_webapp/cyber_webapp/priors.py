@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from openrange_pack_sdk import PackPrior, TaskSeed
+
 from cyber_webapp.ontology import webapp_ontology
-from openrange.core.pack import PackPrior, TaskSeed
 
 # Pack-private sampler knobs; deliberately not in `PackPrior` (which
 # stays domain-agnostic). Imported by `cyber_webapp.sampling`.

@@ -3,8 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
-from openrange.agent_backend import StrandsAgentBackend
-from openrange.npc import NPC, AgentNPC
+from openrange_pack_sdk import NPC, AgentNPC
 
 _DEFAULT_SYSTEM_PROMPT = (
     "You are an internal employee at a small company, casually browsing "
@@ -51,17 +50,12 @@ class CuriousEmployee(AgentNPC):
 
 def factory(config: Mapping[str, object]) -> NPC:
     cadence_raw = config.get("cadence_ticks", 5)
-    model_raw = config.get("model")
     prompt_raw = config.get("system_prompt", _DEFAULT_SYSTEM_PROMPT)
     if not isinstance(cadence_raw, int):
         raise ValueError("cadence_ticks must be an int")
-    if model_raw is not None and not isinstance(model_raw, str):
-        raise ValueError("model must be a string or unset")
     if not isinstance(prompt_raw, str) or not prompt_raw:
         raise ValueError("system_prompt must be a non-empty string")
-    backend = StrandsAgentBackend(model=model_raw) if model_raw is not None else None
     return CuriousEmployee(
         system_prompt=prompt_raw,
         cadence_ticks=cadence_raw,
-        agent_backend=backend,
     )

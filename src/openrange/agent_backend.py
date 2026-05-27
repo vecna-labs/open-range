@@ -1,50 +1,42 @@
-"""Agent backend protocol. `StrandsAgentBackend` + `CodexAgentBackend` ship."""
+"""Concrete agent backends. `StrandsAgentBackend` + `CodexAgentBackend` ship.
+
+The ``AgentBackend`` Protocol and ``AgentBackendError`` live in
+``openrange_pack_sdk``.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any, Protocol
+from typing import Any
 
-from openrange.core.errors import OpenRangeError
-from openrange.llm import (
-    CODEX_DEFAULT_MODEL,
-    CodexBackend,
+from openrange_pack_sdk import (
+    AgentBackendError,
+    AgentSession,
     LLMBackend,
     LLMBackendError,
     LLMRequest,
 )
 
-AgentSession = Callable[[str], Any]
-
-
-class AgentBackendError(OpenRangeError):
-    pass
-
-
-class AgentBackend(Protocol):
-    """Factory for agent sessions. `preflight` validates dependencies;
-    `build_agent` returns a callable session. Backends without tool
-    dispatch must raise on non-empty `tools`."""
-
-    def preflight(self) -> None: ...
-
-    def build_agent(
-        self,
-        *,
-        system_prompt: str,
-        tools: Sequence[Callable[..., Any]] = (),
-    ) -> AgentSession: ...
+from openrange.llm import (
+    CODEX_DEFAULT_MODEL,
+    CodexBackend,
+)
 
 
 class StrandsAgentBackend:
-    """Wraps `strands.Agent`. Lazy-imports the optional SDK."""
+    """Wraps `strands.Agent`. Lazy-imports the optional SDK.
+
+    `_probe_strands` and `_import_agent_class` are extension points: tests
+    subclass and override them to assert the missing-optional-dependency
+    error path without monkey-patching ``builtins.__import__``.
+    """
 
     def __init__(self, *, model: str | None = None) -> None:
         self._model = model
 
     def preflight(self) -> None:
         try:
-            import strands  # noqa: F401
+            self._probe_strands()
         except ImportError as exc:
             raise AgentBackendError(
                 "StrandsAgentBackend requires the optional 'strands-agents' "
@@ -58,7 +50,7 @@ class StrandsAgentBackend:
         tools: Sequence[Callable[..., Any]] = (),
     ) -> AgentSession:
         try:
-            from strands import Agent
+            agent_cls = self._import_agent_class()
         except ImportError as exc:
             raise AgentBackendError(
                 "StrandsAgentBackend requires the optional 'strands-agents' "
@@ -71,8 +63,16 @@ class StrandsAgentBackend:
         }
         if self._model is not None:
             kwargs["model"] = self._model
-        agent: AgentSession = Agent(**kwargs)
+        agent: AgentSession = agent_cls(**kwargs)
         return agent
+
+    def _probe_strands(self) -> None:
+        import strands  # noqa: F401
+
+    def _import_agent_class(self) -> Any:
+        from strands import Agent
+
+        return Agent
 
 
 class CodexAgentBackend:
@@ -98,12 +98,14 @@ class CodexAgentBackend:
         )
 
     def preflight(self) -> None:
-        # Delegate to the wrapped LLMBackend's own preflight — every
-        # LLMBackend declares one (default no-op), so custom backends
-        # can self-describe their checks instead of getting silently
-        # skipped here.
+        # LLMBackend Protocol doesn't require preflight, but concrete impls
+        # often have one. Call it only when present so minimal fakes pay
+        # nothing.
+        backend_preflight = getattr(self._backend, "preflight", None)
+        if not callable(backend_preflight):
+            return
         try:
-            self._backend.preflight()
+            backend_preflight()
         except LLMBackendError as exc:
             raise AgentBackendError(
                 f"CodexAgentBackend: backend preflight failed: {exc}",

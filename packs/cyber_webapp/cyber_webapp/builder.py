@@ -7,17 +7,17 @@ from collections.abc import Mapping
 from typing import Any
 
 from graphschema import Issue
-
-from cyber_webapp.families import WebappBuild, WebappPentest
-from cyber_webapp.priors import default_prior
-from cyber_webapp.sampling import sample_graph
-from openrange.core.pack import (
+from openrange_pack_sdk import (
     Builder,
     BuildResult,
     Manifest,
     PackPrior,
     TaskSpec,
 )
+
+from cyber_webapp.families import WebappBuild, WebappPentest
+from cyber_webapp.priors import default_prior
+from cyber_webapp.sampling import sample_graph
 
 
 def _seed_from_manifest(manifest: Manifest) -> int:

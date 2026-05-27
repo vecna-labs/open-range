@@ -17,9 +17,7 @@ from cyber_webapp import WebappPack, WebappPentest
 from cyber_webapp.mutation import available_mutations
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 from graphschema import GraphPatch, WorldGraph, apply_patch
-
-from openrange.core.admit import Snapshot
-from openrange.core.pack import EpisodeReportLike, Mutation
+from openrange_pack_sdk import EpisodeReportLike, Mutation, Snapshot
 
 
 def _build_snapshot(seed: int = 0) -> Snapshot:

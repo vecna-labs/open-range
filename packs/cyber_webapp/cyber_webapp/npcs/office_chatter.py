@@ -11,7 +11,7 @@ import random
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from openrange import NPC
+from openrange_pack_sdk import NPC
 
 
 def _stable_home_index(name: str) -> int:

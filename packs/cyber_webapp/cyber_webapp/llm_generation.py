@@ -7,16 +7,16 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from graphschema import WorldGraph
-
-from openrange.core.errors import OpenRangeError
-from openrange.core.pack import EpisodeReportLike, Mutation
+from openrange_pack_sdk import (
+    EpisodeReportLike,
+    LLMError,
+    LLMRequest,
+    Mutation,
+    OpenRangeError,
+)
 
 if TYPE_CHECKING:
-    # ``LLMBackendLike`` (the minimal duck-typed seam) cannot carry the
-    # json-schema-constrained request this module depends on; we depend
-    # on the transport Protocol here and stay duck-typed beyond
-    # ``complete()``.
-    from openrange.llm import LLMBackend
+    from openrange_pack_sdk import LLMBackend
 
 
 class LLMGenerationError(OpenRangeError):
@@ -193,16 +193,9 @@ def _summarize_requests(
     *,
     max_rows: int = 40,
 ) -> list[dict[str, Any]]:
-    # ``EpisodeReportLike`` only guarantees ``.passed``; the request log
-    # lives on the concrete ``EpisodeReport``'s ``final_state``. Defensive
-    # ``getattr`` lets this helper survive the minimal-protocol contract
-    # while still working on concrete reports.
     rows: list[dict[str, Any]] = []
     for report in reports:
-        final_state = getattr(report, "final_state", None)
-        if not isinstance(final_state, Mapping):
-            continue
-        requests = final_state.get("requests")
+        requests = report.final_state.get("requests")
         if not isinstance(requests, list | tuple):
             continue
         for raw in requests:
@@ -230,8 +223,6 @@ def _ask_llm_json(
     prompt: Mapping[str, Any],
     schema: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    from openrange.llm import LLMError, LLMRequest
-
     request = LLMRequest(
         prompt=json.dumps(prompt, sort_keys=True),
         system=system,
@@ -254,8 +245,6 @@ def _ask_llm(
     prompt: Mapping[str, Any],
     required_field: str,
 ) -> Mapping[str, str]:
-    from openrange.llm import LLMError, LLMRequest
-
     request = LLMRequest(
         prompt=json.dumps(prompt, sort_keys=True),
         system=system,

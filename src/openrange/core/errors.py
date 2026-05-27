@@ -1,18 +1,8 @@
-"""OpenRange core errors."""
+"""Runtime-only errors. Base errors live in ``openrange_pack_sdk``."""
 
 from __future__ import annotations
 
-
-class OpenRangeError(Exception):
-    pass
-
-
-class ManifestError(OpenRangeError):
-    pass
-
-
-class PackError(OpenRangeError):
-    pass
+from openrange_pack_sdk import OpenRangeError
 
 
 class AdmissionError(OpenRangeError):

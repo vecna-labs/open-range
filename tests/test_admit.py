@@ -20,18 +20,10 @@ from graphschema import (
     WorldGraph,
     apply_patch,
 )
-
-from openrange.core.admit import (
-    AdmissionFailure,
-    BuildEvent,
-    Snapshot,
-    admit,
-    snapshot_to_dict,
-    validate_task_bindings,
-)
-from openrange.core.pack import (
+from openrange_pack_sdk import (
     Backing,
     Builder,
+    BuildEvent,
     BuildResult,
     EpisodeResult,
     FeasibilityVerdict,
@@ -39,8 +31,16 @@ from openrange.core.pack import (
     Pack,
     PackPrior,
     RuntimeHandle,
+    Snapshot,
     TaskFamily,
     TaskSpec,
+)
+
+from openrange.core.admit import (
+    AdmissionFailure,
+    admit,
+    snapshot_to_dict,
+    validate_task_bindings,
 )
 
 _TEST_ONTOLOGY = Ontology(
@@ -580,7 +580,7 @@ def test_validate_task_bindings_flags_dangling_goal() -> None:
 def test_builder_evolve_default_returns_patch_verbatim() -> None:
     """`Builder.evolve` default just returns the mutation's patch; a
     pack can override to refine it."""
-    from openrange.core.pack import Mutation
+    from openrange_pack_sdk import Mutation
 
     g = _build_test_graph()
     g_copy = WorldGraph(ontology=g.ontology, nodes=dict(g.nodes), edges=dict(g.edges))

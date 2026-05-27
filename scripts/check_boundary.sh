@@ -30,8 +30,7 @@
 # leak (its module docstring spells out the cyber-pack coupling and a
 # follow-up to move it onto a `Pack.topology_view()` hook). The whole
 # file is excluded from the scan rather than annotated line-by-line.
-# Phase 5 does not own the dashboard/pack refactor; the exclusion goes
-# away with that follow-up.
+# The exclusion is meant to go away once the dashboard/pack refactor lands.
 
 set -euo pipefail
 
@@ -153,11 +152,36 @@ done < <(
     | sort -u
 )
 
+# --- Pack-isolation scan: packs/ MUST NOT import from openrange. -----
+#
+# A pack lives in its own folder (and may be published as a third-party
+# package). It depends on ``openrange-pack-sdk`` (the contract layer) and
+# ``graphschema`` — never on the openrange runtime. If a pack needs a
+# concrete LLM backend or agent backend, the harness/runtime supplies it
+# via context/RunConfig — never imported by pack code.
+#
+# No exemption. If you have a genuine reason to need a concrete openrange
+# class inside a pack, lift the abstraction into the SDK or carry the
+# concrete class in a separate package the pack depends on.
+
+while IFS= read -r match; do
+  violations=$((violations + 1))
+  echo "boundary: pack-imports-openrange $match" >&2
+done < <(
+  grep -rniE \
+    --include='*.py' \
+    '^[[:space:]]*(from|import)[[:space:]]+openrange(\.|[[:space:]]|$)' \
+    packs/ 2>/dev/null \
+    | grep -vE 'openrange_pack_sdk' || true
+)
+
 if [ "$violations" -gt 0 ]; then
   echo "boundary: $violations leak(s) found." >&2
   echo "boundary: core-leaks may be tagged with '# ALLOWED_DOMAIN_LEAK:" \
     "<reason>'." >&2
   echo "boundary: proprietary-leaks must be removed — no exemption." >&2
+  echo "boundary: pack-imports-openrange must be removed — packs depend" \
+    "only on openrange-pack-sdk + graphschema." >&2
   exit 1
 fi
 

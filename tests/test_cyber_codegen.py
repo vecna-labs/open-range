@@ -29,8 +29,7 @@ from cyber_webapp.codegen.entrypoint import (
     SEED_FILE_NAME,
 )
 from graphschema import WorldGraph
-
-from openrange.core.pack import Backing, RuntimeHandle
+from openrange_pack_sdk import Backing, RuntimeHandle
 
 
 def _sample_graph(seed: int = 0) -> WorldGraph:

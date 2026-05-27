@@ -1,0 +1,76 @@
+"""openrange-pack-sdk — Pack-author contracts for OpenRange.
+
+from openrange_pack_sdk import Pack, TaskFamily, TaskSpec, ...
+"""
+
+from openrange_pack_sdk._errors import (
+    AgentBackendError,
+    LLMBackendError,
+    LLMError,
+    LLMRequestError,
+    ManifestError,
+    NPCError,
+    OpenRangeError,
+    PackError,
+)
+from openrange_pack_sdk._protocols import (
+    NPC,
+    AgentBackend,
+    AgentNPC,
+    AgentSession,
+    Builder,
+    EpisodeReportLike,
+    LLMBackend,
+    Pack,
+    RuntimeHandle,
+    TaskFamily,
+)
+from openrange_pack_sdk._types import (
+    Backing,
+    BuildEvent,
+    BuildResult,
+    EpisodeResult,
+    FeasibilityVerdict,
+    LLMRequest,
+    LLMResult,
+    Manifest,
+    Mutation,
+    PackPrior,
+    Snapshot,
+    TaskSeed,
+    TaskSpec,
+)
+
+__all__ = [
+    "AgentBackend",
+    "AgentBackendError",
+    "AgentNPC",
+    "AgentSession",
+    "Backing",
+    "BuildEvent",
+    "BuildResult",
+    "Builder",
+    "EpisodeReportLike",
+    "EpisodeResult",
+    "FeasibilityVerdict",
+    "LLMBackend",
+    "LLMBackendError",
+    "LLMError",
+    "LLMRequest",
+    "LLMRequestError",
+    "LLMResult",
+    "Manifest",
+    "ManifestError",
+    "Mutation",
+    "NPC",
+    "NPCError",
+    "OpenRangeError",
+    "Pack",
+    "PackError",
+    "PackPrior",
+    "RuntimeHandle",
+    "Snapshot",
+    "TaskFamily",
+    "TaskSeed",
+    "TaskSpec",
+]

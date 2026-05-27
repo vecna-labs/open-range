@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 from collections.abc import Iterator
 
-from openrange.core.errors import OpenRangeError
+from openrange_pack_sdk import OpenRangeError
 
 
 def iter_entry_points(

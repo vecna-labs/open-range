@@ -106,10 +106,20 @@ Today the examples are *eval* loops. Closing them into actual
 
 Primitives every pack and harness depends on.
 
+- 🚧 **Per-NPC LLM backend selection** — extracting
+  `openrange-pack-sdk` removed the `model:` config key from the cyber
+  webapp NPC factories (it used to construct a concrete
+  `StrandsAgentBackend` and so couldn't survive the strict
+  pack-cannot-import-openrange boundary). Every NPC in an episode now
+  shares the single `RunConfig.npc_agent_backend`. To restore per-NPC
+  model selection cleanly, add a `backend_id:` config key on NPC factories
+  + a `RunConfig.npc_backend_factory: Callable[[str], AgentBackend] | None`
+  the runtime resolves at NPC start. Mirror of the entry-point pattern;
+  no openrange import in pack code.
 - 🟢 **Restore 100% test coverage**
   ([#201](https://github.com/vecna-labs/open-range/issues/201)) —
-  v0 deletion + the v1 pack/admission refactor temporarily dropped
-  coverage.
+  coverage dropped to 80% during the typed-property-graph + pack /
+  admission refactor; bring it back.
 - 🟢 **Second non-cyber pack to validate domain-agnostic shape** —
   today only `webapp` ships, so the design's domain-agnosticism is
   unverified end-to-end. A second pack against a non-HTTP backing is

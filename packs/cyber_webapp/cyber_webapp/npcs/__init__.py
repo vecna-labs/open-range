@@ -4,7 +4,7 @@ from abc import abstractmethod
 from collections.abc import Mapping
 from typing import Any, cast
 
-from openrange.npc import NPC
+from openrange_pack_sdk import NPC
 
 
 class _HTTPCadenceNPC(NPC):

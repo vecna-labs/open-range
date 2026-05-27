@@ -9,9 +9,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import cast
 
+from openrange_pack_sdk import Snapshot, TaskSpec
+
 from openrange.core import ActorTurn
-from openrange.core.admit import Snapshot
-from openrange.core.pack import TaskSpec
 from openrange.dashboard.events import (
     DashboardEvent,
     EventBridge,

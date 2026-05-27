@@ -14,9 +14,10 @@ from urllib.request import Request, urlopen
 
 import pytest
 from cyber_webapp import WebappPack
+from openrange_pack_sdk import LLMBackendError, Snapshot
 
 import openrange as OR
-from openrange.core.admit import Snapshot, admit
+from openrange.core.admit import admit
 from openrange.dashboard import (
     DashboardArtifactLog,
     DashboardEvent,
@@ -28,7 +29,7 @@ from openrange.dashboard import (
 from openrange.dashboard import (
     read_dashboard_events as read_dashboard_artifact_events,
 )
-from openrange.llm import LLMBackendError, parse_json_object, run_codex
+from openrange.llm import parse_json_object, run_codex
 
 MANIFEST = {
     "world": {"goal": "find the admin flag", "title": "Ops Portal"},

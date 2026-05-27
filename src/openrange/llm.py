@@ -1,4 +1,9 @@
-"""LLM backend contracts and Codex CLI implementation."""
+"""Codex CLI LLM backend implementation.
+
+The ``LLMBackend`` Protocol and ``LLMRequest`` / ``LLMResult`` value types
+live in ``openrange_pack_sdk``. This module ships the concrete CodexBackend
+plus the impl-specific exceptions it raises.
+"""
 
 from __future__ import annotations
 
@@ -8,60 +13,11 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
-from openrange.core import OpenRangeError
+from openrange_pack_sdk import LLMBackendError, LLMRequest, LLMResult
 
 CODEX_DEFAULT_MODEL = "gpt-5.3-codex-spark"
-
-
-class LLMError(OpenRangeError):
-    """Base LLM error."""
-
-
-class LLMRequestError(LLMError):
-    """Raised when an LLM request cannot be serialized."""
-
-
-class LLMBackendError(LLMError):
-    """Raised when the backend process fails."""
-
-    def __init__(self, message: str, *, returncode: int | None = None) -> None:
-        super().__init__(message)
-        self.returncode = returncode
-
-
-@dataclass(frozen=True, slots=True)
-class LLMRequest:
-    prompt: str
-    system: str | None = None
-    json_schema: Mapping[str, object] | None = None
-
-    def __post_init__(self) -> None:
-        if self.json_schema is None:
-            return
-        try:
-            json.dumps(self.json_schema)
-        except TypeError as exc:
-            raise LLMRequestError("json_schema must be JSON serializable") from exc
-
-    def as_prompt(self) -> str:
-        if self.system is None:
-            return self.prompt
-        return f"{self.system}\n\n{self.prompt}"
-
-
-@dataclass(frozen=True, slots=True)
-class LLMResult:
-    text: str
-    parsed_json: Mapping[str, object] | None = None
-
-
-class LLMBackend(Protocol):
-    def complete(self, request: LLMRequest) -> LLMResult: ...
-
-    def preflight(self) -> None:
-        pass
 
 
 @dataclass(frozen=True, slots=True)

@@ -27,16 +27,7 @@ from cyber_webapp.npcs.browsing_user import (
 )
 
 
-class _FakeInterface(dict[str, Any]):
-    """Hand-built mock matching ``WebappRuntimeHandle.surface()``.
-
-    Provides every key NPCs may read from the runtime surface
-    (``base_url``, ``http_get``, ``http_get_json``, ``agent_root``)
-    while recording the paths ``http_get`` was called with, so tests
-    can assert on cadence and rotation without spinning a real
-    subprocess.
-    """
-
+class _RuntimeSurface(dict[str, Any]):
     def __init__(self) -> None:
         super().__init__()
         self.calls: list[str] = []
@@ -56,7 +47,7 @@ class _FakeInterface(dict[str, Any]):
 
 def test_browsing_user_acts_on_first_step_then_obeys_cadence() -> None:
     npc = BrowsingUser(cadence_ticks=3, paths=("/a",))
-    iface = _FakeInterface()
+    iface = _RuntimeSurface()
 
     # First tick: act.
     npc.step(iface)
@@ -74,7 +65,7 @@ def test_browsing_user_acts_on_first_step_then_obeys_cadence() -> None:
 
 def test_browsing_user_rotates_through_paths() -> None:
     npc = BrowsingUser(cadence_ticks=1, paths=("/a", "/b", "/c"))
-    iface = _FakeInterface()
+    iface = _RuntimeSurface()
     for _ in range(7):
         npc.step(iface)
     # cadence_ticks=1: every step acts → 7 calls cycling a→b→c→a→b→c→a
@@ -114,7 +105,7 @@ def test_browsing_user_factory_reads_config() -> None:
         },
     )
     assert isinstance(npc, BrowsingUser)
-    iface = _FakeInterface()
+    iface = _RuntimeSurface()
     # First tick acts; next 3 silent; 5th acts again.
     for _ in range(5):
         npc.step(iface)
@@ -130,7 +121,7 @@ def test_browsing_user_factory_rejects_bad_config() -> None:
 
 def test_admin_audit_polls_audit_path_at_cadence() -> None:
     npc = AdminAudit(cadence_ticks=2, audit_path="/openapi.json")
-    iface = _FakeInterface()
+    iface = _RuntimeSurface()
     npc.step(iface)
     npc.step(iface)
     npc.step(iface)
@@ -142,14 +133,14 @@ def test_admin_audit_polls_audit_path_at_cadence() -> None:
 def test_admin_audit_factory_defaults_to_openapi_json() -> None:
     npc = admin_audit_factory({})
     assert isinstance(npc, AdminAudit)
-    iface = _FakeInterface()
+    iface = _RuntimeSurface()
     npc.step(iface)
     assert iface.calls == ["/openapi.json"]
 
 
 def test_admin_audit_factory_honors_audit_path() -> None:
     npc = admin_audit_factory({"cadence_ticks": 1, "audit_path": "/internal/health"})
-    iface = _FakeInterface()
+    iface = _RuntimeSurface()
     npc.step(iface)
     assert iface.calls == ["/internal/health"]
 
@@ -187,24 +178,21 @@ def test_curious_employee_factory_constructs_with_defaults() -> None:
     assert "internal employee" in npc._system_prompt
 
 
-def test_curious_employee_factory_promotes_model_to_strands_backend() -> None:
-    """Per-NPC ``model`` config builds a StrandsAgentBackend override."""
+def test_curious_employee_factory_defaults_no_backend_override() -> None:
+    """The pack stays free of openrange runtime imports; per-NPC backend
+    overrides are configured at the harness level via RunConfig."""
     from cyber_webapp.npcs.curious_employee import CuriousEmployee
     from cyber_webapp.npcs.curious_employee import factory as ce_factory
-
-    from openrange.agent_backend import StrandsAgentBackend
 
     npc = ce_factory(
         {
             "cadence_ticks": 2,
-            "model": "claude-sonnet-4-20250514",
             "system_prompt": "You are a tester.",
         },
     )
     assert isinstance(npc, CuriousEmployee)
     assert npc._cadence_ticks == 2
-    assert isinstance(npc._backend_override, StrandsAgentBackend)
-    assert npc._backend_override._model == "claude-sonnet-4-20250514"
+    assert npc._backend_override is None
     assert npc._system_prompt == "You are a tester."
 
 
@@ -213,8 +201,6 @@ def test_curious_employee_factory_rejects_bad_config() -> None:
 
     with pytest.raises(ValueError, match="cadence_ticks"):
         ce_factory({"cadence_ticks": "fast"})
-    with pytest.raises(ValueError, match="model"):
-        ce_factory({"model": 42})
     with pytest.raises(ValueError, match="system_prompt"):
         ce_factory({"system_prompt": ""})
 

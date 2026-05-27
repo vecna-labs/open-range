@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from graphschema import Edge, Node, Role, Visibility, WorldGraph
+from openrange_pack_sdk import BuildEvent, Snapshot, TaskSpec
 
-from openrange.core.admit import BuildEvent, Snapshot, snapshot_to_dict
+from openrange.core.admit import snapshot_to_dict
 from openrange.core.errors import StoreError
-from openrange.core.pack import TaskSpec
 
 
 class SnapshotStore:

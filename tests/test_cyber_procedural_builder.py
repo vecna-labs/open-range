@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from cyber_webapp import WebappBuilder, WebappPack
 from cyber_webapp.priors import default_prior
+from openrange_pack_sdk import BuildResult, PackPrior, Snapshot
 
-from openrange.core.admit import Snapshot, admit
-from openrange.core.pack import BuildResult, PackPrior
+from openrange.core.admit import admit
 
 
 def test_builder_returns_build_result() -> None:

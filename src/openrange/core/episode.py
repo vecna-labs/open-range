@@ -13,18 +13,21 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
-from openrange.agent_backend import AgentBackend, StrandsAgentBackend
-from openrange.core.admit import Snapshot
-from openrange.core.errors import OpenRangeError
-from openrange.core.pack import (
+from openrange_pack_sdk import (
+    NPC,
+    AgentBackend,
     Backing,
     EpisodeResult,
+    OpenRangeError,
     Pack,
     RuntimeHandle,
+    Snapshot,
     TaskSpec,
 )
+
+from openrange.agent_backend import StrandsAgentBackend
 from openrange.core.turn import ActorTurn
-from openrange.npc import NPC, resolve_manifest_npcs
+from openrange.npc import resolve_manifest_npcs
 
 if TYPE_CHECKING:
     from openrange.dashboard import DashboardView

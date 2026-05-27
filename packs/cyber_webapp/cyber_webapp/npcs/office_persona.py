@@ -9,8 +9,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar, cast
 
-from openrange.agent_backend import AgentBackend, StrandsAgentBackend
-from openrange.npc import NPC
+from openrange_pack_sdk import NPC, AgentBackend
 
 _log = logging.getLogger(__name__)
 
@@ -292,7 +291,6 @@ def factory(config: Mapping[str, object]) -> NPC:
     colleagues_raw = config.get("colleagues", ())
     home_raw = config.get("home")
     cadence_raw = config.get("cadence_ticks", 6)
-    model_raw = config.get("model")
     seed_raw = config.get("seed")
     suffix_raw = config.get("_replication_suffix", "")
     if not isinstance(name_raw, str) or not name_raw:
@@ -311,13 +309,10 @@ def factory(config: Mapping[str, object]) -> NPC:
         raise ValueError("home must be a string or unset")
     if not isinstance(cadence_raw, int):
         raise ValueError("cadence_ticks must be an int")
-    if model_raw is not None and not isinstance(model_raw, str):
-        raise ValueError("model must be a string or unset")
     if seed_raw is not None and not isinstance(seed_raw, int):
         raise ValueError("seed must be an int or unset")
     if not isinstance(suffix_raw, str):
         raise ValueError("_replication_suffix must be a string")
-    backend = StrandsAgentBackend(model=model_raw) if model_raw is not None else None
     return OfficePersona(
         name=name_raw + suffix_raw,
         role=role_raw,
@@ -326,6 +321,5 @@ def factory(config: Mapping[str, object]) -> NPC:
         colleagues=tuple(colleagues_raw),
         home=home_raw,
         cadence_ticks=cadence_raw,
-        agent_backend=backend,
         seed=seed_raw,
     )

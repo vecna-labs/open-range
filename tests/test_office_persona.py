@@ -20,8 +20,7 @@ from typing import Any
 import pytest
 from cyber_webapp.npcs.office_persona import OfficePersona, _stable_home_index
 from cyber_webapp.npcs.office_persona import factory as op_factory
-
-from openrange.agent_backend import AgentBackendError
+from openrange_pack_sdk import AgentBackendError
 
 
 class _StubSession:
@@ -110,12 +109,6 @@ def _record(actions: list[dict[str, Any]]) -> Callable[..., None]:
 
 
 def _interface(http_calls: list[str]) -> dict[str, Any]:
-    """Hand-built mock matching ``WebappRuntimeHandle.surface()``.
-
-    Returns every key the cyber pack's runtime surface advertises
-    (``base_url``, ``http_get``, ``http_get_json``, ``agent_root``)
-    while recording call paths into ``http_calls``.
-    """
 
     def http_get(path: object) -> bytes:
         http_calls.append(str(path))
@@ -192,21 +185,20 @@ def test_resolve_manifest_leaves_actor_id_bare_when_count_is_one() -> None:
     assert [r["id"] for r in rows] == ["Solo"]
 
 
-def test_factory_promotes_model_to_strands_backend() -> None:
-    from openrange.agent_backend import StrandsAgentBackend
-
+def test_factory_defaults_no_backend_override() -> None:
+    """The pack stays free of openrange runtime imports; per-NPC backend
+    overrides are configured at the harness level via RunConfig."""
     npc = op_factory(
         {
             "name": "Carol",
             "role": "it_admin",
-            "model": "claude-haiku-4-5",
             "title": "Sec Eng",
             "tone": "calm",
             "colleagues": ["Dave"],
         },
     )
     assert isinstance(npc, OfficePersona)
-    assert isinstance(npc._backend_override, StrandsAgentBackend)
+    assert npc._backend_override is None
     assert npc._title == "Sec Eng"
     assert npc._colleagues == ("Dave",)
 
@@ -218,8 +210,6 @@ def test_factory_rejects_bad_config() -> None:
         op_factory({"name": "x", "role": ""})
     with pytest.raises(ValueError, match="cadence_ticks"):
         op_factory({"name": "x", "cadence_ticks": "fast"})
-    with pytest.raises(ValueError, match="model"):
-        op_factory({"name": "x", "model": 42})
     with pytest.raises(ValueError, match="colleagues"):
         op_factory({"name": "x", "colleagues": "Bob"})
     with pytest.raises(ValueError, match="title"):

@@ -14,49 +14,15 @@ from graphschema import (
     WorldGraph,
     validate,
 )
-
-from openrange.core.pack import (
+from openrange_pack_sdk import (
+    BuildEvent,
     FeasibilityVerdict,
     Pack,
     PackPrior,
+    Snapshot,
     TaskFamily,
     TaskSpec,
 )
-
-
-@dataclass(frozen=True)
-class BuildEvent:
-    """One entry in `Snapshot.history`.
-
-    `phase` ∈ {"build", "validate", "feasibility", "repair", "freeze", "evolve"}.
-    """
-
-    seq: int
-    phase: str
-    detail: str
-    refs: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "seq": self.seq,
-            "phase": self.phase,
-            "detail": self.detail,
-        }
-        if self.refs:
-            d["refs"] = list(self.refs)
-        return d
-
-
-@dataclass(frozen=True)
-class Snapshot:
-    """An admitted, frozen world. `snapshot_id == graph.content_hash()`."""
-
-    snapshot_id: str
-    ontology_id: str
-    graph: WorldGraph
-    tasks: tuple[TaskSpec, ...]
-    lineage: Mapping[str, Any]
-    history: tuple[BuildEvent, ...] = ()
 
 
 @dataclass

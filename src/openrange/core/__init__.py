@@ -1,9 +1,12 @@
-"""OpenRange core public API."""
+"""OpenRange runtime-side core API.
+
+Pack-author types (Pack, TaskFamily, TaskSpec, etc.) live in
+``openrange_pack_sdk``. This module re-exports only runtime-side helpers:
+admission, curriculum, registries, store, turns.
+"""
 
 from openrange.core.admit import (
     AdmissionFailure,
-    BuildEvent,
-    Snapshot,
     admit,
     snapshot_to_dict,
     validate_task_bindings,
@@ -17,29 +20,11 @@ from openrange.core.curriculum import (
 from openrange.core.errors import (
     AdmissionError,
     EpisodeRuntimeError,
-    ManifestError,
-    OpenRangeError,
-    PackError,
     StoreError,
 )
 from openrange.core.pack import (
     PACKS,
-    Backing,
-    Builder,
-    BuildResult,
-    EpisodeReportLike,
-    EpisodeResult,
-    FeasibilityVerdict,
-    LLMBackendLike,
-    Manifest,
-    Mutation,
-    Pack,
-    PackPrior,
     PackRegistry,
-    RuntimeHandle,
-    TaskFamily,
-    TaskSeed,
-    TaskSpec,
 )
 from openrange.core.store import SnapshotStore
 from openrange.core.turn import ActorTurn
@@ -49,32 +34,12 @@ __all__ = [
     "ActorTurn",
     "AdmissionError",
     "AdmissionFailure",
-    "Backing",
-    "BuildEvent",
-    "BuildResult",
-    "Builder",
     "CurriculumPolicy",
     "Direction",
-    "EpisodeReportLike",
-    "EpisodeResult",
     "EpisodeRuntimeError",
-    "FeasibilityVerdict",
-    "LLMBackendLike",
-    "Manifest",
-    "ManifestError",
-    "Mutation",
-    "OpenRangeError",
-    "Pack",
-    "PackError",
-    "PackPrior",
     "PackRegistry",
-    "RuntimeHandle",
-    "Snapshot",
     "SnapshotStore",
     "StoreError",
-    "TaskFamily",
-    "TaskSeed",
-    "TaskSpec",
     "admit",
     "auto_evolve",
     "direction_from_reports",

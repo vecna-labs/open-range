@@ -5,12 +5,12 @@ import textwrap
 from collections.abc import Mapping
 
 from graphschema import Node, WorldGraph
+from openrange_pack_sdk import PackError
 
 from cyber_webapp.vulnerabilities import (
     CATALOG as VULN_CATALOG,
 )
 from cyber_webapp.vulnerabilities import render_vulnerability
-from openrange.core.errors import PackError
 
 
 def build_handlers_and_routes(

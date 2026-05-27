@@ -13,6 +13,7 @@ dependencies = [
     "PyYAML>=6.0.3",
     "Jinja2>=3.1",
     "graphschema",
+    "openrange-pack-sdk",
 ]
 
 [project.optional-dependencies]
@@ -38,10 +39,11 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["packs/cyber_webapp"]
+members = ["packs/cyber_webapp", "packages/openrange-pack-sdk"]
 
 [tool.uv.sources]
 openrange-cyber-webapp = { workspace = true }
+openrange-pack-sdk = { workspace = true }
 graphschema = { git = "https://github.com/vecna-labs/graphschema.git", rev = "main" }
 
 [tool.hatch.build.targets.wheel]
@@ -56,7 +58,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
 python_version = "3.14"
-mypy_path = ["src", "packs/cyber_webapp"]
+mypy_path = ["src", "packs/cyber_webapp", "packages/openrange-pack-sdk/src"]
 strict = true
 warn_unreachable = true
 
@@ -72,11 +74,11 @@ module = ["strands", "strands.*", "strands_tools", "strands_tools.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/openrange-pack-sdk/tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["openrange", "cyber_webapp"]
+source = ["openrange", "openrange_pack_sdk", "cyber_webapp"]
 omit = [
     "src/openrange/__main__.py",
 ]

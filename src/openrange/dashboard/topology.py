@@ -12,8 +12,8 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from graphschema import WorldGraph
+from openrange_pack_sdk import Snapshot
 
-from openrange.core.admit import Snapshot
 from openrange.dashboard.events import json_safe
 
 
