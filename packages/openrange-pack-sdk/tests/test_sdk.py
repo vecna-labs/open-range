@@ -866,7 +866,7 @@ class TestMakeMutation:
 
 
 class _LongRunningRuntime:
-    """SubprocessRuntimeHandle subclass for the test suite.
+    """SubprocessRuntime subclass for the test suite.
 
     Spawns ``python -c <SCRIPT>`` that prints one JSON startup line then
     sleeps forever. Tests drive lifecycle methods + override hooks against
@@ -889,9 +889,9 @@ class _MinimalSubprocessRuntime:
 
 
 def _make_simple_subprocess_runtime() -> Any:
-    from openrange_pack_sdk import SubprocessRuntimeHandle
+    from openrange_pack_sdk import SubprocessRuntime
 
-    class _Simple(SubprocessRuntimeHandle):
+    class _Simple(SubprocessRuntime):
         def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
             del graph
             return {"ready.txt": "ok"}
@@ -919,9 +919,9 @@ def _make_simple_subprocess_runtime() -> Any:
 def _make_silent_subprocess_runtime() -> Any:
     """Subprocess that emits the contract-required newline then idles —
     proves the default parse_startup returns {} when there's no payload."""
-    from openrange_pack_sdk import SubprocessRuntimeHandle
+    from openrange_pack_sdk import SubprocessRuntime
 
-    class _Silent(SubprocessRuntimeHandle):
+    class _Silent(SubprocessRuntime):
         def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
             del graph
             return {}
@@ -942,7 +942,7 @@ def _make_silent_subprocess_runtime() -> Any:
     return _Silent(_empty_graph())
 
 
-class TestSubprocessRuntimeHandle:
+class TestSubprocessRuntime:
     def test_full_lifecycle(self) -> None:
         from pathlib import Path
 
@@ -1110,9 +1110,9 @@ class TestSubprocessRuntimeHandle:
             runtime.stop()
 
     def test_subprocess_that_exits_immediately_has_empty_startup(self) -> None:
-        from openrange_pack_sdk import SubprocessRuntimeHandle
+        from openrange_pack_sdk import SubprocessRuntime
 
-        class _Exits(SubprocessRuntimeHandle):
+        class _Exits(SubprocessRuntime):
             def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
                 del graph
                 return {}
@@ -1167,9 +1167,9 @@ class TestSubprocessRuntimeHandle:
             shutil.rmtree(snap, ignore_errors=True)
 
     def test_collect_extras_default_is_empty(self) -> None:
-        from openrange_pack_sdk import SubprocessRuntimeHandle
+        from openrange_pack_sdk import SubprocessRuntime
 
-        class _Defaults(SubprocessRuntimeHandle):
+        class _Defaults(SubprocessRuntime):
             def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
                 del graph
                 return {}
@@ -1199,11 +1199,11 @@ class TestSubprocessRuntimeHandle:
             runtime.stop()
 
     def test_subprocess_env_override(self) -> None:
-        from openrange_pack_sdk import SubprocessRuntimeHandle
+        from openrange_pack_sdk import SubprocessRuntime
 
         captured: dict[str, str] = {}
 
-        class _EnvRuntime(SubprocessRuntimeHandle):
+        class _EnvRuntime(SubprocessRuntime):
             def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
                 del graph
                 return {}
@@ -1313,9 +1313,9 @@ class TestSubprocessRuntimeHandle:
             runtime.stop()
 
     def test_startup_timeout_raises_when_subprocess_silent(self) -> None:
-        from openrange_pack_sdk import OpenRangeError, SubprocessRuntimeHandle
+        from openrange_pack_sdk import OpenRangeError, SubprocessRuntime
 
-        class _NeverPrints(SubprocessRuntimeHandle):
+        class _NeverPrints(SubprocessRuntime):
             STARTUP_TIMEOUT_SECONDS = 0.2
 
             def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
@@ -1339,9 +1339,9 @@ class TestSubprocessRuntimeHandle:
             runtime.stop()
 
     def test_stop_escalates_to_sigkill_when_sigterm_ignored(self) -> None:
-        from openrange_pack_sdk import SubprocessRuntimeHandle
+        from openrange_pack_sdk import SubprocessRuntime
 
-        class _IgnoresSigterm(SubprocessRuntimeHandle):
+        class _IgnoresSigterm(SubprocessRuntime):
             GRACE_SECONDS = 0.2
 
             def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
@@ -1372,14 +1372,14 @@ class TestSubprocessRuntimeHandle:
         # SIGKILL eventually reaped it — Popen.poll returns the exit code.
         assert process.poll() is not None
 
-    def test_popen_kwargs_adds_stdin_pipe(self) -> None:
+    def test_subprocess_popen_kwargs_adds_stdin_pipe(self) -> None:
         """Trading-style pack pattern: open stdin for two-way comms."""
         import json as _json
         import subprocess as _subprocess
 
-        from openrange_pack_sdk import SubprocessRuntimeHandle
+        from openrange_pack_sdk import SubprocessRuntime
 
-        class _StdinEcho(SubprocessRuntimeHandle):
+        class _StdinEcho(SubprocessRuntime):
             def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
                 del graph
                 return {}
@@ -1405,7 +1405,7 @@ class TestSubprocessRuntimeHandle:
                     "sys.stdout.flush()\n",
                 ]
 
-            def popen_kwargs(self) -> Mapping[str, Any]:
+            def subprocess_popen_kwargs(self) -> Mapping[str, Any]:
                 return {"stdin": _subprocess.PIPE}
 
         runtime = _StdinEcho(_empty_graph())
@@ -1424,9 +1424,9 @@ class TestSubprocessRuntimeHandle:
 
 
 def _make_simple_ondemand_runtime() -> Any:
-    from openrange_pack_sdk import OnDemandRuntimeHandle
+    from openrange_pack_sdk import OnDemandRuntime
 
-    class _SimpleOnDemand(OnDemandRuntimeHandle):
+    class _SimpleOnDemand(OnDemandRuntime):
         def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
             del graph
             return {"README.md": "# project", "src/main.py": "print('hi')\n"}
@@ -1440,7 +1440,7 @@ def _make_simple_ondemand_runtime() -> Any:
     return _SimpleOnDemand(_empty_graph())
 
 
-class TestOnDemandRuntimeHandle:
+class TestOnDemandRuntime:
     def test_full_lifecycle(self) -> None:
         runtime = _make_simple_ondemand_runtime()
         try:
@@ -1538,9 +1538,9 @@ class TestOnDemandRuntimeHandle:
         a run_cmd callable that shells out against the agent_root."""
         import subprocess as _subprocess
 
-        from openrange_pack_sdk import OnDemandRuntimeHandle
+        from openrange_pack_sdk import OnDemandRuntime
 
-        class _SWEPack(OnDemandRuntimeHandle):
+        class _SWEPack(OnDemandRuntime):
             def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
                 del graph
                 return {}

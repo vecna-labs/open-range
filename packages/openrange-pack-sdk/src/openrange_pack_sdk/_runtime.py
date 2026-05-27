@@ -1,4 +1,4 @@
-"""Reusable RuntimeHandle base classes for common pack-author patterns.
+"""Reusable runtime base classes for common pack-author patterns.
 
 These are optional. Packs can implement the ``RuntimeHandle`` Protocol
 directly. Use one of these when your runtime fits the pattern.
@@ -7,12 +7,12 @@ Two siblings share a filesystem-lifecycle base (``env_root`` /
 ``agent_root`` / ``pack_root``, file-snapshot checkpoint/restore,
 ``result.json`` terminal signal):
 
-* :class:`SubprocessRuntimeHandle` — spawns and supervises a
+* :class:`SubprocessRuntime` — spawns and supervises a
   long-running child the agent interacts with (e.g. a webapp, a
   simulator). Owns the SIGTERM→SIGKILL grace period and the startup
   handshake.
 
-* :class:`OnDemandRuntimeHandle` — no persistent child. Agent acts on
+* :class:`OnDemandRuntime` — no persistent child. Agent acts on
   files; the pack exposes on-demand callables (e.g. ``run_tests``) via
   ``surface_extras``. Fits SWE-style packs where the world is a code
   workspace.
@@ -38,7 +38,7 @@ from openrange_pack_sdk._errors import OpenRangeError
 from openrange_pack_sdk._helpers import write_tree
 
 
-class _FilesystemRuntimeHandle(ABC):
+class _FilesystemRuntime(ABC):
     """Shared lifecycle base for filesystem-backed RuntimeHandles.
 
     Owns the tempdir trio (``env_root``, ``agent_root``, ``pack_root``),
@@ -192,7 +192,7 @@ class _FilesystemRuntimeHandle(ABC):
         return type(self).__name__.lower()
 
 
-class OnDemandRuntimeHandle(_FilesystemRuntimeHandle):
+class OnDemandRuntime(_FilesystemRuntime):
     """RuntimeHandle for packs with no persistent subprocess.
 
     Pattern: the agent acts on files under ``agent_root``; the pack
@@ -229,7 +229,7 @@ class OnDemandRuntimeHandle(_FilesystemRuntimeHandle):
         self._drop_checkpoints()
 
 
-class SubprocessRuntimeHandle(_FilesystemRuntimeHandle):
+class SubprocessRuntime(_FilesystemRuntime):
     """RuntimeHandle scaffold for packs whose realized world is a child
     subprocess the agent interacts with.
 
@@ -260,7 +260,7 @@ class SubprocessRuntimeHandle(_FilesystemRuntimeHandle):
     * ``parse_startup(stdout_line)`` — extract a surface descriptor from
       the subprocess's first stdout line (e.g., ``{"base_url": ...}``).
     * ``subprocess_env()`` — environment variables for the child.
-    * ``popen_kwargs()`` — extra ``Popen`` kwargs (e.g.
+    * ``subprocess_popen_kwargs()`` — extra ``Popen`` kwargs (e.g.
       ``stdin=subprocess.PIPE`` for two-way comms). Additive; don't
       override ``stdout``/``stderr``/``start_new_session`` — the SDK
       relies on those.
@@ -305,7 +305,7 @@ class SubprocessRuntimeHandle(_FilesystemRuntimeHandle):
         """Override to set the child's env. Default: inherit parent."""
         return None
 
-    def popen_kwargs(self) -> Mapping[str, Any]:
+    def subprocess_popen_kwargs(self) -> Mapping[str, Any]:
         """Override to add extra ``Popen`` kwargs (e.g.
         ``{"stdin": subprocess.PIPE}`` for two-way comms).
 
@@ -369,7 +369,7 @@ class SubprocessRuntimeHandle(_FilesystemRuntimeHandle):
             "stderr": subprocess.PIPE,
             "text": True,
             "start_new_session": True,
-            **dict(self.popen_kwargs()),
+            **dict(self.subprocess_popen_kwargs()),
         }
         env = self.subprocess_env()
         if env is not None:
@@ -421,6 +421,6 @@ def _readline_with_timeout(
         raise OpenRangeError(
             f"subprocess did not write a startup line within "
             f"{timeout_seconds:.1f}s; pack must emit a newline before "
-            "reset() can return (see SubprocessRuntimeHandle docstring)"
+            "reset() can return (see SubprocessRuntime docstring)"
         )
     return process.stdout.readline()

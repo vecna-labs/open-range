@@ -1,7 +1,7 @@
 """Behavioral tests for cyber NPCs.
 
 The NPCs receive an ``interface`` mapping matching the shape produced
-by ``WebappRuntimeHandle.surface()``:
+by ``WebappRuntime.surface()``:
 ``{base_url, http_get, http_get_json, agent_root}``. Tests use a fake
 interface that records GET calls so we can assert on cadence,
 rotation, and graceful error handling — no real subprocess needed.

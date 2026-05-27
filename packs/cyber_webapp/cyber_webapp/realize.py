@@ -1,4 +1,4 @@
-"""WebappRuntimeHandle. Only ``Backing.PROCESS`` is wired."""
+"""WebappRuntime. Only ``Backing.PROCESS`` is wired."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from graphschema import WorldGraph
 from openrange_pack_sdk import (
     Backing,
     OpenRangeError,
-    SubprocessRuntimeHandle,
+    SubprocessRuntime,
 )
 
 from cyber_webapp.codegen import _realize_graph
@@ -29,8 +29,8 @@ class WebappRuntimeError(OpenRangeError):
     pass
 
 
-class WebappRuntimeHandle(SubprocessRuntimeHandle):
-    """SubprocessRuntimeHandle for the cyber webapp pack.
+class WebappRuntime(SubprocessRuntime):
+    """SubprocessRuntime for the cyber webapp pack.
 
     Spawns the rendered ``app.py`` as a subprocess that serves HTTP, parses
     its startup line to get the bound ``host:port``, surfaces an
@@ -43,7 +43,7 @@ class WebappRuntimeHandle(SubprocessRuntimeHandle):
     def __init__(self, graph: WorldGraph, backing: Backing) -> None:
         if backing is not Backing.PROCESS:
             raise NotImplementedError(
-                f"WebappRuntimeHandle does not yet support backing={backing!r}; "
+                f"WebappRuntime does not yet support backing={backing!r}; "
                 "only Backing.PROCESS is wired",
             )
         super().__init__(graph)

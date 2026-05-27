@@ -6,7 +6,7 @@ Three concerns:
    and produces a ``{path: source}`` mapping carrying ``app.py`` and
    ``seed.json``.
 2. ``WebappPack().realize(graph, Backing.PROCESS)`` returns a
-   ``WebappRuntimeHandle`` satisfying the ``RuntimeHandle`` Protocol.
+   ``WebappRuntime`` satisfying the ``RuntimeHandle`` Protocol.
 3. The handle's ``reset()`` materializes those files to disk, starts a
    subprocess, exposes the agent surface, and ``stop()`` cleans up.
 """
@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from typing import cast
 
 import pytest
-from cyber_webapp import WebappPack, WebappRuntimeHandle
+from cyber_webapp import WebappPack, WebappRuntime
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.codegen.entrypoint import (
     APP_FILE_NAME,
@@ -98,10 +98,10 @@ def test_realize_graph_is_deterministic_in_graph() -> None:
 
 
 def test_pack_realize_returns_webapp_runtime_handle() -> None:
-    """The pack's realize() returns a concrete WebappRuntimeHandle."""
+    """The pack's realize() returns a concrete WebappRuntime."""
     graph = _sample_graph()
     handle = WebappPack().realize(graph, Backing.PROCESS)
-    assert isinstance(handle, WebappRuntimeHandle)
+    assert isinstance(handle, WebappRuntime)
 
 
 def test_pack_realize_satisfies_runtime_handle_protocol() -> None:
@@ -247,7 +247,7 @@ def test_handle_stop_cleans_up_tempdirs() -> None:
     from pathlib import Path
 
     raw = WebappPack().realize(_sample_graph(), Backing.PROCESS)
-    handle = cast(WebappRuntimeHandle, raw)
+    handle = cast(WebappRuntime, raw)
     handle.reset()
     env_root = handle._env_root
     assert env_root is not None and env_root.exists()

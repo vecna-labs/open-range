@@ -38,8 +38,8 @@ from openrange_pack_sdk._protocols import (
     TaskFamily,
 )
 from openrange_pack_sdk._runtime import (
-    OnDemandRuntimeHandle,
-    SubprocessRuntimeHandle,
+    OnDemandRuntime,
+    SubprocessRuntime,
 )
 from openrange_pack_sdk._types import (
     Backing,
@@ -80,7 +80,7 @@ __all__ = [
     "Mutation",
     "NPC",
     "NPCError",
-    "OnDemandRuntimeHandle",
+    "OnDemandRuntime",
     "OpenRangeError",
     "Pack",
     "PackError",
@@ -88,7 +88,7 @@ __all__ = [
     "ProceduralBuilder",
     "RuntimeHandle",
     "Snapshot",
-    "SubprocessRuntimeHandle",
+    "SubprocessRuntime",
     "TaskFamily",
     "TaskSeed",
     "TaskSpec",
