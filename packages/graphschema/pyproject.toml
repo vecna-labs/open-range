@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "graphschema"
+version = "0.1.0"
+description = "Typed property-graph meta-model with declarative schemas."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+authors = [{ name = "Vecna AI" }]
+keywords = ["graph", "ontology", "schema", "property-graph", "typed-graph"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/vecna-labs/graphschema"
+Repository = "https://github.com/vecna-labs/graphschema"
+Issues = "https://github.com/vecna-labs/graphschema/issues"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19",
+    "pytest>=9.0",
+    "ruff>=0.15.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/graphschema"]
+include = ["src/graphschema/py.typed"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+python_version = "3.14"
+mypy_path = ["src"]
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

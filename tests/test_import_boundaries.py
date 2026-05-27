@@ -1,11 +1,17 @@
-"""Repo-wide import-boundary invariants:
+"""Repo-wide import-boundary invariants. Dependency stack, bottom-up:
+
+    graphschema ← openrange_pack_sdk ← {openrange, packs/*}
+
+Each layer may depend only on layers below it.
 
 1. ``packs/`` MUST NOT import from ``openrange``.
 2. ``src/openrange/`` MUST NOT import from any pack.
 3. ``packages/openrange-pack-sdk/`` MUST NOT import from any pack.
 4. ``packages/openrange-pack-sdk/`` MUST NOT import from ``openrange``
-   (the SDK is contract-only, zero runtime deps beyond ``graphschema``).
-5. ``openrange.__init__`` MUST NOT re-export ``openrange_pack_sdk`` symbols
+   (the SDK is contract-only).
+5. ``packages/graphschema/`` MUST NOT import from any pack, the SDK, or
+   ``openrange`` (graphschema sits at the bottom of the stack).
+6. ``openrange.__init__`` MUST NOT re-export ``openrange_pack_sdk`` symbols
    (no migration shim — callers import from the SDK directly).
 """
 
@@ -53,6 +59,7 @@ def test_import_boundaries() -> None:
     assert pack_modules, "expected at least one pack module under packs/"
 
     sdk_src = REPO_ROOT / "packages" / "openrange-pack-sdk" / "src"
+    graphschema_src = REPO_ROOT / "packages" / "graphschema" / "src"
     openrange_src = REPO_ROOT / "src" / "openrange"
     openrange_init = openrange_src / "__init__.py"
 
@@ -77,6 +84,22 @@ def test_import_boundaries() -> None:
                 violations.append(f"sdk→pack  {file.relative_to(REPO_ROOT)} → {leak}")
         for leak in sorted(_imports_under(imports, "openrange")):
             violations.append(f"sdk→openrange  {file.relative_to(REPO_ROOT)} → {leak}")
+
+    for file in _py_files(graphschema_src):
+        imports = _imports_in(file)
+        for pack in pack_modules:
+            for leak in sorted(_imports_under(imports, pack)):
+                violations.append(
+                    f"graphschema→pack  {file.relative_to(REPO_ROOT)} → {leak}"
+                )
+        for leak in sorted(_imports_under(imports, "openrange")):
+            violations.append(
+                f"graphschema→openrange  {file.relative_to(REPO_ROOT)} → {leak}"
+            )
+        for leak in sorted(_imports_under(imports, "openrange_pack_sdk")):
+            violations.append(
+                f"graphschema→sdk  {file.relative_to(REPO_ROOT)} → {leak}"
+            )
 
     init_imports = _imports_in(openrange_init)
     for leak in sorted(_imports_under(init_imports, "openrange_pack_sdk")):

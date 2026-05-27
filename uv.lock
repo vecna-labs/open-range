@@ -8,6 +8,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "graphschema",
     "openrange",
     "openrange-cyber-webapp",
     "openrange-pack-sdk",
@@ -426,7 +427,23 @@ wheels = [
 [[package]]
 name = "graphschema"
 version = "0.1.0"
-source = { git = "https://github.com/vecna-labs/graphschema.git?rev=main#cca7368716523b9cae2eac17a589d94d0fd2a93c" }
+source = { editable = "packages/graphschema" }
+
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.19" },
+    { name = "pytest", specifier = ">=9.0" },
+    { name = "ruff", specifier = ">=0.15.6" },
+]
 
 [[package]]
 name = "h11"
@@ -795,7 +812,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "graphschema", git = "https://github.com/vecna-labs/graphschema.git?rev=main" },
+    { name = "graphschema", editable = "packages/graphschema" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
     { name = "pyyaml", specifier = ">=6.0.3" },
@@ -826,7 +843,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "graphschema", git = "https://github.com/vecna-labs/graphschema.git?rev=main" },
+    { name = "graphschema", editable = "packages/graphschema" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
     { name = "pyyaml", specifier = ">=6.0.3" },
@@ -841,7 +858,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "graphschema", git = "https://github.com/vecna-labs/graphschema.git?rev=main" }]
+requires-dist = [{ name = "graphschema", editable = "packages/graphschema" }]
 
 [[package]]
 name = "opentelemetry-api"

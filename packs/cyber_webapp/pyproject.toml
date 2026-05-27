@@ -30,5 +30,5 @@ dependencies = [
 packages = ["cyber_webapp"]
 
 [tool.uv.sources]
+graphschema = { workspace = true }
 openrange-pack-sdk = { workspace = true }
-graphschema = { git = "https://github.com/vecna-labs/graphschema.git", rev = "main" }

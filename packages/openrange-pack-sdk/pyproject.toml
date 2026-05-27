@@ -17,4 +17,4 @@ dependencies = [
 packages = ["src/openrange_pack_sdk"]
 
 [tool.uv.sources]
-graphschema = { git = "https://github.com/vecna-labs/graphschema.git", rev = "main" }
+graphschema = { workspace = true }
