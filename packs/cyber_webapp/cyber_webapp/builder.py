@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Mapping
-from typing import Any
 
-from graphschema import Issue
 from openrange_pack_sdk import (
-    Builder,
     BuildResult,
     Manifest,
     PackPrior,
+    ProceduralBuilder,
     TaskSpec,
 )
 
@@ -20,57 +17,22 @@ from cyber_webapp.priors import default_prior
 from cyber_webapp.sampling import sample_graph
 
 
-def _seed_from_manifest(manifest: Manifest) -> int:
-    raw = manifest.get("seed", 0)
-    if isinstance(raw, bool):
-        return 0
-    if isinstance(raw, int):
-        return raw
-    return 0
+class WebappBuilder(ProceduralBuilder):
+    def __init__(self, prior: PackPrior | None = None) -> None:
+        super().__init__(prior if prior is not None else default_prior())
 
-
-class WebappBuilder(Builder):
-    def __init__(self, prior: PackPrior | None) -> None:
-        self._prior = prior if prior is not None else default_prior()
-        self._attempt = 0
-        self._last_manifest: Manifest = {}
-
-    def build(self, manifest: Manifest) -> BuildResult:
-        self._last_manifest = manifest
-
-        seed = _seed_from_manifest(manifest) + self._attempt
-        rng = random.Random(seed)
-        graph = sample_graph(rng, self._prior)
-
+    def sample(self, rng: random.Random, manifest: Manifest) -> BuildResult:
+        graph = sample_graph(rng, self.prior)
         tasks: list[TaskSpec] = []
-        tasks.extend(WebappBuild().generate(graph, manifest, self._prior))
-        tasks.extend(WebappPentest().generate(graph, manifest, self._prior))
-
+        tasks.extend(WebappBuild().generate(graph, manifest, self.prior))
+        tasks.extend(WebappPentest().generate(graph, manifest, self.prior))
         return BuildResult(
             graph=graph,
             tasks=tasks,
-            admission_meta=_admission_meta(seed, self._prior, manifest),
+            admission_meta={
+                "builder": "cyber.webapp.v2",
+                "seed": self.current_seed,
+                "prior_source": (self.prior.source if self.prior is not None else None),
+                "manifest_keys": sorted(manifest.keys()),
+            },
         )
-
-    def repair(
-        self,
-        prev: BuildResult,
-        errors: list[Issue],
-        infeasible: list[str],
-    ) -> BuildResult:
-        del prev, errors, infeasible
-        self._attempt += 1
-        return self.build(self._last_manifest)
-
-
-def _admission_meta(
-    seed: int,
-    prior: PackPrior,
-    manifest: Manifest,
-) -> Mapping[str, Any]:
-    return {
-        "builder": "cyber.webapp.v2",
-        "seed": seed,
-        "prior_source": prior.source,
-        "manifest_keys": sorted(manifest.keys()),
-    }

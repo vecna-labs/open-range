@@ -252,6 +252,83 @@ class TestBuilderDefaults:
         assert out is patch
 
 
+class TestProceduralBuilder:
+    def _make_builder(self, *, prior: PackPrior | None = None) -> tuple[Any, list[int]]:
+        import random
+
+        from openrange_pack_sdk import ProceduralBuilder
+
+        seeds_seen: list[int] = []
+
+        class _RecordingBuilder(ProceduralBuilder):
+            def sample(self, rng: random.Random, manifest: Manifest) -> BuildResult:
+                del manifest
+                seeds_seen.append(rng.randint(0, 10_000_000))
+                return BuildResult(_empty_graph(), [])
+
+        return _RecordingBuilder(prior), seeds_seen
+
+    def test_init_defaults(self) -> None:
+        builder, _ = self._make_builder()
+        assert builder.prior is None
+        assert builder.current_seed == 0
+
+    def test_init_stores_prior(self) -> None:
+        prior = PackPrior(
+            source="test",
+            ontology=_empty_ontology(),
+            topology={"n_services": 1},
+        )
+        builder, _ = self._make_builder(prior=prior)
+        assert builder.prior is prior
+
+    def test_build_uses_manifest_seed(self) -> None:
+        builder, seeds_seen = self._make_builder()
+        result = builder.build({"seed": 42})
+        assert isinstance(result, BuildResult)
+        assert builder.current_seed == 42
+        # Same seed → deterministic sample output.
+        builder2, seeds2 = self._make_builder()
+        builder2.build({"seed": 42})
+        assert seeds_seen == seeds2
+
+    def test_build_defaults_missing_seed_to_zero(self) -> None:
+        builder, _ = self._make_builder()
+        builder.build({})
+        assert builder.current_seed == 0
+
+    def test_repair_increments_attempt_and_re_samples(self) -> None:
+        builder, seeds_seen = self._make_builder()
+        prev = builder.build({"seed": 100})
+        # Attempt 0 → seed 100.
+        assert builder.current_seed == 100
+        builder.repair(prev, errors=[], infeasible=[])
+        # Attempt 1 → seed 101 (different sample output).
+        assert builder.current_seed == 101
+        assert seeds_seen[0] != seeds_seen[1]
+
+    def test_repair_chains_across_multiple_attempts(self) -> None:
+        builder, _ = self._make_builder()
+        prev = builder.build({"seed": 5})
+        for _ in range(3):
+            prev = builder.repair(prev, errors=[], infeasible=[])
+        assert builder.current_seed == 5 + 3
+
+    def test_custom_seed_key(self) -> None:
+        import random
+
+        from openrange_pack_sdk import ProceduralBuilder
+
+        class _CustomSeed(ProceduralBuilder):
+            def sample(self, rng: random.Random, manifest: Manifest) -> BuildResult:
+                del rng, manifest
+                return BuildResult(_empty_graph(), [])
+
+        builder = _CustomSeed(seed_key="my_seed")
+        builder.build({"my_seed": 7})
+        assert builder.current_seed == 7
+
+
 class TestNPCActorId:
     def test_actor_id_falls_back_to_class_and_hash_when_unset(self) -> None:
         class _AnonymousNPC(NPC):
@@ -501,3 +578,767 @@ class TestRuntimeCheckableProtocols:
         from openrange_pack_sdk import LLMBackend
 
         assert isinstance(_RecordingLLMBackend(), LLMBackend)
+
+
+class TestMakeTaskHelper:
+    def test_derives_ids_from_family(self) -> None:
+        family = _NoopFamily()
+        task = family.make_task(
+            instruction="do X",
+            entrypoints="ep1",
+            goal_nodes="goal1",
+        )
+        assert task.id == "test.noop.0"
+        assert task.feasibility_check == "test.noop"
+        assert task.success_check == "test.noop"
+        assert task.meta["family"] == "test.noop"
+        assert task.meta["difficulty"] == 0.5
+
+    def test_single_string_entrypoint_becomes_tuple(self) -> None:
+        task = _NoopFamily().make_task(
+            instruction="x", entrypoints="ep1", goal_nodes="g1"
+        )
+        assert task.entrypoints == ("ep1",)
+        assert task.goal_nodes == ("g1",)
+
+    def test_tuple_entrypoints_pass_through(self) -> None:
+        task = _NoopFamily().make_task(
+            instruction="x",
+            entrypoints=("a", "b"),
+            goal_nodes=("c", "d"),
+        )
+        assert task.entrypoints == ("a", "b")
+        assert task.goal_nodes == ("c", "d")
+
+    def test_index_changes_id(self) -> None:
+        a = _NoopFamily().make_task(instruction="x", entrypoints="a", index=0)
+        b = _NoopFamily().make_task(instruction="x", entrypoints="a", index=2)
+        assert a.id == "test.noop.0"
+        assert b.id == "test.noop.2"
+
+    def test_explicit_meta_merges_with_derived_fields(self) -> None:
+        task = _NoopFamily().make_task(
+            instruction="x",
+            entrypoints="a",
+            difficulty=0.9,
+            meta={"flag_secret": "s1", "kind": "api"},
+        )
+        assert task.meta == {
+            "family": "test.noop",
+            "difficulty": 0.9,
+            "flag_secret": "s1",
+            "kind": "api",
+        }
+
+    def test_string_index_supported(self) -> None:
+        task = _NoopFamily().make_task(instruction="x", entrypoints="a", index="alice")
+        assert task.id == "test.noop.alice"
+
+    def test_no_meta_works(self) -> None:
+        task = _NoopFamily().make_task(instruction="x", entrypoints="a")
+        assert task.meta == {"family": "test.noop", "difficulty": 0.5}
+
+    def test_default_goal_nodes_empty_tuple(self) -> None:
+        task = _NoopFamily().make_task(instruction="x", entrypoints="a")
+        assert task.goal_nodes == ()
+
+
+class TestGraphHelpers:
+    def test_edge_id_format(self) -> None:
+        from openrange_pack_sdk import edge_id
+
+        assert edge_id("a", "kind", "b") == "a__kind__b"
+
+    def test_add_node_returns_node_and_inserts(self) -> None:
+        from openrange_pack_sdk import add_node
+
+        g = _empty_graph()
+        node = add_node(g, kind="service", id="svc_a", attrs={"name": "alpha"})
+        assert node.id == "svc_a"
+        assert g.nodes["svc_a"] is node
+        assert node.attrs == {"name": "alpha"}
+
+    def test_add_node_defaults(self) -> None:
+        from graphschema import Visibility
+        from openrange_pack_sdk import add_node
+
+        g = _empty_graph()
+        node = add_node(g, kind="endpoint", id="ep_a")
+        assert node.attrs == {}
+        assert node.roles == set()
+        assert node.visibility is Visibility.PUBLIC
+
+    def test_add_node_with_roles_and_visibility(self) -> None:
+        from graphschema import Role, Visibility
+        from openrange_pack_sdk import add_node
+
+        g = _empty_graph()
+        node = add_node(
+            g,
+            kind="secret",
+            id="s1",
+            roles={Role.ACTOR},
+            visibility=Visibility.HIDDEN,
+        )
+        assert node.roles == {Role.ACTOR}
+        assert node.visibility is Visibility.HIDDEN
+
+    def test_add_edge_returns_edge_and_inserts(self) -> None:
+        from openrange_pack_sdk import add_edge, add_node
+
+        g = _empty_graph()
+        add_node(g, kind="service", id="svc")
+        add_node(g, kind="host", id="host")
+        edge = add_edge(g, kind="runs_on", src="svc", dst="host")
+        assert edge.id == "svc__runs_on__host"
+        assert g.edges["svc__runs_on__host"] is edge
+
+    def test_add_edge_with_attrs(self) -> None:
+        from openrange_pack_sdk import add_edge, add_node
+
+        g = _empty_graph()
+        add_node(g, kind="service", id="svc")
+        add_node(g, kind="data_store", id="store")
+        edge = add_edge(
+            g, kind="backed_by", src="svc", dst="store", attrs={"mode": "rw"}
+        )
+        assert edge.attrs == {"mode": "rw"}
+
+
+class TestManifestAccessors:
+    def test_int_present(self) -> None:
+        from openrange_pack_sdk import manifest_int
+
+        assert manifest_int({"seed": 42}, "seed") == 42
+
+    def test_int_missing_default(self) -> None:
+        from openrange_pack_sdk import manifest_int
+
+        assert manifest_int({}, "seed", default=7) == 7
+
+    def test_int_rejects_bool(self) -> None:
+        from openrange_pack_sdk import manifest_int
+
+        assert manifest_int({"seed": True}, "seed", default=99) == 99
+
+    def test_int_rejects_other_types(self) -> None:
+        from openrange_pack_sdk import manifest_int
+
+        assert manifest_int({"seed": "not int"}, "seed", default=3) == 3
+
+    def test_str_present(self) -> None:
+        from openrange_pack_sdk import manifest_str
+
+        assert manifest_str({"goal": "x"}, "goal") == "x"
+
+    def test_str_missing_default(self) -> None:
+        from openrange_pack_sdk import manifest_str
+
+        assert manifest_str({}, "goal", default="d") == "d"
+
+    def test_str_rejects_other_types(self) -> None:
+        from openrange_pack_sdk import manifest_str
+
+        assert manifest_str({"goal": 42}, "goal", default="d") == "d"
+
+    def test_bool_present(self) -> None:
+        from openrange_pack_sdk import manifest_bool
+
+        assert manifest_bool({"flag": True}, "flag") is True
+
+    def test_bool_missing_default(self) -> None:
+        from openrange_pack_sdk import manifest_bool
+
+        assert manifest_bool({}, "flag", default=True) is True
+
+    def test_bool_rejects_int(self) -> None:
+        from openrange_pack_sdk import manifest_bool
+
+        assert manifest_bool({"flag": 1}, "flag", default=False) is False
+
+    def test_float_present(self) -> None:
+        from openrange_pack_sdk import manifest_float
+
+        assert manifest_float({"rate": 0.25}, "rate") == 0.25
+
+    def test_float_promotes_int(self) -> None:
+        from openrange_pack_sdk import manifest_float
+
+        assert manifest_float({"n": 5}, "n") == 5.0
+
+    def test_float_rejects_bool(self) -> None:
+        from openrange_pack_sdk import manifest_float
+
+        assert manifest_float({"x": True}, "x", default=1.5) == 1.5
+
+    def test_float_missing_default(self) -> None:
+        from openrange_pack_sdk import manifest_float
+
+        assert manifest_float({}, "rate", default=0.1) == 0.1
+
+    def test_float_rejects_other_types(self) -> None:
+        from openrange_pack_sdk import manifest_float
+
+        assert manifest_float({"x": "1.5"}, "x", default=2.0) == 2.0
+
+    def test_list_present_copies(self) -> None:
+        from openrange_pack_sdk import manifest_list
+
+        original = [1, 2, 3]
+        result = manifest_list({"xs": original}, "xs")
+        assert result == [1, 2, 3]
+        result.append(4)
+        assert original == [1, 2, 3]
+
+    def test_list_missing_returns_empty(self) -> None:
+        from openrange_pack_sdk import manifest_list
+
+        assert manifest_list({}, "xs") == []
+
+    def test_list_missing_with_default(self) -> None:
+        from openrange_pack_sdk import manifest_list
+
+        default = ["a", "b"]
+        result = manifest_list({}, "xs", default=default)
+        assert result == ["a", "b"]
+        result.append("c")
+        assert default == ["a", "b"]
+
+    def test_list_rejects_other_types(self) -> None:
+        from openrange_pack_sdk import manifest_list
+
+        assert manifest_list({"xs": "abc"}, "xs", default=[1]) == [1]
+
+
+class TestMakeMutation:
+    def test_make_mutation_tags_family(self) -> None:
+        from graphschema import GraphPatch
+
+        patch = GraphPatch()
+        mut = _NoopFamily().make_mutation(
+            direction="harden",
+            relevance=0.7,
+            patch=patch,
+            note="add a vuln",
+        )
+        assert mut.family == "test.noop"
+        assert mut.direction == "harden"
+        assert mut.relevance == 0.7
+        assert mut.patch is patch
+        assert mut.note == "add a vuln"
+
+    def test_make_mutation_default_note_empty(self) -> None:
+        from graphschema import GraphPatch
+
+        mut = _NoopFamily().make_mutation(
+            direction="soften", relevance=0.1, patch=GraphPatch()
+        )
+        assert mut.note == ""
+
+
+class _LongRunningRuntime:
+    """SubprocessRuntimeHandle subclass for the test suite.
+
+    Spawns ``python -c <SCRIPT>`` that prints one JSON startup line then
+    sleeps forever. Tests drive lifecycle methods + override hooks against
+    this real subprocess (no mocks).
+    """
+
+
+_SUBPROCESS_SCRIPT = (
+    "import json, os, sys, time\n"
+    "payload = {'ready': True, 'pid': os.getpid()}\n"
+    "sys.stdout.write(json.dumps(payload) + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "while True:\n"
+    "    time.sleep(0.1)\n"
+)
+
+
+class _MinimalSubprocessRuntime:
+    pass
+
+
+def _make_simple_subprocess_runtime() -> Any:
+    from openrange_pack_sdk import SubprocessRuntimeHandle
+
+    class _Simple(SubprocessRuntimeHandle):
+        def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+            del graph
+            return {"ready.txt": "ok"}
+
+        def subprocess_command(self, env_root: Any, agent_root: Any) -> Sequence[str]:
+            import sys
+
+            del env_root, agent_root
+            return [sys.executable, "-c", _SUBPROCESS_SCRIPT]
+
+        def parse_startup(self, stdout_line: str) -> Mapping[str, Any]:
+            import json as _json
+
+            return dict(_json.loads(stdout_line))
+
+        def surface_extras(self) -> Mapping[str, Any]:
+            return {"hello": "from pack"}
+
+        def collect_extras(self) -> Mapping[str, Any]:
+            return {"finalized_by": "test"}
+
+    return _Simple(_empty_graph())
+
+
+def _make_silent_subprocess_runtime() -> Any:
+    """Subprocess that emits the contract-required newline then idles —
+    proves the default parse_startup returns {} when there's no payload."""
+    from openrange_pack_sdk import SubprocessRuntimeHandle
+
+    class _Silent(SubprocessRuntimeHandle):
+        def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+            del graph
+            return {}
+
+        def subprocess_command(self, env_root: Any, agent_root: Any) -> Sequence[str]:
+            import sys
+
+            del env_root, agent_root
+            return [
+                sys.executable,
+                "-c",
+                "import sys, time\n"
+                "sys.stdout.write('\\n')\n"
+                "sys.stdout.flush()\n"
+                "while True: time.sleep(0.1)\n",
+            ]
+
+    return _Silent(_empty_graph())
+
+
+class TestSubprocessRuntimeHandle:
+    def test_full_lifecycle(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            surface = runtime.surface()
+            assert surface["ready"] is True
+            assert "agent_root" in surface
+            assert surface["hello"] == "from pack"
+            assert Path(surface["agent_root"]).is_dir()
+        finally:
+            runtime.stop()
+
+    def test_surface_raises_before_reset(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        with pytest.raises(Exception, match="reset"):
+            runtime.surface()
+
+    def test_checkpoint_raises_before_reset(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        with pytest.raises(Exception, match="reset"):
+            runtime.checkpoint()
+
+    def test_terminal_false_before_reset(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        ok, reason = runtime.terminal()
+        assert ok is False and reason is None
+
+    def test_terminal_true_when_result_written(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            surface = runtime.surface()
+            (Path(surface["agent_root"]) / "result.json").write_text("{}")
+            ok, reason = runtime.terminal()
+            assert ok is True
+            assert reason == "agent wrote result"
+        finally:
+            runtime.stop()
+
+    def test_collect_empty_before_reset(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        assert runtime.collect() == {}
+
+    def test_collect_returns_result_and_extras(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "result.json").write_text('{"x": 1}')
+            collected = runtime.collect()
+            assert collected["result"] == {"x": 1}
+            assert collected["finalized_by"] == "test"
+            assert "agent_root" in collected
+        finally:
+            runtime.stop()
+
+    def test_collect_silently_ignores_invalid_json_result(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "result.json").write_text("{not valid")
+            collected = runtime.collect()
+            assert collected["result"] == {}
+        finally:
+            runtime.stop()
+
+    def test_collect_treats_non_mapping_result_as_empty(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "result.json").write_text("[1, 2]")
+            collected = runtime.collect()
+            assert collected["result"] == {}
+        finally:
+            runtime.stop()
+
+    def test_checkpoint_then_restore_round_trips_agent_root(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "scratch.txt").write_text("hello")
+            ckpt = runtime.checkpoint()
+            (agent_root / "scratch.txt").write_text("modified")
+            runtime.restore(ckpt)
+            assert (agent_root / "scratch.txt").read_text() == "hello"
+        finally:
+            runtime.stop()
+
+    def test_restore_rejects_non_mapping(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            with pytest.raises(Exception, match="mapping"):
+                runtime.restore("not a mapping")
+        finally:
+            runtime.stop()
+
+    def test_restore_rejects_missing_snapshot_key(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            with pytest.raises(Exception, match="agent_root_snapshot"):
+                runtime.restore({"wrong_key": "x"})
+        finally:
+            runtime.stop()
+
+    def test_restore_rejects_missing_snapshot_on_disk(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            with pytest.raises(Exception, match="snapshot missing"):
+                runtime.restore({"agent_root_snapshot": "/nonexistent/path"})
+        finally:
+            runtime.stop()
+
+    def test_reset_twice_restarts_subprocess(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            first_agent_root = runtime.surface()["agent_root"]
+            runtime.reset()
+            second_agent_root = runtime.surface()["agent_root"]
+            assert first_agent_root != second_agent_root
+        finally:
+            runtime.stop()
+
+    def test_stop_is_idempotent(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        runtime.reset()
+        runtime.stop()
+        runtime.stop()
+        assert runtime.terminal() == (False, None)
+
+    def test_silent_subprocess_has_empty_startup_info(self) -> None:
+        runtime = _make_silent_subprocess_runtime()
+        try:
+            runtime.reset()
+            surface = runtime.surface()
+            assert "agent_root" in surface
+            assert "ready" not in surface
+        finally:
+            runtime.stop()
+
+    def test_poll_events_default_empty(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            assert runtime.poll_events() == ()
+        finally:
+            runtime.stop()
+
+    def test_subprocess_that_exits_immediately_has_empty_startup(self) -> None:
+        from openrange_pack_sdk import SubprocessRuntimeHandle
+
+        class _Exits(SubprocessRuntimeHandle):
+            def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+                del graph
+                return {}
+
+            def subprocess_command(
+                self, env_root: Any, agent_root: Any
+            ) -> Sequence[str]:
+                import sys
+
+                del env_root, agent_root
+                # Closes stdout without writing → reset's readline returns "".
+                return [sys.executable, "-c", "import sys; sys.stdout.close()"]
+
+        runtime = _Exits(_empty_graph())
+        try:
+            runtime.reset()
+            surface = runtime.surface()
+            assert "agent_root" in surface
+        finally:
+            runtime.stop()
+
+    def test_restore_replaces_directory_under_agent_root(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "sub").mkdir()
+            (agent_root / "sub" / "f.txt").write_text("snapshot")
+            ckpt = runtime.checkpoint()
+            (agent_root / "sub" / "f.txt").write_text("modified")
+            runtime.restore(ckpt)
+            assert (agent_root / "sub" / "f.txt").read_text() == "snapshot"
+        finally:
+            runtime.stop()
+
+    def test_restore_raises_when_called_before_reset(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        # Build a valid-looking snapshot on disk without ever calling reset.
+        snap = Path(tempfile.mkdtemp(prefix="ckpt-fake-"))
+        (snap / "agent").mkdir()
+        try:
+            with pytest.raises(Exception, match="before reset"):
+                runtime.restore({"agent_root_snapshot": str(snap)})
+        finally:
+            import shutil
+
+            shutil.rmtree(snap, ignore_errors=True)
+
+    def test_collect_extras_default_is_empty(self) -> None:
+        from openrange_pack_sdk import SubprocessRuntimeHandle
+
+        class _Defaults(SubprocessRuntimeHandle):
+            def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+                del graph
+                return {}
+
+            def subprocess_command(
+                self, env_root: Any, agent_root: Any
+            ) -> Sequence[str]:
+                import sys
+
+                del env_root, agent_root
+                return [
+                    sys.executable,
+                    "-c",
+                    "import sys, time\nsys.stdout.write('\\n')\n"
+                    "sys.stdout.flush()\nwhile True: time.sleep(0.1)\n",
+                ]
+
+        runtime = _Defaults(_empty_graph())
+        try:
+            runtime.reset()
+            collected = runtime.collect()
+            assert "agent_root" in collected
+            assert collected["result"] == {}
+            # collect_extras default → no extra keys beyond agent_root + result.
+            assert set(collected.keys()) == {"agent_root", "result"}
+        finally:
+            runtime.stop()
+
+    def test_subprocess_env_override(self) -> None:
+        from openrange_pack_sdk import SubprocessRuntimeHandle
+
+        captured: dict[str, str] = {}
+
+        class _EnvRuntime(SubprocessRuntimeHandle):
+            def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+                del graph
+                return {}
+
+            def subprocess_command(
+                self, env_root: Any, agent_root: Any
+            ) -> Sequence[str]:
+                import sys
+
+                del env_root, agent_root
+                return [
+                    sys.executable,
+                    "-c",
+                    "import json, os, sys, time\n"
+                    "payload = {'env': os.environ.get('PACK_X', '')}\n"
+                    "sys.stdout.write(json.dumps(payload) + '\\n')\n"
+                    "sys.stdout.flush()\n"
+                    "while True: time.sleep(0.1)\n",
+                ]
+
+            def subprocess_env(self) -> Mapping[str, str]:
+                return {"PACK_X": "from_pack"}
+
+            def parse_startup(self, stdout_line: str) -> Mapping[str, Any]:
+                import json as _json
+
+                parsed: Mapping[str, Any] = dict(_json.loads(stdout_line))
+                captured.update(parsed)
+                return parsed
+
+        runtime = _EnvRuntime(_empty_graph())
+        try:
+            runtime.reset()
+            assert captured["env"] == "from_pack"
+        finally:
+            runtime.stop()
+
+    def test_terminal_false_after_reset_when_no_result_written(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            ok, reason = runtime.terminal()
+            assert ok is False
+            assert reason is None
+        finally:
+            runtime.stop()
+
+    def test_reset_preserves_existing_checkpoints(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "scratch.txt").write_text("before-restart")
+            ckpt = runtime.checkpoint()
+            snap_path = Path(ckpt["agent_root_snapshot"])
+            assert snap_path.exists()
+            # reset() must NOT wipe the snapshot dir — restore() flows
+            # like the webapp pack's call reset() before super().restore().
+            runtime.reset()
+            assert snap_path.exists()
+            runtime.restore(ckpt)
+            new_agent_root = Path(runtime.surface()["agent_root"])
+            assert (new_agent_root / "scratch.txt").read_text() == "before-restart"
+        finally:
+            runtime.stop()
+
+    def test_stop_clears_checkpoint_dirs(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        runtime.reset()
+        runtime.checkpoint()
+        runtime.checkpoint()
+        snap_paths = [
+            Path(c)
+            for c in [
+                # _checkpoint_dirs holds Paths internally.
+                str(p)
+                for p in runtime._checkpoint_dirs
+            ]
+        ]
+        assert all(p.exists() for p in snap_paths)
+        runtime.stop()
+        assert not any(p.exists() for p in snap_paths)
+
+    def test_public_properties_are_none_before_reset(self) -> None:
+        runtime = _make_simple_subprocess_runtime()
+        assert runtime.env_root is None
+        assert runtime.agent_root is None
+        assert runtime.pack_root is None
+        assert runtime.process is None
+
+    def test_public_properties_after_reset(self) -> None:
+        from pathlib import Path
+
+        runtime = _make_simple_subprocess_runtime()
+        try:
+            runtime.reset()
+            assert isinstance(runtime.env_root, Path)
+            assert isinstance(runtime.agent_root, Path)
+            assert isinstance(runtime.pack_root, Path)
+            assert runtime.process is not None
+            assert runtime.process.pid > 0
+        finally:
+            runtime.stop()
+
+    def test_startup_timeout_raises_when_subprocess_silent(self) -> None:
+        from openrange_pack_sdk import OpenRangeError, SubprocessRuntimeHandle
+
+        class _NeverPrints(SubprocessRuntimeHandle):
+            STARTUP_TIMEOUT_SECONDS = 0.2
+
+            def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+                del graph
+                return {}
+
+            def subprocess_command(
+                self, env_root: Any, agent_root: Any
+            ) -> Sequence[str]:
+                import sys
+
+                del env_root, agent_root
+                # Sleeps without writing → readline must time out.
+                return [sys.executable, "-c", "import time; time.sleep(5)"]
+
+        runtime = _NeverPrints(_empty_graph())
+        try:
+            with pytest.raises(OpenRangeError, match="startup line"):
+                runtime.reset()
+        finally:
+            runtime.stop()
+
+    def test_stop_escalates_to_sigkill_when_sigterm_ignored(self) -> None:
+        from openrange_pack_sdk import SubprocessRuntimeHandle
+
+        class _IgnoresSigterm(SubprocessRuntimeHandle):
+            GRACE_SECONDS = 0.2
+
+            def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+                del graph
+                return {}
+
+            def subprocess_command(
+                self, env_root: Any, agent_root: Any
+            ) -> Sequence[str]:
+                import sys
+
+                del env_root, agent_root
+                return [
+                    sys.executable,
+                    "-c",
+                    "import signal, sys, time\n"
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                    "sys.stdout.write('\\n')\n"
+                    "sys.stdout.flush()\n"
+                    "while True: time.sleep(0.1)\n",
+                ]
+
+        runtime = _IgnoresSigterm(_empty_graph())
+        runtime.reset()
+        process = runtime._process
+        assert process is not None
+        runtime.stop()
+        # SIGKILL eventually reaped it — Popen.poll returns the exit code.
+        assert process.poll() is not None

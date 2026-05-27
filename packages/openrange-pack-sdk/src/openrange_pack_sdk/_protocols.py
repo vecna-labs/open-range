@@ -136,6 +136,67 @@ class TaskFamily(ABC):
         del snapshot, reports, llm
         return ()
 
+    def make_task(
+        self,
+        *,
+        instruction: str,
+        entrypoints: str | tuple[str, ...],
+        goal_nodes: str | tuple[str, ...] = (),
+        index: int | str = 0,
+        difficulty: float = 0.5,
+        meta: Mapping[str, Any] | None = None,
+    ) -> TaskSpec:
+        """Build a TaskSpec wired to this family.
+
+        Derives ``id = f"{self.id}.{index}"``, ``feasibility_check`` /
+        ``success_check`` from ``self.id``, and seeds ``meta`` with
+        ``family = self.id`` + ``difficulty``. Pass a single node id as
+        ``entrypoints`` / ``goal_nodes`` for the common one-node case;
+        pass a tuple for multi-node tasks. ``index`` accepts ``int`` or
+        ``str`` so families that produce per-instance tasks can use
+        meaningful labels (``index="alice"`` → ``self.id + ".alice"``).
+        Extra task metadata goes through the explicit ``meta`` mapping —
+        no kwargs splat, so future ``make_task`` parameters can be added
+        without breaking callers.
+        """
+        entry_tuple = (
+            (entrypoints,) if isinstance(entrypoints, str) else tuple(entrypoints)
+        )
+        goal_tuple = (goal_nodes,) if isinstance(goal_nodes, str) else tuple(goal_nodes)
+        merged_meta: dict[str, Any] = {"family": self.id, "difficulty": difficulty}
+        if meta:
+            merged_meta.update(meta)
+        return TaskSpec(
+            id=f"{self.id}.{index}",
+            instruction=instruction,
+            entrypoints=entry_tuple,
+            goal_nodes=goal_tuple,
+            feasibility_check=self.id,
+            success_check=self.id,
+            meta=merged_meta,
+        )
+
+    def make_mutation(
+        self,
+        *,
+        direction: str,
+        relevance: float,
+        patch: Any,
+        note: str = "",
+    ) -> Mutation:
+        """Build a Mutation tagged with ``family = self.id``.
+
+        ``direction`` ∈ {"harden", "soften", "diversify"}; ``relevance`` ∈
+        [0, 1]. ``patch`` is a ``GraphPatch``.
+        """
+        return Mutation(
+            patch=patch,
+            direction=direction,
+            relevance=relevance,
+            family=self.id,
+            note=note,
+        )
+
 
 class Builder(ABC):
     """Produces a `BuildResult`. Deterministic in `(manifest, prior)`."""

@@ -144,9 +144,10 @@ def test_handle_reset_materializes_files_and_starts_process() -> None:
         # generated app unlinks it after loading), but app.py must.
         env_root = Path(agent_root).parent
         assert (env_root / "pack" / APP_FILE_NAME).exists()
-        # The request log file is pre-touched so poll_events() before
-        # any HTTP traffic returns () instead of erroring.
-        assert (env_root / REQUEST_LOG_NAME).exists()
+        # The request log is pre-touched so poll_events() before any HTTP
+        # traffic returns () instead of erroring. SubprocessRuntimeHandle
+        # writes all prepared files under pack/.
+        assert (env_root / "pack" / REQUEST_LOG_NAME).exists()
     finally:
         handle.stop()
 
@@ -260,7 +261,7 @@ def test_handle_stop_cleans_up_tempdirs() -> None:
     assert not checkpoint_dir.exists()
     assert handle._env_root is None
     assert handle._agent_root is None
-    assert handle._request_log is None
+    assert handle._pack_root is None
 
 
 def test_build_discovery_reads_title_from_graph_meta() -> None:

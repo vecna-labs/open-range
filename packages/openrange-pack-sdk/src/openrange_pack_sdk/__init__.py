@@ -3,6 +3,7 @@
 from openrange_pack_sdk import Pack, TaskFamily, TaskSpec, ...
 """
 
+from openrange_pack_sdk._builders import ProceduralBuilder
 from openrange_pack_sdk._errors import (
     AgentBackendError,
     LLMBackendError,
@@ -12,6 +13,16 @@ from openrange_pack_sdk._errors import (
     NPCError,
     OpenRangeError,
     PackError,
+)
+from openrange_pack_sdk._helpers import (
+    add_edge,
+    add_node,
+    edge_id,
+    manifest_bool,
+    manifest_float,
+    manifest_int,
+    manifest_list,
+    manifest_str,
 )
 from openrange_pack_sdk._protocols import (
     NPC,
@@ -25,6 +36,7 @@ from openrange_pack_sdk._protocols import (
     RuntimeHandle,
     TaskFamily,
 )
+from openrange_pack_sdk._runtime import SubprocessRuntimeHandle
 from openrange_pack_sdk._types import (
     Backing,
     BuildEvent,
@@ -68,9 +80,19 @@ __all__ = [
     "Pack",
     "PackError",
     "PackPrior",
+    "ProceduralBuilder",
     "RuntimeHandle",
     "Snapshot",
+    "SubprocessRuntimeHandle",
     "TaskFamily",
     "TaskSeed",
     "TaskSpec",
+    "add_edge",
+    "add_node",
+    "edge_id",
+    "manifest_bool",
+    "manifest_float",
+    "manifest_int",
+    "manifest_list",
+    "manifest_str",
 ]
