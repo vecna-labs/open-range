@@ -2,6 +2,17 @@
 
 Thanks for contributing.
 
+## Contributor License Agreement
+
+Before we can merge your first pull request, you need to sign the
+[Contributor License Agreement](./CLA.md). The CLA bot will comment on your
+PR with instructions — you sign by posting a single comment, once, and the
+bot remembers you for every future PR.
+
+If you are contributing on behalf of an employer, please confirm with them
+that you have authorization to sign before doing so. For corporate-wide
+agreements, contact the maintainers.
+
 ## What To Work On
 
 We welcome contributions of all sizes. A good place to start is the issue board:
