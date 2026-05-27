@@ -24,11 +24,6 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from graphschema import Node, WorldGraph
-
-from cyber_webapp.families.build.contracts import ContractCase, api_list_contract
-from cyber_webapp.families.build.grading import grade_source
-from cyber_webapp.families.build.mutations import api_wrong_field_name
-from cyber_webapp.families.build.reference import api_list_reference
 from openrange_pack_sdk import (
     EpisodeResult,
     FeasibilityVerdict,
@@ -37,6 +32,11 @@ from openrange_pack_sdk import (
     TaskFamily,
     TaskSpec,
 )
+
+from cyber_webapp.families.build.contracts import ContractCase, api_list_contract
+from cyber_webapp.families.build.grading import grade_source
+from cyber_webapp.families.build.mutations import api_wrong_field_name
+from cyber_webapp.families.build.reference import api_list_reference
 
 ContractFn = Callable[[], tuple[ContractCase, ...]]
 ReferenceFn = Callable[[], str]

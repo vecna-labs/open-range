@@ -29,7 +29,6 @@ from cyber_webapp.families.build.grading import (
 from cyber_webapp.families.build.mutations import api_wrong_field_name
 from cyber_webapp.families.build.reference import api_list_reference
 from graphschema import Edge, Node, Visibility, WorldGraph
-
 from openrange_pack_sdk import Snapshot, TaskSpec
 
 from openrange.core.admit import admit
