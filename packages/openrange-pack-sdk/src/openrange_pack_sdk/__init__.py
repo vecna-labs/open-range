@@ -23,6 +23,7 @@ from openrange_pack_sdk._helpers import (
     manifest_int,
     manifest_list,
     manifest_str,
+    write_tree,
 )
 from openrange_pack_sdk._protocols import (
     NPC,
@@ -36,7 +37,10 @@ from openrange_pack_sdk._protocols import (
     RuntimeHandle,
     TaskFamily,
 )
-from openrange_pack_sdk._runtime import SubprocessRuntimeHandle
+from openrange_pack_sdk._runtime import (
+    OnDemandRuntimeHandle,
+    SubprocessRuntimeHandle,
+)
 from openrange_pack_sdk._types import (
     Backing,
     BuildEvent,
@@ -76,6 +80,7 @@ __all__ = [
     "Mutation",
     "NPC",
     "NPCError",
+    "OnDemandRuntimeHandle",
     "OpenRangeError",
     "Pack",
     "PackError",
@@ -95,4 +100,5 @@ __all__ = [
     "manifest_int",
     "manifest_list",
     "manifest_str",
+    "write_tree",
 ]

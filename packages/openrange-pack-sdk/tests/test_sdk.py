@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -705,6 +706,34 @@ class TestGraphHelpers:
         assert edge.attrs == {"mode": "rw"}
 
 
+class TestWriteTree:
+    def test_writes_files_under_root(self, tmp_path: Path) -> None:
+        from openrange_pack_sdk import write_tree
+
+        write_tree(tmp_path, {"a.txt": "alpha", "b.txt": "beta"})
+        assert (tmp_path / "a.txt").read_text() == "alpha"
+        assert (tmp_path / "b.txt").read_text() == "beta"
+
+    def test_creates_intermediate_directories(self, tmp_path: Path) -> None:
+        from openrange_pack_sdk import write_tree
+
+        write_tree(tmp_path, {"deeply/nested/file.txt": "ok"})
+        assert (tmp_path / "deeply" / "nested" / "file.txt").read_text() == "ok"
+
+    def test_overwrites_existing_files(self, tmp_path: Path) -> None:
+        from openrange_pack_sdk import write_tree
+
+        (tmp_path / "existing.txt").write_text("old")
+        write_tree(tmp_path, {"existing.txt": "new"})
+        assert (tmp_path / "existing.txt").read_text() == "new"
+
+    def test_empty_mapping_is_noop(self, tmp_path: Path) -> None:
+        from openrange_pack_sdk import write_tree
+
+        write_tree(tmp_path, {})
+        assert list(tmp_path.iterdir()) == []
+
+
 class TestManifestAccessors:
     def test_int_present(self) -> None:
         from openrange_pack_sdk import manifest_int
@@ -1342,3 +1371,207 @@ class TestSubprocessRuntimeHandle:
         runtime.stop()
         # SIGKILL eventually reaped it — Popen.poll returns the exit code.
         assert process.poll() is not None
+
+    def test_popen_kwargs_adds_stdin_pipe(self) -> None:
+        """Trading-style pack pattern: open stdin for two-way comms."""
+        import json as _json
+        import subprocess as _subprocess
+
+        from openrange_pack_sdk import SubprocessRuntimeHandle
+
+        class _StdinEcho(SubprocessRuntimeHandle):
+            def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+                del graph
+                return {}
+
+            def subprocess_command(
+                self, env_root: Any, agent_root: Any
+            ) -> Sequence[str]:
+                import sys
+
+                del env_root, agent_root
+                # Reads one JSON line from stdin, echoes it on stdout
+                # with an "echoed" marker; prints startup line first.
+                return [
+                    sys.executable,
+                    "-c",
+                    "import json, sys\n"
+                    "sys.stdout.write('{}\\n')\n"
+                    "sys.stdout.flush()\n"
+                    "line = sys.stdin.readline()\n"
+                    "payload = json.loads(line)\n"
+                    "payload['echoed'] = True\n"
+                    "sys.stdout.write(json.dumps(payload) + '\\n')\n"
+                    "sys.stdout.flush()\n",
+                ]
+
+            def popen_kwargs(self) -> Mapping[str, Any]:
+                return {"stdin": _subprocess.PIPE}
+
+        runtime = _StdinEcho(_empty_graph())
+        try:
+            runtime.reset()
+            proc = runtime.process
+            assert proc is not None
+            assert proc.stdin is not None
+            proc.stdin.write(_json.dumps({"hello": "world"}) + "\n")
+            proc.stdin.flush()
+            assert proc.stdout is not None
+            response = _json.loads(proc.stdout.readline())
+            assert response == {"hello": "world", "echoed": True}
+        finally:
+            runtime.stop()
+
+
+def _make_simple_ondemand_runtime() -> Any:
+    from openrange_pack_sdk import OnDemandRuntimeHandle
+
+    class _SimpleOnDemand(OnDemandRuntimeHandle):
+        def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+            del graph
+            return {"README.md": "# project", "src/main.py": "print('hi')\n"}
+
+        def surface_extras(self) -> Mapping[str, Any]:
+            return {"hello": "from on-demand pack"}
+
+        def collect_extras(self) -> Mapping[str, Any]:
+            return {"finalized_by": "ondemand"}
+
+    return _SimpleOnDemand(_empty_graph())
+
+
+class TestOnDemandRuntimeHandle:
+    def test_full_lifecycle(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        try:
+            runtime.reset()
+            surface = runtime.surface()
+            assert "agent_root" in surface
+            assert surface["hello"] == "from on-demand pack"
+            agent_root = Path(surface["agent_root"])
+            assert agent_root.is_dir()
+            pack_root = runtime.pack_root
+            assert pack_root is not None
+            assert (pack_root / "README.md").read_text() == "# project"
+            assert (pack_root / "src" / "main.py").read_text() == "print('hi')\n"
+        finally:
+            runtime.stop()
+
+    def test_surface_raises_before_reset(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        with pytest.raises(Exception, match="reset"):
+            runtime.surface()
+
+    def test_terminal_false_before_reset(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        ok, reason = runtime.terminal()
+        assert ok is False and reason is None
+
+    def test_terminal_true_when_agent_writes_result(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "result.json").write_text('{"status": "ok"}')
+            ok, reason = runtime.terminal()
+            assert ok is True
+            assert reason == "agent wrote result"
+        finally:
+            runtime.stop()
+
+    def test_collect_returns_result_and_extras(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "result.json").write_text('{"passed": 3, "failed": 1}')
+            collected = runtime.collect()
+            assert collected["result"] == {"passed": 3, "failed": 1}
+            assert collected["finalized_by"] == "ondemand"
+        finally:
+            runtime.stop()
+
+    def test_checkpoint_restore_round_trips(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "scratch.txt").write_text("v1")
+            ckpt = runtime.checkpoint()
+            (agent_root / "scratch.txt").write_text("v2")
+            runtime.restore(ckpt)
+            assert (agent_root / "scratch.txt").read_text() == "v1"
+        finally:
+            runtime.stop()
+
+    def test_stop_drops_checkpoints(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        runtime.reset()
+        ckpt = runtime.checkpoint()
+        snap_path = Path(ckpt["agent_root_snapshot"])
+        assert snap_path.exists()
+        runtime.stop()
+        assert not snap_path.exists()
+
+    def test_reset_preserves_checkpoints(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        try:
+            runtime.reset()
+            ckpt = runtime.checkpoint()
+            snap_path = Path(ckpt["agent_root_snapshot"])
+            assert snap_path.exists()
+            runtime.reset()
+            assert snap_path.exists()
+        finally:
+            runtime.stop()
+
+    def test_poll_events_default_empty(self) -> None:
+        runtime = _make_simple_ondemand_runtime()
+        try:
+            runtime.reset()
+            assert runtime.poll_events() == ()
+        finally:
+            runtime.stop()
+
+    def test_swe_style_run_cmd_callable(self, tmp_path: Path) -> None:
+        """End-to-end exercise of the SWE-pack pattern: harness exposes
+        a run_cmd callable that shells out against the agent_root."""
+        import subprocess as _subprocess
+
+        from openrange_pack_sdk import OnDemandRuntimeHandle
+
+        class _SWEPack(OnDemandRuntimeHandle):
+            def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+                del graph
+                return {}
+
+            def surface_extras(self) -> Mapping[str, Any]:
+                agent_root = self.agent_root
+
+                def run_cmd(argv: Sequence[str]) -> Mapping[str, Any]:
+                    completed = _subprocess.run(
+                        list(argv),
+                        cwd=agent_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    return {
+                        "rc": completed.returncode,
+                        "stdout": completed.stdout,
+                        "stderr": completed.stderr,
+                    }
+
+                return {"run_cmd": run_cmd}
+
+        runtime = _SWEPack(_empty_graph())
+        try:
+            runtime.reset()
+            agent_root = Path(runtime.surface()["agent_root"])
+            (agent_root / "hello.py").write_text("print('hello')")
+            run_cmd = runtime.surface()["run_cmd"]
+            result = run_cmd(["python3", "hello.py"])
+            assert result["rc"] == 0
+            assert "hello" in result["stdout"]
+        finally:
+            runtime.stop()

@@ -1,14 +1,17 @@
-"""Pack-author ergonomics: graph helpers + manifest field accessors.
+"""Pack-author ergonomics: graph helpers + manifest field accessors +
+filesystem helpers.
 
 Thin wrappers around ``graphschema``'s primitives that codify the
 conventions every pack would otherwise reinvent (deterministic edge ids,
 attrs default to ``{}`` not ``None``, return the constructed node so
-callers can chain) plus typed readers for the free-form Manifest mapping.
+callers can chain) plus typed readers for the free-form Manifest mapping
+and a tree-write helper realizers reuse.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from graphschema import Edge, Node, Role, Visibility, WorldGraph
@@ -111,3 +114,18 @@ def manifest_list(
     if isinstance(raw, list):
         return list(raw)
     return list(default) if default is not None else []
+
+
+def write_tree(root: Path, files: Mapping[str, str]) -> None:
+    """Write ``{relative_path: contents}`` under ``root``, creating any
+    needed parent directories.
+
+    Used by the filesystem-based RuntimeHandle bases to materialize
+    ``prepare_env_files`` output; exposed as a standalone helper so
+    packs that implement ``RuntimeHandle`` directly can use the same
+    convention without copy-pasting the loop.
+    """
+    for rel, content in files.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
