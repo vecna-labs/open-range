@@ -15,7 +15,7 @@
 OpenRange is a domain-agnostic environment platform for training and evaluating agents. Give it a manifest and a pack; it builds a runnable world, verifies that tasks are actually solvable in the generated environment, freezes the result as a snapshot, and hands your agent harness a stable episode to run against.
 
 <p align="center">
-  <img src="assets/openrange-demo.gif" alt="OpenRange dashboard rendering a live cyber.webapp episode — agent traffic, persona NPCs, evolve banner" width="720">
+  <img src="assets/openrange-demo.gif" alt="OpenRange dashboard rendering a live webapp episode — agent traffic, persona NPCs, evolve banner" width="720">
 </p>
 
 ### Why OpenRange
@@ -59,9 +59,9 @@ This lets OpenRange support different domains — cyber ranges, trading environm
 
 **Manifests** describe what you want built: domain, scenario, constraints, task families, scale, and runtime backing.
 
-**Packs** are the reusable starting points for a family of worlds. A pack might include code, containers, templates, simulator bindings, scripted state machines, seed data, and verifier helpers. It doesn't describe one world — it describes what kinds of worlds can be built and how.
+**Packs** are the reusable starting points for a family of worlds. A pack owns the world-family — its ontology, builder, realizer, and pack invariants. Each pack ships one or more `TaskFamily` classes — one ontology-family of world, many task-flavors against it (the built-in `webapp` pack ships `webapp.build` and `webapp.pentest` against the same world).
 
-**Builders** turn a manifest and pack into a concrete world. A builder can be handwritten Python, procedural generation, an LLM pipeline, or a hybrid. The builder outputs a world graph, runtime artifacts, tasks, feasibility checks, and admission metadata.
+**Builders** turn a manifest and pack into a concrete world. A builder can be handwritten Python, procedural generation, an LLM pipeline, or a hybrid. The builder outputs a world graph and tasks; admission validates and, on failure, calls `builder.repair`. Curriculum moves come back through `builder.evolve`.
 
 **Admission** is the gate between generation and execution. A feasibility check verifies that a generated task is actually solvable in the generated world. If a check fails, the builder repairs or regenerates the relevant piece. A task is never accepted without a passing feasibility check against a frozen world snapshot.
 
@@ -89,19 +89,16 @@ uv sync --extra strands
 import openrange as OR
 
 run = OR.OpenRangeRun(OR.RunConfig("or-runs/dev-run", dashboard=True))
-snapshot = run.build(
-    {
-        "world": {"goal": "find the admin flag in a vulnerable webapp"},
-        "pack": {"id": "cyber.webapp", "source": {"kind": "builtin"}},
-    },
-    llm=OR.CodexBackend(),  # optional — enriches task instruction + verifier
-)
+snapshot = run.build({
+    "world": {"goal": "find the admin flag in a vulnerable webapp"},
+    "pack": {"id": "webapp"},
+})
 
-for task in snapshot.get_tasks():
+for task in snapshot.tasks:
     print(task.id, task.instruction)
 ```
 
-The built-in `cyber.webapp` pack procedurally samples a multi-service webapp world (graph topology, vulnerabilities, accounts, secrets), AST-splices vulnerability templates into the realized service code, and ships with NPCs that generate background traffic alongside the agent. Pass an LLM and the build also produces a graph-aware task instruction and a per-task verifier; without one, it falls back to deterministic templates.
+The built-in `webapp` pack procedurally samples a multi-service webapp world (graph topology, vulnerabilities, accounts, secrets), AST-splices vulnerability templates into the realized service code, and ships with NPCs that generate background traffic alongside the agent. The pack exposes two `TaskFamily` classes against that same world — `webapp.build` (implement / repair a feature endpoint) and `webapp.pentest` (recover a hidden flag through a vulnerability chain). Task instructions are pure templating over the graph; the pentest family's `available_mutations` is the only path that consults an optional LLM, and only to enrich the parameters of candidate curriculum mutations.
 
 ## Run an eval
 
@@ -115,14 +112,14 @@ uv run python -m examples.codex_eval \
   --dashboard-port 8000
 ```
 
-This builds an admitted snapshot, resets a webapp episode with separate environment and agent roots, runs Codex against the generated task instruction, collects final state, verifies it, and writes a report to an immutable run directory.
+This builds an admitted snapshot, resets a webapp episode with separate environment and agent roots, runs Codex against the generated task instruction, collects final state, dispatches the TaskFamily's `check_success` to grade it, and writes a report to an immutable run directory.
 
 Strands Agents:
 
 ```bash
 uv run --extra strands python -m examples.strands_eval \
   --run-root or-runs/strands-eval \
-  --builder-timeout 300 \
+  --agent-model anthropic.claude-3-5-sonnet-20240620-v1:0 \
   --dashboard-port 8000
 ```
 
@@ -143,7 +140,7 @@ uv run openrange dashboard --run-root or-runs/<run-id>
 uv run openrange dashboard --store-dir snapshots
 
 # Build and inspect from the CLI
-uv run openrange build path/to/manifest.yaml --output snapshots
+uv run openrange build path/to/manifest.json --output snapshots
 uv run openrange inspect snapshots/<snapshot-id>.json
 ```
 
@@ -151,7 +148,8 @@ uv run openrange inspect snapshots/<snapshot-id>.json
 ## Project layout
 
 ```text
-src/openrange/    core library, runtime, dashboard, and built-in packs
+src/openrange/    core library, runtime, dashboard
+packs/            built-in packs (webapp)
 examples/         runnable eval harness examples
 docs/             design notes and implementation direction
 tests/            integration-focused test suite
@@ -161,6 +159,8 @@ CONTRIBUTING.md   contribution workflow and local setup
 Start with:
 
 - [OpenRange overview](docs/start_here.md)
+- [Contracts](CONTRACTS.md) — the wire shapes and cross-pack invariants
+- [Design](DESIGN.md) — the rationale behind the pack / admission split
 - [Roadmap](ROADMAP.md) — direction, what we're working on, where contributors can help
 - [API lifecycle](docs/api.md)
 - [Dashboard](docs/dashboard.md)

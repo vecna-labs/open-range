@@ -1,13 +1,10 @@
 # OpenRange
 
-> [!WARNING]
-> This document describes the direction OpenRange is working toward. It does not necessarily reflect the current implementation.
-
 OpenRange is a domain-agnostic environment platform for training and evaluating agents.
 
 The core idea is simple: bring your own agent harness, and run it against generated worlds with a stable episode lifecycle. OpenRange owns world construction, task admission, runtime coordination, episode checking, and observability. It does not own the model, agent framework, tool harness, training loop, or reward policy.
 
-This document is a high-level overview. Specific contracts should live in separate docs.
+This document is a high-level overview. See [CONTRACTS.md](../CONTRACTS.md) for the wire shapes and cross-pack invariants, and [DESIGN.md](../DESIGN.md) for the rationale behind the split.
 
 ## What OpenRange does
 
@@ -16,15 +13,15 @@ OpenRange turns a user request into an admitted world that an agent can act insi
 ```text
 manifest + pack + builder
         ↓
-world graph + runtime artifacts + tasks
+world graph + tasks
         ↓
-feasibility checks / admission
+admission (structural / ontology / pack invariants / task bindings / feasibility)
         ↓
 frozen world snapshot
         ↓
 agent episode
         ↓
-structured result
+structured EpisodeResult
 ```
 
 The goal is not to force every domain into one Gym-style API. The goal is to let different worlds — cyber ranges, trading environments, robotics tasks, enterprise simulations — fit into the same build, admission, runtime, and evaluation flow.
@@ -37,73 +34,45 @@ The agent interacts with whatever surface the world exposes: HTTP endpoints, fil
 
 The manifest describes what the user wants built.
 
-It is the request layer: domain, scenario, constraints, task families, scale, target interfaces, and runtime backing. It may also include instructions for how the world should change over time, such as making tasks harder, targeting failure cases, or increasing diversity.
+It is a free-form `Mapping[str, Any]`. The only key core ever reads is `pack.id` (the registered pack to admit against). Every other key is the pack's contract; core never branches on a manifest field.
 
-See [manifest.md](manifest.md).
+See [manifest.md](manifest.md) for the cross-pack invariant and a pointer to the `webapp` pack's keys.
 
 ### Pack
 
-A pack is the reusable starting point for a family of worlds.
+A pack is the reusable starting point for a **family of worlds**.
 
-It can include code, containers, templates, simulator bindings, scripted state machines, seed data, ontology/topology schemas, verifier helpers, and builder hooks. A pack does not describe one final world. It describes what kinds of worlds can be built and how those worlds can be realized.
+A Pack owns:
 
-Examples:
+- an `Ontology` (node kinds, edge kinds, attribute schemas)
+- pack invariants (graph-wide callables the validator runs)
+- a `Builder` factory (`make_builder(prior)`)
+- a realizer (`realize(graph, backing) -> RuntimeHandle`)
+- one or more `TaskFamily` classes
 
-```text
-cyber.webapp.offense
-cyber.webapp.defense
-finance.trading
-robotics.pendulum
-```
-
-See [pack.md](pack.md).
+A TaskFamily owns **one domain of tasks** against that pack's world. The same pack can ship multiple families. The built-in `webapp` pack ships `webapp.build` and `webapp.pentest` against the same world graph: same nodes, different entrypoints, different goals, different success criteria. This split is where the word "domain" lives — on the TaskFamily, not on the Pack.
 
 ### Builder
 
-The builder turns a manifest and a pack into a concrete world.
+The builder turns a manifest and a pack into a candidate `BuildResult`.
 
-A builder may be handwritten Python, procedural generation, an LLM pipeline, search/sampling, a domain-specific generator, or a hybrid. OpenRange should not require the builder to be an LLM.
+A builder may be handwritten Python, procedural generation, an LLM pipeline, search/sampling, a domain-specific generator, or a hybrid. OpenRange does not require the builder to be an LLM.
 
-The builder outputs:
-
-```text
-world graph
-runtime artifacts
-tasks
-feasibility checks
-episode checks
-admission metadata
-```
-
-See [builder.md](builder.md).
-
-### World
-
-A world is the concrete environment the agent interacts with.
-
-It contains the entities, topology, runtime components, entrypoints, hidden state, NPCs, and task-specific success conditions needed for an episode.
-
-See [world.md](world.md).
-
-### Task
-
-A task is what the agent is asked to do inside an admitted world.
-
-A task has three main parts:
+The builder protocol has three operations:
 
 ```text
-instruction   - what the agent sees
-entrypoints   - where the agent acts
-success check - how OpenRange checks the final episode state
+build(manifest)                       -> BuildResult (graph + tasks)
+repair(prev, errors, infeasible)      -> BuildResult (when admission rejects)
+evolve(snapshot, mutation)            -> GraphPatch (apply a curriculum move)
 ```
 
-The entrypoint is domain-specific. It could be an HTTP endpoint, shell, file path, MCP server, simulator step function, or something else. OpenRange does not standardize the agent’s tool interface.
+`build` is required. `repair` is optional — without it, admission won't retry. `evolve` defaults to returning the mutation's patch verbatim; packs that want to refine the patch override it.
 
-See [tasks.md](tasks.md).
-
-## World graph
+### World graph
 
 OpenRange represents each generated world as a graph before turning it into runnable artifacts.
+
+The graph is content-addressed and **timeless** — the graph IS its content, no timestamps inside. Two identical builds (same builder, same manifest, same seed → same graph) share a snapshot id and are interchangeable for every downstream purpose.
 
 The graph answers two questions:
 
@@ -112,59 +81,71 @@ What exists?
 How is it connected?
 ```
 
-For a cyber world, the graph might contain things like:
+The graph is the build plan OpenRange uses to produce the runtime; it is not the runtime itself.
+
+### Task
+
+A task is what the agent is asked to do inside an admitted world.
+
+`TaskSpec` has seven fields:
 
 ```text
-host.web01
-service.api
-endpoint.login
-db.main
-user.admin
-cred.admin_token
-vuln.sqli_login
+id                  - unique within the snapshot
+instruction         - what the agent sees
+entrypoints         - tuple of node-ids in the world graph where the agent starts acting
+goal_nodes          - tuple of node-ids that count as completion (may be HIDDEN)
+feasibility_check   - TaskFamily id whose check_feasibility decides "solvable here?"
+success_check       - TaskFamily id whose check_success reads the realizer's final state
+meta                - free-form mapping the pack and harness agree on; serialized only when non-empty
 ```
 
-And connections like:
+Entrypoints and goal_nodes live on the task, never as node roles — two tasks against the same world may entrypoint different nodes. `feasibility_check` and `success_check` are **handles**, not exec'd source; the pack's `task_family(id)` resolves them to a class whose methods run the check.
+
+### Episode
+
+An episode runs an agent against a realized snapshot. The realizer (`RuntimeHandle`) exposes eight methods:
 
 ```text
-service.api runs on host.web01
-service.api exposes endpoint.login
-service.api connects to db.main
-endpoint.login has vuln.sqli_login
-user.admin owns cred.admin_token
+reset()             - prepare a clean run state
+surface()           - agent-facing IO surface (URLs, file roots, MCP endpoints)
+poll_events()       - drain side-effect events since the last poll
+terminal()          - has the agent finished? -> (done, reason)
+checkpoint()        - capture an opaque state snapshot
+restore(state)      - restore from a checkpoint payload
+collect()           - structured final state at episode end
+stop()              - tear down running processes / services
 ```
 
-The graph is useful because it gives OpenRange a stable intermediate representation of the world. The builder can generate it, admission can check it, the runtime can realize it, and the dashboard can inspect it. Without this layer, every pack would have to invent its own private format for describing what was built.
+The episode loop calls `collect()` at the end; the TaskFamily's `check_success(graph, task, final_state)` reads that mapping and returns an `EpisodeResult`.
 
-The world graph is not the runtime. It is the build plan OpenRange uses to produce the runtime.
+## Admission
 
-See [world-ir.md](world-ir.md).
-
-## Build and admission
-
-World generation is a multi-step pipeline.
-
-A typical build flow is:
+Admission is a **layered gate** between generation and execution:
 
 ```text
-1. Read manifest
-2. Load pack
-3. Generate or update world graph
-4. Realize runtime artifacts
-5. Generate tasks
-6. Generate feasibility checks
-7. Run admission
-8. Repair or regenerate failed pieces
-9. Freeze admitted world snapshot
+1. structural       : id formats, edge endpoints reference real nodes
+2. ontology         : required attrs, enums/REFs, kind agreement
+3. pack invariants  : Tier-3 callables the pack ships (Pack.invariants())
+4. task bindings    : entrypoints/goal_nodes exist; entrypoints not HIDDEN
+5. task feasibility : each TaskFamily's check_feasibility(graph, task)
 ```
 
-A feasibility check verifies that a generated task is actually possible in the generated world. For LLM-backed builders, this may itself be a generated Python script.
+Layers 1+2 catch malformed worlds. Layer 3 catches structurally-valid but semantically-broken worlds. Layer 4 catches mis-bound tasks. Layer 5 catches well-formed worlds no one can actually solve. Each layer catches a different bug; all are required.
 
-If a feasibility check fails, the result feeds back to the builder. The builder may repair the task, the feasibility check, the world graph, or the runtime artifacts.
+If admission rejects a candidate, core calls `builder.repair(prev, errors, infeasible)` (up to a configured budget). A task is never accepted just because the builder generated it.
 
-Admission is complete only when the task is well-formed, possible, and tied to a frozen world snapshot.
+Admission output is a `Snapshot`:
 
-See [admission.md](admission.md).
+```text
+snapshot_id      = graph.content_hash()
+ontology_id      = pack.ontology().id
+graph            = WorldGraph (timeless)
+tasks            = tuple[TaskSpec, ...]
+lineage          = flat dict (manifest, pack id+version, attempts, builder meta)
+history          = tuple[BuildEvent, ...] (build/validate/feasibility/repair/freeze)
+```
+
+The world graph is timeless on purpose — content-addressed reproducibility. The build PROCESS still has a story worth keeping (which pass ran, what a repair changed); that story lives in `history`, BESIDE the graph, never inside it.
 
 ## Runtime backing
 
@@ -195,13 +176,11 @@ A **hybrid backing** combines both. For example, a trading world might expose a 
 
 The manifest can request the desired backing. The pack decides what it can support.
 
-See [runtime.md](runtime.md).
-
 ## NPCs and multi-actor worlds
 
 A world can include non-player characters: scripted actors, LLM-driven personas, other agents, background users, defenders, attackers, counterparties, or external systems.
 
-NPCs live inside the world runtime. Their actions can affect the state the agent observes and the final state the episode check inspects.
+NPCs live inside the world runtime. Their actions can affect the state the agent observes and the final state the TaskFamily's success check inspects.
 
 Examples:
 
@@ -213,15 +192,11 @@ a human-like persona answering questions
 a background process writing logs
 ```
 
-See [npcs.md](npcs.md).
-
 ## Episode checks and rewards
 
 OpenRange checks what happened. It does not define the training reward.
 
-After an episode, an episode check inspects the final world state, agent-written outputs, or declared success events. It returns a structured result.
-
-Examples:
+After an episode, the TaskFamily's `check_success(graph, task, final_state)` reads the realizer's collected final state against the task and returns an `EpisodeResult`:
 
 ```json
 {"success": true}
@@ -237,49 +212,32 @@ Examples:
 
 A training adapter can map this result into scalar rewards, dense rewards, preference data, SFT traces, GRPO/PPO signals, or evaluation metrics.
 
-See [verifiers.md](verifiers.md) and [rewards.md](rewards.md).
-
 ## World evolution
 
 OpenRange does not define a curriculum algorithm.
 
-Instead, builders may expose an `evolve` operation. Evolution takes structured feedback from previous episodes and proposes new world edits or tasks.
+Each `TaskFamily` may implement `available_mutations(snapshot, reports)`, returning structured `Mutation` objects — each a `GraphPatch` tagged with a direction (`harden` / `soften` / `diversify`), a relevance score, and the family that proposed it.
 
-Example inputs:
-
-```text
-task success rates
-subgoal completion rates
-failure clusters
-coverage gaps
-requested difficulty change
-specific failure mode to target
-```
-
-Proposed edits go through the same admission gate as the initial build. A task is never accepted just because the builder generated it.
-
-See [evolution.md](evolution.md).
+A curriculum policy selects mutations; `Builder.evolve(snapshot, mutation)` applies them as graph patches. Proposed edits go through the same admission gate as the initial build.
 
 ## Observability and lineage
 
-Every admitted world should be inspectable and reproducible.
+Every admitted world is inspectable and reproducible.
 
 OpenRange tracks:
 
 ```text
 manifest
-pack version
-builder passes
-world graph
-runtime artifacts
+pack id + version
+build history (BuildEvent stream)
+world graph (content-addressed)
 tasks
-feasibility-check results
-episode-check results
+admission verdicts
 runtime events
-evolution lineage
+episode results
 ```
 
-The dashboard should make it possible to inspect what was generated, why a task was admitted or rejected, which world snapshot an episode used, and how the world changed over time.
+The dashboard shows what was generated, why a task was admitted or rejected, which world snapshot an episode used, and how the world changed over time.
 
 See [dashboard.md](dashboard.md).
 
@@ -312,3 +270,11 @@ rollout infrastructure
 ```
 
 This boundary is intentional. It lets OpenRange support many domains and training setups without becoming a full agent framework.
+
+## Further reading
+
+- [CONTRACTS.md](../CONTRACTS.md) — wire shapes and cross-pack invariants
+- [DESIGN.md](../DESIGN.md) — rationale behind the pack / admission split
+- [api.md](api.md) — the lifecycle the harness sees
+- [dashboard.md](dashboard.md) — inspection surface
+- [manifest.md](manifest.md) — the one key core reads, and a pointer to pack-specific keys

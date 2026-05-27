@@ -61,14 +61,7 @@ class LLMBackend(Protocol):
     def complete(self, request: LLMRequest) -> LLMResult: ...
 
     def preflight(self) -> None:
-        """Cheap synchronous check that this backend is callable.
-
-        Implementations verify imports, binaries, and configuration —
-        no API calls. Default is a no-op so existing backends remain
-        protocol-conformant; backends with checkable invariants
-        (e.g. ``CodexBackend`` looking for the ``codex`` binary on
-        PATH) override.
-        """
+        pass
 
 
 @dataclass(frozen=True, slots=True)

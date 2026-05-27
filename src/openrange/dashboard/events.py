@@ -13,10 +13,16 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from openrange.core.snapshot import json_safe
-
 if TYPE_CHECKING:
     from openrange.dashboard.view import DashboardView
+
+
+def json_safe(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [json_safe(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,7 +252,7 @@ def write_dashboard_state(
         if snapshot is None
         else snapshot.state()
     )
-    payload: dict[str, object] = {
+    data: dict[str, object] = {
         "topology": {} if snapshot is None else snapshot.topology(),
         "lineage": {} if snapshot is None else snapshot.lineage(),
         "state": state,
@@ -256,7 +262,7 @@ def write_dashboard_state(
     }
     temporary = path.with_name(f"{path.name}.tmp")
     temporary.write_text(
-        json.dumps(json_safe(payload), indent=2, sort_keys=True) + "\n",
+        json.dumps(json_safe(data), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     temporary.replace(path)

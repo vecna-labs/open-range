@@ -4,20 +4,26 @@ from __future__ import annotations
 
 
 class OpenRangeError(Exception):
-    """Base OpenRange error."""
+    pass
 
 
 class ManifestError(OpenRangeError):
-    """Raised when a manifest is invalid."""
+    pass
 
 
 class PackError(OpenRangeError):
-    """Raised when a pack cannot build an admissible world."""
+    pass
 
 
 class AdmissionError(OpenRangeError):
-    """Raised when generated world artifacts fail admission."""
+    pass
 
 
 class StoreError(OpenRangeError):
-    """Raised when snapshots cannot be loaded from storage."""
+    pass
+
+
+class EpisodeRuntimeError(OpenRangeError):
+    """Raised by the runtime plumbing — distinct from :class:`AdmissionError`
+    (a domain signal that a candidate world failed admission) and
+    :class:`EpisodeError` (the in-flight episode lifecycle signal)."""

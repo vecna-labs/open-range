@@ -1,371 +1,289 @@
-"""Tests for the v1 cyber codegen (realize-as-codegen).
+"""Tests for the cyber webapp pack's realizer.
 
 Three concerns:
-  1. ``realize_graph`` produces a single Python ``app.py`` artifact that
-     compiles cleanly across a sweep of generated graphs.
-  2. The generated ``app.py`` actually runs as an HTTP service and
-     responds at the public ``/`` route.
-  3. Vulnerabilities placed on endpoints have their template body
-     inlined — i.e. SQLi UNION SELECT against the realized service
-     leaks the flag end-to-end.
+
+1. ``cyber_webapp.codegen._realize_graph`` walks a sampled WorldGraph
+   and produces a ``{path: source}`` mapping carrying ``app.py`` and
+   ``seed.json``.
+2. ``WebappPack().realize(graph, Backing.PROCESS)`` returns a
+   ``WebappRuntimeHandle`` satisfying the ``RuntimeHandle`` Protocol.
+3. The handle's ``reset()`` materializes those files to disk, starts a
+   subprocess, exposes the agent surface, and ``stop()`` cleans up.
 """
 
 from __future__ import annotations
 
 import json
-import random
-import socket
-import subprocess
-import sys
-import time
 import urllib.error
 import urllib.request
-from pathlib import Path
+from collections.abc import Mapping
+from typing import cast
 
 import pytest
-from cyber_webapp.codegen import realize_graph
-from cyber_webapp.priors import PRIORS
-from cyber_webapp.sampling import sample_graph
+from cyber_webapp import WebappPack, WebappRuntimeHandle
+from cyber_webapp.codegen import _realize_graph
+from cyber_webapp.codegen.entrypoint import (
+    APP_FILE_NAME,
+    REQUEST_LOG_NAME,
+    RESULT_FILE_NAME,
+    SEED_FILE_NAME,
+)
+from graphschema import WorldGraph
 
-from openrange.core.builder import build
-from openrange.core.graph import Edge, Node, WorldGraph
-from openrange.core.manifest import Manifest
-
-V1_MANIFEST = {
-    "pack": {"id": "cyber.webapp", "source": {"kind": "builtin"}},
-    "mode": "simulation",
-    "world": {},
-}
+from openrange.core.pack import Backing, RuntimeHandle
 
 
-# ---------------------------------------------------------------------------
-# Compile sweep
-# ---------------------------------------------------------------------------
+def _sample_graph(seed: int = 0) -> WorldGraph:
+    """A graph drawn the way admission draws it — same path the runtime takes."""
+    build_result = WebappPack().make_builder(None).build({"seed": seed})
+    return build_result.graph
 
 
-def test_realize_graph_compiles_across_seeds() -> None:
-    manifest = Manifest.load(V1_MANIFEST)
-    for seed in range(8):
-        rng = random.Random(seed)
-        graph = sample_graph(rng, PRIORS)
-        bundle = realize_graph(graph, manifest)
-        files = dict(bundle.files())
-        assert "app.py" in files
-        compile(files["app.py"], f"<seed-{seed}>", "exec")
+def test_realize_graph_emits_app_and_seed_files() -> None:
+    """The new codegen returns a plain mapping containing both required files."""
+    files = _realize_graph(_sample_graph())
+    assert APP_FILE_NAME in files
+    assert SEED_FILE_NAME in files
+    assert isinstance(files[APP_FILE_NAME], str)
+    assert isinstance(files[SEED_FILE_NAME], str)
 
 
-def test_realize_graph_emits_single_http_entrypoint() -> None:
-    manifest = Manifest.load(V1_MANIFEST)
-    rng = random.Random(0)
-    bundle = realize_graph(sample_graph(rng, PRIORS), manifest)
-    assert len(bundle.entrypoints) == 1
-    entrypoint = bundle.entrypoints[0]
-    assert entrypoint.kind == "http"
-    assert entrypoint.metadata["artifact"] == "app.py"
+def test_realize_graph_app_py_compiles_across_seeds() -> None:
+    """Every sampled seed produces a syntactically valid app.py."""
+    for seed in range(6):
+        files = _realize_graph(_sample_graph(seed))
+        # `compile` raises SyntaxError if the rendered template is malformed.
+        compile(files[APP_FILE_NAME], f"<seed-{seed}>", "exec")
 
 
-# ---------------------------------------------------------------------------
-# Codegen rejects flagless graphs
-# ---------------------------------------------------------------------------
+def test_realize_graph_seed_json_carries_expected_keys() -> None:
+    """seed.json is valid JSON and carries accounts/secrets/records/schema."""
+    files = _realize_graph(_sample_graph())
+    payload = json.loads(files[SEED_FILE_NAME])
+    assert isinstance(payload, dict)
+    for key in ("accounts", "secrets", "records", "schema"):
+        assert key in payload, f"seed.json missing top-level key {key!r}"
+    # The schema is what the SQLi handler reads against — must name a table
+    # and the column we'll be SELECTing on.
+    schema = payload["schema"]
+    assert isinstance(schema, dict)
+    assert "table" in schema
+    assert "key_column" in schema
+    assert "value_column" in schema
 
 
-def test_realize_rejects_graph_without_flag() -> None:
-    manifest = Manifest.load(V1_MANIFEST)
-    flagless = WorldGraph(
-        nodes=(
-            Node(id="svc_x", type="service", attrs={"name": "x", "kind": "web"}),
-            Node(
-                id="ep_x",
-                type="endpoint",
-                attrs={
-                    "path": "/",
-                    "method": "GET",
-                    "auth_required": False,
-                    "behavior_ref": "web.default",
-                },
-            ),
-        ),
-        edges=(Edge(source="svc_x", relation="exposes", target="ep_x"),),
+def test_realize_graph_seed_json_holds_flag_value() -> None:
+    """The flag value sampled into the graph round-trips into seed.secrets."""
+    graph = _sample_graph()
+    flag_node = next(
+        n
+        for n in graph.nodes.values()
+        if n.kind == "secret" and n.attrs.get("kind") == "flag"
     )
-    with pytest.raises(Exception, match="flag"):
-        realize_graph(flagless, manifest)
+    expected_flag = str(flag_node.attrs["value_ref"])
+
+    files = _realize_graph(graph)
+    payload = json.loads(files[SEED_FILE_NAME])
+    secrets = payload["secrets"]
+    # The seeder mirrors the flag under every leak_field broken_authz might
+    # pick, plus the canonical "flag" key.
+    assert secrets.get("flag") == expected_flag
 
 
-# ---------------------------------------------------------------------------
-# Run the realized app
-# ---------------------------------------------------------------------------
+def test_realize_graph_is_deterministic_in_graph() -> None:
+    """Same graph → byte-identical files. The codegen is a pure function."""
+    graph = _sample_graph()
+    first = _realize_graph(graph)
+    second = _realize_graph(graph)
+    assert first == second
 
 
-def _wait_for_port(port: int, timeout: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.2)
-            try:
-                sock.connect(("127.0.0.1", port))
-                return
-            except OSError:
-                time.sleep(0.05)
-    raise TimeoutError(f"port {port} did not open")
+def test_pack_realize_returns_webapp_runtime_handle() -> None:
+    """The pack's realize() returns a concrete WebappRuntimeHandle."""
+    graph = _sample_graph()
+    handle = WebappPack().realize(graph, Backing.PROCESS)
+    assert isinstance(handle, WebappRuntimeHandle)
 
 
-def _materialize(files: dict[str, str], dest: Path) -> Path:
-    """Write every bundle file under ``dest`` and return the app.py path."""
-    for relative, content in files.items():
-        target = dest / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-    return dest / "app.py"
+def test_pack_realize_satisfies_runtime_handle_protocol() -> None:
+    """The handle is duck-typed against the RuntimeHandle Protocol."""
+    graph = _sample_graph()
+    handle = WebappPack().realize(graph, Backing.PROCESS)
+    # runtime_checkable Protocol — isinstance covers method presence.
+    assert isinstance(handle, RuntimeHandle)
 
 
-def _spawn_app(app_py: Path, log_path: Path) -> tuple[subprocess.Popen[str], int]:
-    process = subprocess.Popen(
-        [sys.executable, str(app_py), "--port", "0", "--log", str(log_path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    assert process.stdout is not None
-    line = process.stdout.readline()
-    if not line:
-        process.kill()
-        stderr = process.stderr.read() if process.stderr else ""
-        raise RuntimeError(f"app did not start: {stderr}")
-    data = json.loads(line)
-    return process, int(data["port"])
+def test_pack_realize_rejects_non_process_backings() -> None:
+    """Only Backing.PROCESS is wired today; the others must raise."""
+    graph = _sample_graph()
+    pack = WebappPack()
+    for backing in (Backing.CONTAINER, Backing.SIMULATOR, Backing.HYBRID):
+        with pytest.raises(NotImplementedError):
+            pack.realize(graph, backing)
 
 
-def test_realized_app_serves_root_route(tmp_path: Path) -> None:
-    snapshot = build(V1_MANIFEST)
-    files = dict(snapshot.runtime.files())
-    app_py = _materialize(files, tmp_path)
-    log_path = tmp_path / "requests.jsonl"
-    process, port = _spawn_app(app_py, log_path)
+def test_handle_reset_materializes_files_and_starts_process() -> None:
+    """reset() writes the rendered files to disk and exposes a base_url.
+
+    After reset() the per-episode workspace has the rendered ``app.py``
+    on disk under the pack root, the request log file pre-touched, and
+    the HTTP subprocess listening on a port the surface reports.
+    """
+    handle = WebappPack().realize(_sample_graph(), Backing.PROCESS)
+    handle.reset()
     try:
-        _wait_for_port(port)
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/",
-            timeout=2,
-        ) as response:
+        surface = handle.surface()
+        base_url = cast(str, surface["base_url"])
+        assert base_url.startswith("http://127.0.0.1:")
+        # The agent_root the surface reports must be a real directory.
+        agent_root = cast(str, surface["agent_root"])
+        from pathlib import Path  # noqa: PLC0415
+
+        assert Path(agent_root).is_dir()
+        # The pack root sits next to the agent root with app.py + seed.
+        # We don't assert the seed.json still exists on disk (the
+        # generated app unlinks it after loading), but app.py must.
+        env_root = Path(agent_root).parent
+        assert (env_root / "pack" / APP_FILE_NAME).exists()
+        # The request log file is pre-touched so poll_events() before
+        # any HTTP traffic returns () instead of erroring.
+        assert (env_root / REQUEST_LOG_NAME).exists()
+    finally:
+        handle.stop()
+
+
+def test_handle_serves_root_route_after_reset() -> None:
+    """The generated app actually listens and responds to GET /."""
+    handle = WebappPack().realize(_sample_graph(), Backing.PROCESS)
+    handle.reset()
+    try:
+        surface = handle.surface()
+        base_url = cast(str, surface["base_url"])
+        with urllib.request.urlopen(base_url + "/", timeout=2) as response:
             assert response.status == 200
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        handle.stop()
 
 
-def test_realized_app_404s_unknown_route(tmp_path: Path) -> None:
-    snapshot = build(V1_MANIFEST)
-    files = dict(snapshot.runtime.files())
-    app_py = _materialize(files, tmp_path)
-    log_path = tmp_path / "requests.jsonl"
-    process, port = _spawn_app(app_py, log_path)
+def test_handle_returns_404_for_unknown_route() -> None:
+    """A path no endpoint claims still 404s — the dispatcher is honest."""
+    handle = WebappPack().realize(_sample_graph(), Backing.PROCESS)
+    handle.reset()
     try:
-        _wait_for_port(port)
+        surface = handle.surface()
+        base_url = cast(str, surface["base_url"])
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/__no_such_route__",
+                base_url + "/__no_such_route__",
                 timeout=2,
             )
         assert exc_info.value.code == 404
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        handle.stop()
 
 
-# ---------------------------------------------------------------------------
-# Vulnerability fires end-to-end
-# ---------------------------------------------------------------------------
-
-
-def _build_with_specific_vuln(kind: str) -> WorldGraph:
-    """Build a small graph with a single named vuln on a web endpoint."""
-    flag_value = "ORANGE{exfiltrated}"
-    nodes = (
-        Node(
-            id="net",
-            type="network",
-            attrs={"name": "n", "isolation": "bridge", "zone": "dmz"},
-        ),
-        Node(
-            id="host_web",
-            type="host",
-            attrs={"hostname": "w", "os": "linux", "zone": "dmz"},
-        ),
-        Node(
-            id="svc_web",
-            type="service",
-            attrs={
-                "name": "web",
-                "kind": "web",
-                "language": "python",
-                "exposure": "public",
-            },
-        ),
-        Node(
-            id="ep_web_search",
-            type="endpoint",
-            attrs={
-                "path": "/search",
-                "method": "GET",
-                "auth_required": False,
-                "behavior_ref": "web.default",
-            },
-        ),
-        Node(
-            id="ds_web",
-            type="data_store",
-            attrs={"name": "web", "kind": "kv", "engine": "in_memory"},
-        ),
-        Node(
-            id="rec_flag",
-            type="record",
-            attrs={"key": "admin_flag", "fields": {"value": flag_value}},
-        ),
-        Node(
-            id="secret_flag",
-            type="secret",
-            attrs={"kind": "flag", "value_ref": flag_value, "description": ""},
-        ),
-        Node(
-            id="vuln_x",
-            type="vulnerability",
-            attrs={
-                "kind": kind,
-                "family": "code_web",
-                "params": _params_for(kind),
-            },
-        ),
-    )
-    edges = (
-        Edge(source="svc_web", relation="runs_on", target="host_web"),
-        Edge(source="svc_web", relation="connected_to", target="net"),
-        Edge(source="svc_web", relation="exposes", target="ep_web_search"),
-        Edge(source="svc_web", relation="backed_by", target="ds_web"),
-        Edge(source="ds_web", relation="contains", target="rec_flag"),
-        Edge(source="rec_flag", relation="holds", target="secret_flag"),
-        Edge(source="vuln_x", relation="affects", target="ep_web_search"),
-    )
-    return WorldGraph(nodes=nodes, edges=edges)
-
-
-def _params_for(kind: str) -> dict[str, object]:
-    if kind == "sql_injection":
-        return {
-            "target_param": "q",
-            "table": "records",
-            "leak_column": "value",
-        }
-    if kind == "broken_authz":
-        return {
-            "trust_header": "X-User-Role",
-            "expected_value": "admin",
-            "leak_field": "value",
-        }
-    return {}
-
-
-def test_realized_sql_injection_exfiltrates_flag(tmp_path: Path) -> None:
-    """SQLi placed on /search leaks the flag via UNION SELECT in the realized app."""
-    manifest = Manifest.load(V1_MANIFEST)
-    graph = _build_with_specific_vuln("sql_injection")
-    bundle = realize_graph(graph, manifest)
-    app_py = _materialize(dict(bundle.files()), tmp_path)
-    log_path = tmp_path / "requests.jsonl"
-    process, port = _spawn_app(app_py, log_path)
+def test_handle_collect_reports_smoke_test_signal() -> None:
+    """collect() exposes endpoint_serves_200 — the build-family success key."""
+    handle = WebappPack().realize(_sample_graph(), Backing.PROCESS)
+    handle.reset()
     try:
-        _wait_for_port(port)
-        # benign request: returns no rows (no record with key='public').
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/search?q=public",
-            timeout=2,
-        ) as response:
-            payload = json.loads(response.read().decode())
-        assert "rows" in payload
-
-        # malicious UNION SELECT against real sqlite: dump every row's value
-        # column. Two-column SELECT to match the base query's column count.
-        from urllib.parse import quote
-
-        evil = quote("' UNION SELECT key, value FROM records -- ")
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/search?q={evil}",
-            timeout=2,
-        ) as response:
-            payload = json.loads(response.read().decode())
-        rows = payload.get("rows", [])
-        assert any("ORANGE{exfiltrated}" in str(row) for row in rows), payload
+        collected = handle.collect()
+        assert isinstance(collected, Mapping)
+        # The build family reads this. A freshly-reset generated app
+        # serves / with 200, so the probe should agree.
+        assert collected["endpoint_serves_200"] is True
+        # The pentest family reads these two. With no agent interaction
+        # the flag is None and the request list is empty.
+        assert collected["flag_from_response"] is None
+        assert collected["requests_made"] == []
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        handle.stop()
 
 
-def test_realized_broken_authz_grants_admin_with_forged_header(tmp_path: Path) -> None:
-    """Broken-authz placed on /search leaks the secret to admin-headered callers."""
-    manifest = Manifest.load(V1_MANIFEST)
-    graph = _build_with_specific_vuln("broken_authz")
-    bundle = realize_graph(graph, manifest)
-    app_py = _materialize(dict(bundle.files()), tmp_path)
-    log_path = tmp_path / "requests.jsonl"
-    process, port = _spawn_app(app_py, log_path)
+def test_handle_collect_returns_empty_before_reset() -> None:
+    """Before reset(), collect() returns an empty mapping rather than crashing."""
+    handle = WebappPack().realize(_sample_graph(), Backing.PROCESS)
+    # No reset(); no process; no agent_root.
+    collected = handle.collect()
+    assert dict(collected) == {}
+
+
+def test_handle_terminal_flips_when_result_file_appears() -> None:
+    """terminal() flips True once the agent writes result.json."""
+    from pathlib import Path  # noqa: PLC0415
+
+    handle = WebappPack().realize(_sample_graph(), Backing.PROCESS)
+    handle.reset()
     try:
-        _wait_for_port(port)
-        # broken_authz template reads the trust header from the QUERY (since
-        # the vuln template uses the same shape across SQLi/SSRF for parity).
-        # No header → 403.
-        with pytest.raises(urllib.error.HTTPError) as exc_info:
-            urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/search",
-                timeout=2,
-            )
-        assert exc_info.value.code == 403
-
-        # Forged admin → flag leaked.
-        from urllib.parse import quote
-
-        admin_q = quote("admin")
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/search?X-User-Role={admin_q}",
-            timeout=2,
-        ) as response:
-            payload = json.loads(response.read().decode())
-        # The leak_field is "value"; the broken_authz template returns a
-        # JSON object {leak_field: secret}. Value comes from state.secrets.
-        assert payload.get("value") == "ORANGE{exfiltrated}", payload
+        done, reason = handle.terminal()
+        assert done is False
+        assert reason is None
+        # Simulate the agent finishing: drop a result.json next to where
+        # the handle expects it.
+        surface = handle.surface()
+        agent_root = Path(cast(str, surface["agent_root"]))
+        (agent_root / RESULT_FILE_NAME).write_text(
+            json.dumps({"flag": "x"}),
+            encoding="utf-8",
+        )
+        done, reason = handle.terminal()
+        assert done is True
+        assert reason == "agent wrote result"
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        handle.stop()
 
 
-# ---------------------------------------------------------------------------
-# Curriculum patch removes the vuln from generated source
-# ---------------------------------------------------------------------------
+def test_handle_stop_is_idempotent() -> None:
+    """stop() can be called twice without error — the second is a no-op."""
+    handle = WebappPack().realize(_sample_graph(), Backing.PROCESS)
+    handle.reset()
+    handle.stop()
+    # Should not raise.
+    handle.stop()
 
 
-def test_patched_vuln_removed_from_generated_app() -> None:
-    """After ``patch``, the vuln's handler body should no longer be present."""
-    from openrange.core.builder import evolve
+def test_handle_stop_cleans_up_tempdirs() -> None:
+    """stop() removes env_root and every checkpoint snapshot dir."""
+    from pathlib import Path
 
-    s1 = build(V1_MANIFEST)
-    kinds_before = sorted(
-        {n.attrs["kind"] for n in s1.world_graph.nodes if n.type == "vulnerability"},
+    raw = WebappPack().realize(_sample_graph(), Backing.PROCESS)
+    handle = cast(WebappRuntimeHandle, raw)
+    handle.reset()
+    env_root = handle._env_root
+    assert env_root is not None and env_root.exists()
+    state = handle.checkpoint()
+    checkpoint_dir = Path(
+        cast(str, cast(Mapping[str, object], state)["agent_root_snapshot"]),
     )
-    s2 = evolve(s1, curriculum={"patch": list(kinds_before)})
-    src_after = dict(s2.runtime.files())["app.py"]
-    # All vuln handlers gone; only default handlers remain. The SQLi
-    # template's distinctive marker is unparameterized f-string
-    # interpolation of user input into SQL — default db handlers use
-    # ``?`` parameter binding. SSRF's marker is ``_ALLOWLIST``;
-    # broken_authz's is reading from ``state["secrets"]``.
-    assert "'{user_input}'" not in src_after, src_after
-    assert "_ALLOWLIST" not in src_after
-    assert 'state.get("secrets"' not in src_after
-    # Default handlers vary per service kind; the per-kind markers tell
-    # us at least one default body landed.
-    default_markers = (
-        '"items": []',  # api default
-        '"count": len(rows)',  # db default (parameterized SELECT)
-        '"session": None',  # auth default
-        "<h1>",  # web default (HTML)
-        '"status": "ok"',  # generic fallback
-    )
-    assert any(m in src_after for m in default_markers), src_after
+    assert checkpoint_dir.exists()
+    handle.stop()
+    assert not env_root.exists()
+    assert not checkpoint_dir.exists()
+    assert handle._env_root is None
+    assert handle._agent_root is None
+    assert handle._request_log is None
+
+
+def test_build_discovery_reads_title_from_graph_meta() -> None:
+    """build_discovery returns the sampler-stashed title from `graph.meta`.
+
+    Falls back to "Internal Services" only when `discovery_title` is
+    missing (e.g. minimal hand-built graphs).
+    """
+    from cyber_webapp.codegen.discovery import build_discovery
+
+    graph = _sample_graph(seed=42)
+    expected = graph.meta.get("discovery_title")
+    assert isinstance(expected, str) and expected
+    payload = build_discovery(graph)
+    assert payload["title"] == expected
+    assert payload["title"] != "Internal Services"
+
+
+def test_build_discovery_falls_back_when_meta_missing() -> None:
+    """A graph without `discovery_title` in meta gets the fallback title."""
+    from cyber_webapp.codegen.discovery import build_discovery
+
+    bare = WorldGraph(ontology="cyber.webapp@v2")
+    payload = build_discovery(bare)
+    assert payload["title"] == "Internal Services"

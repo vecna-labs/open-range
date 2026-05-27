@@ -1,305 +1,339 @@
-"""Tests for cyber.webapp's procedural mutation enumerator.
+"""Tests for cyber_webapp's per-family mutation enumerator.
 
-Builds a real v1 snapshot and runs ``available_mutations`` against
-synthetic ``EpisodeReport`` payloads to verify direction tagging and
-relevance scoring. The LLM enrichment path is exercised separately
-with a stub backend.
+These tests build a real snapshot from ``WebappPack().make_builder(None)``
+and exercise direction tagging, relevance scoring, family routing, and
+patch realization end-to-end.
 """
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import Any
 
-from cyber_webapp import CyberWebappPack
+from cyber_webapp import WebappPack, WebappPentest
 from cyber_webapp.mutation import available_mutations
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
+from graphschema import GraphPatch, WorldGraph, apply_patch
 
-from openrange.core.builder import build
-from openrange.core.episode import EpisodeReport
-
-V1_MANIFEST = {
-    "pack": {"id": "cyber.webapp", "source": {"kind": "builtin"}},
-    "mode": "simulation",
-    "world": {},
-}
+from openrange.core.admit import Snapshot
+from openrange.core.pack import EpisodeReportLike, Mutation
 
 
-def _build_snapshot(seed: int = 0):  # type: ignore[no-untyped-def]
-    return build(V1_MANIFEST, prompt=f"seed={seed}")
-
-
-def _vuln_paths(snapshot, kind: str) -> set[str]:  # type: ignore[no-untyped-def]
-    """Find HTTP paths of endpoints affected by vulnerabilities of ``kind``."""
-    graph = snapshot.world_graph
-    assert graph is not None
-    vuln_ids = {
-        n.id
-        for n in graph.nodes
-        if n.type == "vulnerability" and n.attrs.get("kind") == kind
-    }
-    target_ids: set[str] = set()
-    for edge in graph.edges:
-        if edge.relation == "affects" and edge.source in vuln_ids:
-            target_ids.add(edge.target)
-    return {
-        str(n.attrs.get("path", ""))
-        for n in graph.nodes
-        if n.id in target_ids and n.type == "endpoint"
-    }
-
-
-def _report_with_requests(
-    snapshot_id: str,
-    requests: Sequence[Mapping[str, object]],
-    *,
-    passed: bool = True,
-) -> EpisodeReport:
-    return EpisodeReport(
-        snapshot_id=snapshot_id,
-        task_id="task",
-        final_state=MappingProxyType({"requests": list(requests)}),
-        verifier_result=MappingProxyType(
-            {"passed": passed, "score": 1.0 if passed else 0.0},
-        ),
+def _build_snapshot(seed: int = 0) -> Snapshot:
+    """Build a real snapshot via the pack's own builder + manifest path."""
+    pack = WebappPack()
+    result = pack.make_builder(None).build({"seed": seed})
+    graph = result.graph
+    return Snapshot(
+        snapshot_id=graph.content_hash(),
+        ontology_id=graph.ontology,
+        graph=graph,
+        tasks=tuple(result.tasks),
+        lineage={},
     )
 
 
-# ---------------------------------------------------------------------------
-# Procedural enumeration
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class _ReportShim:
+    """A minimal EpisodeReportLike that also carries `final_state`.
+
+    The mutation enumerator's relevance heuristic narrows on a
+    `final_state` attribute via a local Protocol (`_ReportWithFinalState`
+    in `cyber_webapp.mutation`); the public Protocol the function
+    signature names is `EpisodeReportLike` (just `passed`). This shim
+    satisfies both — `passed` for the static type, `final_state` for the
+    runtime narrowing path the relevance scorer takes.
+
+    We don't pull in the full `EpisodeReport` dataclass because it
+    lacks `passed` as a property (it exposes the same signal indirectly
+    via `verifier_result["passed"]`).
+    """
+
+    passed: bool
+    final_state: Mapping[str, Any] = field(default_factory=dict)
 
 
-def test_available_mutations_returns_options_for_v1_world() -> None:
+def _report_with_paths(
+    snapshot_id: str,
+    paths: Sequence[str],
+    *,
+    passed: bool = True,
+) -> EpisodeReportLike:
+    del snapshot_id  # not needed by available_mutations; kept for call-site clarity
+    return _ReportShim(
+        passed=passed,
+        final_state=MappingProxyType({"requests_made": list(paths)}),
+    )
+
+
+def _vuln_paths(graph: WorldGraph, kind: str) -> list[str]:
+    """HTTP paths of endpoints affected by vulnerabilities of ``kind``."""
+    vuln_ids = {
+        n.id
+        for n in graph.nodes.values()
+        if n.kind == "vulnerability" and n.attrs.get("kind") == kind
+    }
+    target_ids: set[str] = set()
+    for edge in graph.edges.values():
+        if edge.kind == "affects" and edge.src in vuln_ids:
+            target_ids.add(edge.dst)
+    return [
+        str(n.attrs.get("path", ""))
+        for n in graph.nodes.values()
+        if n.id in target_ids and n.kind == "endpoint"
+    ]
+
+
+def test_available_mutations_returns_mutation_tuple() -> None:
+    """The enumerator returns a non-empty tuple of `Mutation` values."""
     snap = _build_snapshot()
-    options = available_mutations(snap, ())
-    assert options, "expected at least one mutation for a v1-built world"
-    # Every catalog kind is represented somewhere in the option list
-    kinds_in_directives: set[str] = set()
+    options = available_mutations(snap.graph, "webapp.pentest", ())
+    assert isinstance(options, tuple)
+    assert options
     for opt in options:
-        directive = opt.directive
-        for verb in ("patch", "add"):
-            value = directive.get(verb, ())
-            if isinstance(value, list | tuple):
-                for kind in value:
-                    kinds_in_directives.add(str(kind))
-    assert set(VULN_CATALOG).issubset(kinds_in_directives)
+        assert isinstance(opt, Mutation)
+        assert isinstance(opt.patch, GraphPatch)
+        assert opt.direction in {"harden", "soften", "diversify"}
+        assert 0.0 <= opt.relevance <= 1.0
 
 
-def test_patch_options_tagged_harden_with_floor_relevance() -> None:
+def test_available_mutations_tags_family_argument() -> None:
+    """Every emitted Mutation carries the `family_id` it was called with."""
     snap = _build_snapshot()
-    options = available_mutations(snap, ())
-    patch_options = [o for o in options if "patch" in o.directive]
-    assert patch_options
-    for opt in patch_options:
-        assert opt.direction == "harden"
-        # No reports → floor relevance only
+    for family_id in ("webapp.pentest", "webapp.build", "custom.future_family"):
+        options = available_mutations(snap.graph, family_id, ())
+        assert options
+        assert all(opt.family == family_id for opt in options)
+
+
+def test_available_mutations_covers_every_catalog_kind() -> None:
+    """Across the option list, every catalog kind shows up somewhere.
+
+    A `harden` proposes an absent kind, `soften`/`diversify` operate on
+    present kinds; together they exhaust the catalog.
+    """
+    snap = _build_snapshot()
+    options = available_mutations(snap.graph, "webapp.pentest", ())
+    kinds_seen: set[str] = set()
+    for opt in options:
+        # `harden` adds a new vuln node; `soften` removes vuln nodes;
+        # `diversify` updates one vuln in place. The kind shows up in
+        # the added node's attrs (harden), or in the note text for
+        # remove/swap proposals.
+        for node in opt.patch.nodes_added + opt.patch.nodes_updated:
+            attr_kind = node.attrs.get("kind")
+            if isinstance(attr_kind, str):
+                kinds_seen.add(attr_kind)
+        # For pure-removal patches the kind only appears in the note.
+        for kind in VULN_CATALOG:
+            if kind in opt.note:
+                kinds_seen.add(kind)
+    assert set(VULN_CATALOG).issubset(kinds_seen)
+
+
+def test_directions_produce_different_patch_shapes() -> None:
+    """harden / soften / diversify each produce a structurally distinct patch.
+
+    harden:    adds a vuln node + an `affects` edge.
+    soften:    removes vuln node(s) + dangling edge(s).
+    diversify: updates one vuln node in place; no add, no remove.
+    """
+    snap = _build_snapshot()
+    options = available_mutations(snap.graph, "webapp.pentest", ())
+    by_direction: dict[str, list[Mutation]] = {}
+    for opt in options:
+        by_direction.setdefault(opt.direction, []).append(opt)
+    # The seed=0 world carries multiple vuln kinds, so every direction
+    # has at least one representative.
+    assert {"harden", "soften", "diversify"}.issubset(by_direction.keys())
+
+    for opt in by_direction["harden"]:
+        assert opt.patch.nodes_added, "harden must add a vuln node"
+        assert opt.patch.edges_added, "harden must add an affects edge"
+        assert not opt.patch.nodes_removed
+        assert not opt.patch.nodes_updated
+
+    for opt in by_direction["soften"]:
+        assert opt.patch.nodes_removed, "soften must remove vuln node(s)"
+        assert not opt.patch.nodes_added
+        assert not opt.patch.nodes_updated
+
+    for opt in by_direction["diversify"]:
+        assert opt.patch.nodes_updated, "diversify must update a vuln in place"
+        assert not opt.patch.nodes_added
+        assert not opt.patch.nodes_removed
+
+
+def test_soften_relevance_is_floor_without_reports() -> None:
+    """No reports → soften relevance equals the documented floor (0.05)."""
+    snap = _build_snapshot()
+    options = available_mutations(snap.graph, "webapp.pentest", ())
+    soften_options = [o for o in options if o.direction == "soften"]
+    assert soften_options
+    for opt in soften_options:
         assert opt.relevance == 0.05
 
 
-def test_add_options_tagged_by_world_presence() -> None:
-    snap = _build_snapshot()
-    options = available_mutations(snap, ())
-    graph = snap.world_graph
-    assert graph is not None
-    kinds_in_world = {
-        str(n.attrs.get("kind")) for n in graph.nodes if n.type == "vulnerability"
-    }
-    for opt in options:
-        if "add" not in opt.directive:
-            continue
-        add_value = opt.directive["add"]
-        assert isinstance(add_value, list | tuple)
-        kinds = list(add_value)
-        assert len(kinds) == 1
-        kind = str(kinds[0])
-        if kind in kinds_in_world:
-            assert opt.direction == "diversify"
-        else:
-            assert opt.direction == "soften"
-
-
 def test_relevance_climbs_when_agent_hits_vuln_endpoints() -> None:
-    """Synthetic request log targeting vuln-bearing endpoints should
-    push that kind's patch relevance well above the floor."""
+    """Hits on a vuln-bearing endpoint push that kind's `soften`
+    relevance well above the floor.
+    """
     snap = _build_snapshot()
-    graph = snap.world_graph
-    assert graph is not None
-    # Pick a vuln kind that's actually present and find one of its paths.
     kinds_in_world = sorted(
-        {str(n.attrs.get("kind")) for n in graph.nodes if n.type == "vulnerability"},
+        {
+            str(n.attrs.get("kind"))
+            for n in snap.graph.nodes.values()
+            if n.kind == "vulnerability"
+        },
     )
     assert kinds_in_world
     target_kind = kinds_in_world[0]
-    target_paths = _vuln_paths(snap, target_kind)
-    assert target_paths, f"no endpoint path found for {target_kind}"
-    target_path = next(iter(target_paths))
+    paths = _vuln_paths(snap.graph, target_kind)
+    assert paths, f"no endpoint path found for {target_kind}"
+    report = _report_with_paths(snap.snapshot_id, [paths[0]] * 10)
 
-    requests = [
-        {"method": "GET", "path": target_path, "status": 200} for _ in range(10)
-    ]
-    report = _report_with_requests(snap.id, requests)
-    options = available_mutations(snap, [report])
-    patch_for_target = next(
-        o
-        for o in options
-        if "patch" in o.directive and target_kind in o.directive["patch"]  # type: ignore[operator]
+    options = available_mutations(snap.graph, "webapp.pentest", [report])
+    soften_for_target = next(
+        o for o in options if o.direction == "soften" and target_kind in o.note
     )
-    # Hits land on a target_kind endpoint → that patch's relevance climbs
-    # above the floor. (Other patches may *also* climb if multiple vulns
-    # share an endpoint, which is allowed by the ontology — we don't
-    # assert on the rest here.)
-    assert patch_for_target.relevance > 0.5
+    assert soften_for_target.relevance > 0.5
 
 
-def test_failed_requests_dont_inflate_relevance() -> None:
+def test_unrelated_paths_dont_inflate_relevance() -> None:
+    """Paths that don't intersect a vuln-bearing endpoint don't drive
+    that kind's soften relevance above the floor."""
     snap = _build_snapshot()
-    graph = snap.world_graph
-    assert graph is not None
     kinds_in_world = sorted(
-        {str(n.attrs.get("kind")) for n in graph.nodes if n.type == "vulnerability"},
+        {
+            str(n.attrs.get("kind"))
+            for n in snap.graph.nodes.values()
+            if n.kind == "vulnerability"
+        },
     )
     target_kind = kinds_in_world[0]
-    target_paths = _vuln_paths(snap, target_kind)
-    target_path = next(iter(target_paths))
+    report = _report_with_paths(snap.snapshot_id, ["/does/not/exist"] * 10)
 
-    # 10 requests but all 4xx — should be ignored
-    requests = [
-        {"method": "GET", "path": target_path, "status": 404} for _ in range(10)
-    ]
-    report = _report_with_requests(snap.id, requests, passed=False)
-    options = available_mutations(snap, [report])
-    patch_for_target = next(
-        o
-        for o in options
-        if "patch" in o.directive and target_kind in o.directive["patch"]  # type: ignore[operator]
+    options = available_mutations(snap.graph, "webapp.pentest", [report])
+    soften_for_target = next(
+        o for o in options if o.direction == "soften" and target_kind in o.note
     )
-    # No successful hits → floor only
-    assert patch_for_target.relevance == 0.05
+    assert soften_for_target.relevance == 0.05
 
 
-def test_directives_are_evolve_consumable() -> None:
-    """Each Mutation.directive must be the shape ``evolve()`` accepts."""
+def test_available_mutations_is_deterministic() -> None:
+    """Same `(graph, family_id, reports)` triple → identical option order
+    and identical patches.
+    """
     snap = _build_snapshot()
-    options = available_mutations(snap, ())
-    for opt in options:
-        assert isinstance(opt.directive, Mapping)
-        # v1 directives are single-verb with a list of kinds
-        keys = set(opt.directive.keys())
-        assert keys <= {"patch", "add"}
-        for verb in keys:
-            value = opt.directive[verb]
-            assert isinstance(value, list | tuple)
-            assert all(isinstance(k, str) for k in value)
-
-
-# ---------------------------------------------------------------------------
-# CyberWebappPack.available_mutations integration (procedural path)
-# ---------------------------------------------------------------------------
-
-
-def test_pack_available_mutations_no_llm_matches_procedural() -> None:
-    snap = _build_snapshot()
-    pack = CyberWebappPack()
-    pack_options = pack.available_mutations(snap, [])
-    proc_options = available_mutations(snap, [])
-    assert len(pack_options) == len(proc_options)
-    for a, b in zip(pack_options, proc_options, strict=False):
-        assert a.directive == b.directive
+    first = available_mutations(snap.graph, "webapp.pentest", ())
+    second = available_mutations(snap.graph, "webapp.pentest", ())
+    assert len(first) == len(second)
+    for a, b in zip(first, second, strict=True):
         assert a.direction == b.direction
         assert a.relevance == b.relevance
-
-
-# ---------------------------------------------------------------------------
-# LLM enrichment (stub backend)
-# ---------------------------------------------------------------------------
-
-
-class _StubLLMBackend:
-    """Minimal LLMBackend that returns a fixed JSON payload."""
-
-    def __init__(self, response: Mapping[str, object]) -> None:
-        self._response = response
-        self.calls = 0
-
-    def complete(self, request) -> object:  # type: ignore[no-untyped-def]
-        from openrange.llm import LLMResult
-
-        self.calls += 1
-        return LLMResult(text="", parsed_json=self._response)
-
-
-def test_llm_enrichment_overrides_relevance_and_note() -> None:
-    snap = _build_snapshot()
-    procedural = available_mutations(snap, [])
-    # Bump every option's relevance to 0.99 and rewrite the note
-    enriched_response = {
-        "mutations": [
-            {"index": i, "relevance": 0.99, "note": f"llm-note-{i}"}
-            for i in range(len(procedural))
-        ],
-    }
-    llm = _StubLLMBackend(enriched_response)
-    pack = CyberWebappPack()
-    options = pack.available_mutations(snap, [], llm=llm)  # type: ignore[arg-type]
-    assert llm.calls == 1
-    assert len(options) == len(procedural)
-    for i, opt in enumerate(options):
-        assert opt.relevance == 0.99
-        assert opt.note == f"llm-note-{i}"
-        # Direction & directive must NOT be touched by the LLM pass
-        assert opt.direction == procedural[i].direction
-        assert opt.directive == procedural[i].directive
-
-
-def test_llm_enrichment_falls_back_on_bad_response() -> None:
-    """LLM returning garbage → procedural list passes through unchanged."""
-    snap = _build_snapshot()
-    procedural = available_mutations(snap, [])
-    llm = _StubLLMBackend({"mutations": "not a list"})
-    pack = CyberWebappPack()
-    options = pack.available_mutations(snap, [], llm=llm)  # type: ignore[arg-type]
-    assert len(options) == len(procedural)
-    for a, b in zip(options, procedural, strict=False):
-        assert a.relevance == b.relevance
         assert a.note == b.note
+        assert a.family == b.family
+        # Patch equality is dataclass field-by-field.
+        assert a.patch == b.patch
 
 
-def test_pack_available_mutations_default_returns_empty() -> None:
-    """Packs that don't override get the empty-tuple default and skip
-    auto-evolve cleanly."""
-    from openrange.core.pack import Pack
-
-    class _BarePack(Pack):
-        id = "bare"
-        version = "v0"
-
-        @property
-        def ontology(self):  # type: ignore[no-untyped-def]
-            raise NotImplementedError
-
-        def realize(self, graph, manifest):  # type: ignore[no-untyped-def]
-            raise NotImplementedError
-
-    assert _BarePack().available_mutations(None, []) == ()  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# Verify Mutation directive can be fed back into evolve()
-# ---------------------------------------------------------------------------
-
-
-def test_chosen_mutation_is_acceptable_to_evolve() -> None:
-    """End-to-end: pick a patch mutation and evolve() consumes it."""
-    from openrange.core.builder import evolve
-
+def test_pentest_family_tags_mutations_with_its_id() -> None:
+    """`WebappPentest().available_mutations(snap, reports)` tags
+    every Mutation with `family="webapp.pentest"`.
+    """
     snap = _build_snapshot()
-    options = available_mutations(snap, [])
-    patch_option = next(o for o in options if "patch" in o.directive)
-    # evolve() is the public API — must accept the directive shape
-    child = evolve(snap, patch_option.directive)
-    assert isinstance(child, type(snap))
-    assert child.id != snap.id
-    # Lineage carries the directive
-    assert child.lineage[-1].curriculum
-    assert "patch" in dict(child.lineage[-1].curriculum)
+    options = WebappPentest().available_mutations(snap, [])
+    assert options
+    assert all(opt.family == "webapp.pentest" for opt in options)
+
+
+def test_pentest_family_matches_procedural_floor_without_llm() -> None:
+    """Without an LLM, the family delegates verbatim to the procedural
+    enumerator; per-position patches and directions must match.
+    """
+    snap = _build_snapshot()
+    family_options = WebappPentest().available_mutations(snap, [])
+    proc_options = available_mutations(snap.graph, "webapp.pentest", [])
+    assert len(family_options) == len(proc_options)
+    for fam, proc in zip(family_options, proc_options, strict=True):
+        assert fam.direction == proc.direction
+        assert fam.relevance == proc.relevance
+        assert fam.patch == proc.patch
+
+
+def test_applying_harden_mutation_adds_a_vulnerability_node() -> None:
+    """A `harden` patch increments the vulnerability count when applied."""
+    snap = _build_snapshot()
+    options = available_mutations(snap.graph, "webapp.pentest", ())
+    harden = next(o for o in options if o.direction == "harden")
+
+    before = sum(1 for n in snap.graph.nodes.values() if n.kind == "vulnerability")
+    # Patches are designed to be applied to a copy — never mutate the
+    # snapshot graph directly in a test.
+    mutable = copy.deepcopy(snap.graph)
+    apply_patch(mutable, harden.patch)
+    after = sum(1 for n in mutable.nodes.values() if n.kind == "vulnerability")
+
+    assert after == before + 1
+    # The new vuln carries the same `kind` attr the patch announced.
+    added_node = harden.patch.nodes_added[0]
+    landed = mutable.nodes.get(added_node.id)
+    assert landed is not None
+    assert landed.kind == "vulnerability"
+    assert landed.attrs.get("kind") == added_node.attrs.get("kind")
+
+
+def test_applying_soften_mutation_removes_vulnerabilities() -> None:
+    """A `soften` patch removes the vulns of its targeted kind from the graph."""
+    snap = _build_snapshot()
+    options = available_mutations(snap.graph, "webapp.pentest", ())
+    soften = next(o for o in options if o.direction == "soften")
+
+    removed_ids = set(soften.patch.nodes_removed)
+    assert removed_ids, "soften patch must declare nodes to remove"
+
+    mutable = copy.deepcopy(snap.graph)
+    for nid in removed_ids:
+        assert nid in mutable.nodes, "soften must target nodes that exist"
+    apply_patch(mutable, soften.patch)
+
+    for nid in removed_ids:
+        assert nid not in mutable.nodes
+
+
+def test_applying_diversify_mutation_changes_vuln_kind_in_place() -> None:
+    """A `diversify` patch updates an existing vuln node's `kind` attr
+    without changing the node-count.
+    """
+    snap = _build_snapshot()
+    options = available_mutations(snap.graph, "webapp.pentest", ())
+    diversify = next(o for o in options if o.direction == "diversify")
+
+    updated_node = diversify.patch.nodes_updated[0]
+    original = snap.graph.nodes.get(updated_node.id)
+    assert original is not None, "diversify must target an existing vuln node"
+    assert original.attrs.get("kind") != updated_node.attrs.get("kind"), (
+        "diversify must change the kind"
+    )
+
+    before_count = len(snap.graph.nodes)
+    mutable = copy.deepcopy(snap.graph)
+    apply_patch(mutable, diversify.patch)
+
+    assert len(mutable.nodes) == before_count
+    landed = mutable.nodes[updated_node.id]
+    assert landed.attrs.get("kind") == updated_node.attrs.get("kind")
+
+
+def test_available_mutations_handles_empty_reports() -> None:
+    """An empty reports sequence is the boot path — no exceptions."""
+    snap = _build_snapshot()
+    options = available_mutations(snap.graph, "webapp.pentest", ())
+    assert options
+    # All soften options should be at the floor (no signal).
+    for opt in options:
+        if opt.direction == "soften":
+            assert opt.relevance == 0.05

@@ -1,35 +1,3 @@
-"""``cyber.curious_employee`` — LLM-backed agent NPC.
-
-Reference implementation of the agent-NPC shape: a persona, a tool
-surface bound over the HTTP backing's ``interface``, and an
-:class:`~openrange.agent_backend.AgentBackend` driving the
-loop. Default backend is strands (set centrally via
-``RunConfig.npc_agent_backend``); per-NPC ``model`` config still
-works as a convenience for picking a strands model id without
-constructing a backend by hand.
-
-Roughly: an internal employee poking around the company webapp out
-of boredom — a few GETs per turn, no destructive intent.
-
-If the configured backend can't run (e.g. ``strands-agents`` not
-installed) the NPC marks itself permanently broken at episode
-start, logs a single WARNING to ``openrange.npc`` with the
-import error, and the rest of the episode runs without it. See
-:class:`AgentNPC` for the full failure model.
-
-Config:
-    cadence_ticks: int = 5         — invoke the agent every Nth tick
-    model: str | None = None       — convenience override: builds a
-                                     ``StrandsAgentBackend(model=...)``
-                                     for this NPC (overrides the
-                                     runtime-supplied backend). For
-                                     non-strands backends, leave this
-                                     unset and configure
-                                     ``RunConfig.npc_agent_backend``
-                                     instead.
-    system_prompt: str | None      — override the default persona
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence

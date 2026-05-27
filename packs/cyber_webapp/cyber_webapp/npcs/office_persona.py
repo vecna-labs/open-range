@@ -1,48 +1,3 @@
-"""``cyber.office_persona`` — LLM-backed office persona NPC.
-
-A persona-faithful office worker. Every ``cadence_ticks`` an LLM
-turn produces a JSON ``{speak, visit}`` payload; this NPC then does
-the HTTP visit itself via the runtime's ``http_get`` interface and
-records the speech (and optional walk to a colleague) via
-``record_action`` so the dashboard scene can place the persona at
-their desk and surface a callout.
-
-Why not :class:`AgentNPC` with a ``visit_url`` tool? Because that
-path requires :class:`StrandsAgentBackend` and breaks when the
-runtime's :class:`AgentBackend` rejects tool injection (notably
-:class:`CodexAgentBackend`, which fails the build_agent call when
-tools are non-empty). Single-shot keeps this NPC compatible with
-every ``AgentBackend`` shape OpenRange ships.
-
-Distilled from the Living Office demo's ``LLMGreenScheduler`` +
-``ReactiveBus``: the persona card carries name, role, title, tone,
-home index (where the dashboard seats them), and optional
-colleagues (used by the dashboard for walk targets). One LLM call
-per acting tick — a handful of well-acted personas is enough to
-make the office feel alive.
-
-Failure model: the NPC needs an :class:`AgentBackend` either via
-the constructor (``model`` config) or from the runtime
-(``RunConfig.npc_agent_backend``). Without one it marks itself
-permanently broken at ``start()`` and the dashboard surfaces the
-broken state. Per-tick LLM failures swallow at DEBUG and retry on
-the next cadence window.
-
-Config:
-    name: str (required)            — display name + actor_id
-    role: str = "engineer"          — drives palette + room placement
-    title: str = ""                 — role-specific job title (free text)
-    tone: str = "warm, professional" — short voice descriptor
-    colleagues: list[str] = ()      — names of nearby personas (walk targets)
-    home: str | None = None         — service-id ``target`` on emitted events
-    cadence_ticks: int = 6          — invoke the agent every Nth tick
-    model: str | None = None        — convenience: builds a
-                                      ``StrandsAgentBackend(model=...)``
-                                      override
-    seed: int | None = None         — deterministic randomness for the
-                                      home_index salt + colleague pick
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -136,8 +91,6 @@ class OfficePersona(NPC):
                 agent_backend.preflight()
             except Exception as exc:
                 self._mark_broken(f"backend preflight failed: {exc}", exc=exc)
-
-    # --- lifecycle -------------------------------------------------------
 
     def start(self, context: Mapping[str, Any]) -> None:
         record = context.get("record_action")
@@ -246,8 +199,6 @@ class OfficePersona(NPC):
     def stop(self) -> None:
         self._agent = None
 
-    # --- internals -------------------------------------------------------
-
     def _mark_broken(self, reason: str, *, exc: BaseException | None = None) -> None:
         if self._broken:
             return
@@ -293,12 +244,6 @@ class OfficePersona(NPC):
         return ""
 
     def _extract_payload(self, text: str) -> tuple[str, str]:
-        """Pull (speak, visit) out of the model reply.
-
-        Strict mode: parse a JSON object with both fields. Loose
-        fallback: pull the first sentence as speech and a likely path
-        from any string in the reply that begins with ``/``.
-        """
         if not text:
             return "", ""
         stripped = text.strip()
@@ -349,6 +294,7 @@ def factory(config: Mapping[str, object]) -> NPC:
     cadence_raw = config.get("cadence_ticks", 6)
     model_raw = config.get("model")
     seed_raw = config.get("seed")
+    suffix_raw = config.get("_replication_suffix", "")
     if not isinstance(name_raw, str) or not name_raw:
         raise ValueError("name must be a non-empty string")
     if not isinstance(role_raw, str) or not role_raw:
@@ -369,9 +315,11 @@ def factory(config: Mapping[str, object]) -> NPC:
         raise ValueError("model must be a string or unset")
     if seed_raw is not None and not isinstance(seed_raw, int):
         raise ValueError("seed must be an int or unset")
+    if not isinstance(suffix_raw, str):
+        raise ValueError("_replication_suffix must be a string")
     backend = StrandsAgentBackend(model=model_raw) if model_raw is not None else None
     return OfficePersona(
-        name=name_raw,
+        name=name_raw + suffix_raw,
         role=role_raw,
         title=title_raw,
         tone=tone_raw,

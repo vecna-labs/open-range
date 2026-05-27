@@ -19,11 +19,6 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 
-# ---------------------------------------------------------------------------
-# Bootstrap — load seed.json into in-memory SQLite, then unlink the seed.
-# ---------------------------------------------------------------------------
-
-
 def _load_seed_and_init_state(seed_path: Path) -> dict:
     raw = seed_path.read_text(encoding="utf-8")
     seed_path.unlink()
@@ -54,20 +49,12 @@ def _load_seed_and_init_state(seed_path: Path) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Endpoint handlers — one per (service, endpoint).
-# ---------------------------------------------------------------------------
-
 {% for handler in handlers %}
 # {{ handler.docstring }}
 def {{ handler.name }}(query, state):
 {{ handler.body }}
 
 {% endfor %}
-
-# ---------------------------------------------------------------------------
-# Routing
-# ---------------------------------------------------------------------------
 
 _DISCOVERY = {{ discovery | tojson }}
 

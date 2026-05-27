@@ -7,14 +7,17 @@ import threading
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
-from openrange.core import ActorTurn, Snapshot
-from openrange.core.snapshot import json_safe
+from openrange.core import ActorTurn
+from openrange.core.admit import Snapshot
+from openrange.core.pack import TaskSpec
 from openrange.dashboard.events import (
     DashboardEvent,
     EventBridge,
     dashboard_event_from_mapping,
     fallback_narrate,
+    json_safe,
     read_dashboard_events,
     read_dashboard_state,
     write_dashboard_state,
@@ -160,15 +163,17 @@ class DashboardView:
                 "snapshot_id": None,
                 "world": {},
                 "tasks": [],
-                "artifact_paths": [],
                 **empty_runtime_topology(),
             }
         runtime_topology = normalized_runtime_topology(self.snapshot)
+        manifest = _manifest_from_lineage(self.snapshot.lineage)
+        world_block = manifest.get("world", {})
+        if not isinstance(world_block, Mapping):
+            world_block = {}
         return {
-            "snapshot_id": self.snapshot.id,
-            "world": public_world(self.snapshot.world),
-            "tasks": [task.as_dict() for task in self.snapshot.tasks],
-            "artifact_paths": sorted(self.snapshot.artifacts),
+            "snapshot_id": self.snapshot.snapshot_id,
+            "world": public_world(cast(Mapping[str, object], world_block)),
+            "tasks": [_task_to_dict(task) for task in self.snapshot.tasks],
             **runtime_topology,
         }
 
@@ -179,13 +184,16 @@ class DashboardView:
                 return stored
             return {
                 "snapshot_id": None,
-                "admission": None,
-                "nodes": [],
+                "lineage": {},
+                "history": [],
+                "parent_snapshot_id": None,
             }
+        parent_id = self.snapshot.lineage.get("parent_snapshot_id")
         return {
-            "snapshot_id": self.snapshot.id,
-            "admission": self.snapshot.admission.as_dict(),
-            "nodes": [node.as_dict() for node in self.snapshot.lineage],
+            "snapshot_id": self.snapshot.snapshot_id,
+            "lineage": dict(self.snapshot.lineage),
+            "history": [event.to_dict() for event in self.snapshot.history],
+            "parent_snapshot_id": parent_id if isinstance(parent_id, str) else None,
         }
 
     def state(self) -> Mapping[str, object]:
@@ -223,7 +231,7 @@ class DashboardView:
         else:
             result = {
                 "status": "ready",
-                "snapshot_id": self.snapshot.id,
+                "snapshot_id": self.snapshot.snapshot_id,
                 "topology": self.topology(),
             }
         self._write_configured_state()
@@ -327,18 +335,25 @@ class DashboardView:
                 "entrypoints": [],
                 "missions": [],
             }
+        manifest = _manifest_from_lineage(self.snapshot.lineage)
+        world_block = manifest.get("world", {})
+        if not isinstance(world_block, Mapping):
+            world_block = {}
+        graph_nodes = self.snapshot.graph.nodes
         return {
-            "snapshot_id": self.snapshot.id,
-            "title": str(self.snapshot.world.get("title", "")),
-            "goal": str(self.snapshot.world.get("goal", "")),
+            "snapshot_id": self.snapshot.snapshot_id,
+            "title": str(world_block.get("title", "")),
+            "goal": str(world_block.get("goal", "")),
             "entrypoints": [
                 {
                     "task_id": task.id,
-                    "kind": entrypoint.kind,
-                    "target": entrypoint.target,
+                    "node_id": node_id,
+                    "node_kind": (
+                        graph_nodes[node_id].kind if node_id in graph_nodes else ""
+                    ),
                 }
                 for task in self.snapshot.tasks
-                for entrypoint in task.entrypoints
+                for node_id in task.entrypoints
             ],
             "missions": [
                 {"task_id": task.id, "instruction": task.instruction}
@@ -379,7 +394,31 @@ class DashboardView:
 
     def _snapshot_id(self) -> str | None:
         if self.snapshot is not None:
-            return self.snapshot.id
+            return self.snapshot.snapshot_id
         topology = self._stored_section("topology")
         snapshot_id = topology.get("snapshot_id")
         return snapshot_id if isinstance(snapshot_id, str) else None
+
+
+def _manifest_from_lineage(lineage: Mapping[str, object]) -> Mapping[str, object]:
+    # ``admit()`` stashes the manifest under ``lineage["manifest"]``.
+    manifest = lineage.get("manifest")
+    if isinstance(manifest, Mapping):
+        return cast(Mapping[str, object], manifest)
+    return {}
+
+
+def _task_to_dict(task: TaskSpec) -> dict[str, object]:
+    # Mirrors ``snapshot_to_dict`` in ``admit.py`` so the dashboard
+    # doesn't have to import the snapshot serializer for one helper.
+    out: dict[str, object] = {
+        "id": task.id,
+        "instruction": task.instruction,
+        "entrypoints": list(task.entrypoints),
+        "goal_nodes": list(task.goal_nodes),
+        "feasibility_check": task.feasibility_check,
+        "success_check": task.success_check,
+    }
+    if task.meta:
+        out["meta"] = dict(task.meta)
+    return out

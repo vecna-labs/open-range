@@ -1,244 +1,209 @@
-"""Tests for the procedural cyber builder + v1 pack.
+"""Tests for the procedural cyber :class:`WebappBuilder`.
 
-These tests cover the C2 baseline:
-  - The builder produces graphs that pass v1 ontology constraints across
-    a sweep of seeds.
-  - The builder is deterministic given a seed (same seed → same graph).
-  - End-to-end ``build()`` admits a v1 snapshot with no LLM dependency.
-  - ``evolve()`` with ``patch`` and ``add`` curricula mutates the graph
-    correctly. Patching the only oracle-path vuln yields a hardened
-    world that still admits (the agent will fail; that's the training
-    signal).
+Covers:
+
+  - ``WebappBuilder(prior)`` produces a :class:`BuildResult` whose
+    graph carries the expected node kinds.
+  - Determinism in ``manifest["seed"]``: same seed → same
+    ``content_hash()``.
+  - Different seeds produce different content hashes.
+  - ``repair`` resamples with a perturbed seed.
+  - End-to-end ``admit(pack, manifest)`` succeeds against
+    :class:`WebappPack`.
+  - :func:`default_prior` flows when ``WebappBuilder(prior=None)``.
 """
 
 from __future__ import annotations
 
-import random
+from cyber_webapp import WebappBuilder, WebappPack
+from cyber_webapp.priors import default_prior
 
-from cyber_webapp.builder import ProceduralBuilder
-from cyber_webapp.ontology import ONTOLOGY
-from cyber_webapp.priors import PRIORS
-from cyber_webapp.sampling import sample_graph
-
-import openrange as OR
-from openrange.core.builder import build, evolve
-
-V1_MANIFEST = {
-    "pack": {"id": "cyber.webapp", "source": {"kind": "builtin"}},
-    "mode": "simulation",
-    "world": {},
-}
+from openrange.core.admit import Snapshot, admit
+from openrange.core.pack import BuildResult, PackPrior
 
 
-# ---------------------------------------------------------------------------
-# Sampling
-# ---------------------------------------------------------------------------
+def test_builder_returns_build_result() -> None:
+    """``WebappBuilder.build`` returns a fully-populated ``BuildResult``."""
+    builder = WebappBuilder(default_prior())
+    result = builder.build({"seed": 0})
+    assert isinstance(result, BuildResult)
+    assert result.graph.ontology == "cyber.webapp@v2"
+    # Both task families contribute.
+    assert len(result.tasks) >= 2
+    assert {t.feasibility_check for t in result.tasks} == {
+        "webapp.build",
+        "webapp.pentest",
+    }
 
 
-def test_sample_graph_satisfies_ontology_across_seeds() -> None:
-    for seed in range(10):
-        rng = random.Random(seed)
-        graph = sample_graph(rng, PRIORS)
-        errors = ONTOLOGY.validate(graph)
-        assert not errors, f"seed {seed}: {[e.message for e in errors]}"
+def test_builder_graph_carries_expected_kinds() -> None:
+    """A seeded build emits every node kind a fully-shaped webapp needs.
 
-
-def test_sample_graph_is_deterministic() -> None:
-    rng_a = random.Random(7)
-    rng_b = random.Random(7)
-    graph_a = sample_graph(rng_a, PRIORS)
-    graph_b = sample_graph(rng_b, PRIORS)
-    assert graph_a.as_dict() == graph_b.as_dict()
-
-
-def test_sample_graph_has_required_node_types() -> None:
-    rng = random.Random(0)
-    graph = sample_graph(rng, PRIORS)
-    types = {n.type for n in graph.nodes}
-    # Every realistic generation has these.
-    assert {"service", "endpoint", "secret", "vulnerability", "data_store"} <= types
-
-
-# ---------------------------------------------------------------------------
-# End-to-end build
-# ---------------------------------------------------------------------------
-
-
-def test_v1_pack_builds_without_llm() -> None:
-    from cyber_webapp.sampling import (
-        TASK_TARGETS,
-        TASK_VERBS,
-    )
-
-    snapshot = build(V1_MANIFEST)
-    assert snapshot.admission.passed
-    # task_id is derived per build from verb_target pools.
-    task = snapshot.tasks[0]
-    verb, _, target = task.id.partition("_")
-    assert verb in TASK_VERBS
-    assert target in TASK_TARGETS
-    assert snapshot.world_graph is not None
-    flag_secrets = [
-        n
-        for n in snapshot.world_graph.nodes
-        if n.type == "secret" and n.attrs.get("kind") == "flag"
-    ]
-    assert len(flag_secrets) == 1
-
-
-def test_v1_seeds_produce_distinct_worlds() -> None:
-    """Sweeping seeds yields distinct graphs (the plan's "100 distinct" acceptance).
-
-    The build is deterministic given a seed; variety comes from sweeping
-    the seed space. Tests construct the builder directly with different
-    seeds; production users do the same via ``manifest.builder`` or by
-    invoking the pack's ``default_builder()`` with a curriculum carrying
-    a seed.
+    The sampler always lays down at least one of each core kind so the
+    invariants pass and both families can bind tasks. The set we assert
+    on is the intersection of "always present" kinds across the
+    sampler — ``account`` / ``credential`` are sampled in batches >= 1,
+    ``network`` is single-instance, etc.
     """
-    flags = set()
+    builder = WebappBuilder(default_prior())
+    result = builder.build({"seed": 0})
+    kinds = {n.kind for n in result.graph.nodes.values()}
+    expected = {
+        "host",
+        "service",
+        "endpoint",
+        "data_store",
+        "record",
+        "secret",
+        "vulnerability",
+        "account",
+        "credential",
+        "network",
+    }
+    missing = expected - kinds
+    assert not missing, f"seed 0 missing kinds: {missing} (got {kinds})"
+
+
+def test_builder_admission_meta_carries_provenance() -> None:
+    """``BuildResult.admission_meta`` records builder id + seed + prior."""
+    builder = WebappBuilder(default_prior())
+    result = builder.build({"seed": 3})
+    meta = dict(result.admission_meta)
+    assert meta["builder"] == "cyber.webapp.v2"
+    assert meta["seed"] == 3
+    assert "prior_source" in meta
+
+
+def test_same_seed_same_content_hash() -> None:
+    """Identical ``manifest["seed"]`` → identical graph content hash.
+
+    Two fresh builders consume the same seed and emit graphs whose
+    ``content_hash()`` is byte-identical. This is the property that
+    powers the content-addressed snapshot id.
+    """
+    builder_a = WebappBuilder(default_prior())
+    builder_b = WebappBuilder(default_prior())
+    hash_a = builder_a.build({"seed": 11}).graph.content_hash()
+    hash_b = builder_b.build({"seed": 11}).graph.content_hash()
+    assert hash_a == hash_b
+
+
+def test_different_seeds_different_content_hashes() -> None:
+    """Different seeds → different content hashes (worlds diverge)."""
+    builder = WebappBuilder(default_prior())
+    hash_a = builder.build({"seed": 0}).graph.content_hash()
+    # Reset attempts by using a fresh builder for the second seed.
+    hash_b = WebappBuilder(default_prior()).build({"seed": 42}).graph.content_hash()
+    assert hash_a != hash_b
+
+
+def test_seed_sweep_yields_distinct_flag_values() -> None:
+    """Sweeping seeds yields graphs with distinct embedded flag values.
+
+    The sampler picks a fresh ``flag`` secret value per build; over a
+    sweep of seeds we should see at least two different values. This is
+    the procedural-variety contract.
+    """
+    flags: set[str] = set()
     for seed in range(5):
-        rng = random.Random(seed)
-        graph = sample_graph(rng, PRIORS)
-        flag = next(
-            n.attrs["value_ref"]
-            for n in graph.nodes
-            if n.type == "secret" and n.attrs.get("kind") == "flag"
-        )
-        flags.add(flag)
-    assert len(flags) >= 2
+        result = WebappBuilder(default_prior()).build({"seed": seed})
+        secrets = [n for n in result.graph.nodes.values() if n.kind == "secret"]
+        # Every build has at least one flag secret.
+        assert secrets, f"seed {seed}: no secret node"
+        flags.add(str(secrets[0].attrs["value_ref"]))
+    assert len(flags) >= 2, f"seed sweep produced only one flag: {flags}"
 
 
-def test_v1_seeded_builds_are_reproducible() -> None:
-    """Seeded curriculum pins the rng; same seed → same world."""
-    from openrange.core.builder import BuildContext
-
-    pack = OR.PACKS.resolve("cyber.webapp")
-    builder_a = pack.default_builder(BuildContext(curriculum={"seed": 7}))
-    builder_b = pack.default_builder(BuildContext(curriculum={"seed": 7}))
-    assert isinstance(builder_a, ProceduralBuilder)
-    assert isinstance(builder_b, ProceduralBuilder)
-    assert builder_a._seed == builder_b._seed == 7
+def test_missing_seed_falls_back_to_zero() -> None:
+    """A manifest without ``seed`` builds deterministically against seed=0."""
+    explicit = WebappBuilder(default_prior()).build({"seed": 0}).graph.content_hash()
+    default = WebappBuilder(default_prior()).build({}).graph.content_hash()
+    assert explicit == default
 
 
-def test_v1_pack_is_registered() -> None:
-    assert "cyber.webapp" in OR.PACKS.ids()
-    pack = OR.PACKS.resolve("cyber.webapp")
-    assert pack.ontology is ONTOLOGY
-    assert pack.generation_priors() is PRIORS
+def test_repair_resamples_a_different_graph() -> None:
+    """``repair`` perturbs the seed: the follow-up build differs.
 
-
-def test_v1_default_builder_seed_propagates_from_curriculum() -> None:
-    pack = OR.PACKS.resolve("cyber.webapp")
-    from openrange.core.builder import BuildContext
-
-    ctx_default = BuildContext()
-    ctx_seeded = BuildContext(curriculum={"seed": 42})
-    builder_default = pack.default_builder(ctx_default)
-    builder_seeded = pack.default_builder(ctx_seeded)
-    assert isinstance(builder_default, ProceduralBuilder)
-    assert isinstance(builder_seeded, ProceduralBuilder)
-    assert builder_default._seed == 0
-    assert builder_seeded._seed == 42
-
-
-# ---------------------------------------------------------------------------
-# Curriculum: patch
-# ---------------------------------------------------------------------------
-
-
-def test_evolve_patches_named_vulns() -> None:
-    s1 = build(V1_MANIFEST)
-    kinds_before = [
-        n.attrs["kind"] for n in s1.world_graph.nodes if n.type == "vulnerability"
-    ]
-    assert kinds_before, "fresh build should place at least one vuln"
-    target_kind = kinds_before[0]
-    s2 = evolve(s1, curriculum={"patch": [target_kind]})
-    kinds_after = [
-        n.attrs["kind"] for n in s2.world_graph.nodes if n.type == "vulnerability"
-    ]
-    assert target_kind not in kinds_after
-
-
-def test_evolve_patch_all_yields_hardened_world() -> None:
-    """Removing every vuln yields a world that still admits but has no chain.
-
-    This is the curriculum-driven 'hardened' path the meeting notes
-    described — the agent will fail to retrieve the flag, which is a
-    valid training signal, not a build error.
+    The repair policy is a perturbed-seed resample; the v1 attempt
+    counter ticks so each ``repair → build`` cycle samples a fresh
+    world. Two consecutive builds from the same builder (with a repair
+    in between) must therefore differ.
     """
-    s1 = build(V1_MANIFEST)
-    kinds = list(
-        {n.attrs["kind"] for n in s1.world_graph.nodes if n.type == "vulnerability"},
-    )
-    s_hardened = evolve(s1, curriculum={"patch": kinds})
-    remaining = [n for n in s_hardened.world_graph.nodes if n.type == "vulnerability"]
-    assert remaining == []
-    # World still admits.
-    assert s_hardened.admission.passed
+    builder = WebappBuilder(default_prior())
+    first = builder.build({"seed": 0})
+    repaired = builder.repair(first, errors=[], infeasible=[])
+    assert isinstance(repaired, BuildResult)
+    assert first.graph.content_hash() != repaired.graph.content_hash()
 
 
-def test_evolve_patch_preserves_non_vuln_topology() -> None:
-    """Patching shouldn't touch services, endpoints, accounts, etc."""
-    s1 = build(V1_MANIFEST)
-    services_before = sorted(n.id for n in s1.world_graph.nodes if n.type == "service")
-    accounts_before = sorted(n.id for n in s1.world_graph.nodes if n.type == "account")
-
-    kinds = [n.attrs["kind"] for n in s1.world_graph.nodes if n.type == "vulnerability"]
-    s2 = evolve(s1, curriculum={"patch": kinds[:1]})
-    services_after = sorted(n.id for n in s2.world_graph.nodes if n.type == "service")
-    accounts_after = sorted(n.id for n in s2.world_graph.nodes if n.type == "account")
-
-    assert services_before == services_after
-    assert accounts_before == accounts_after
+def test_repair_preserves_task_family_set() -> None:
+    """After a repair both families still produce tasks against the new world."""
+    builder = WebappBuilder(default_prior())
+    first = builder.build({"seed": 0})
+    repaired = builder.repair(first, errors=[], infeasible=["webapp.pentest.0"])
+    families = {t.feasibility_check for t in repaired.tasks}
+    assert families == {"webapp.build", "webapp.pentest"}
 
 
-# ---------------------------------------------------------------------------
-# Curriculum: add
-# ---------------------------------------------------------------------------
+def test_builder_falls_back_to_default_prior_when_none() -> None:
+    """``WebappBuilder(prior=None)`` still admits — uses the default prior."""
+    builder = WebappBuilder(prior=None)
+    result = builder.build({"seed": 0})
+    assert "hand-authored" in str(result.admission_meta["prior_source"])
 
 
-def test_evolve_adds_new_vulns() -> None:
-    s1 = build(V1_MANIFEST)
-    s2 = evolve(s1, curriculum={"add": ["sql_injection"]})
-    kinds_after = [
-        n.attrs["kind"] for n in s2.world_graph.nodes if n.type == "vulnerability"
-    ]
-    assert "sql_injection" in kinds_after
+def test_pack_make_builder_returns_webapp_builder() -> None:
+    """``WebappPack.make_builder(prior=None)`` constructs a ``WebappBuilder``."""
+    pack = WebappPack()
+    builder = pack.make_builder(prior=None)
+    assert isinstance(builder, WebappBuilder)
 
 
-def test_evolve_add_unknown_kind_is_noop() -> None:
-    s1 = build(V1_MANIFEST)
-    n_before = sum(1 for n in s1.world_graph.nodes if n.type == "vulnerability")
-    s2 = evolve(s1, curriculum={"add": ["does_not_exist"]})
-    n_after = sum(1 for n in s2.world_graph.nodes if n.type == "vulnerability")
-    assert n_before == n_after
+def test_pack_make_builder_threads_caller_supplied_prior() -> None:
+    """A caller-supplied ``PackPrior`` reaches the builder verbatim."""
+    pack = WebappPack()
+    prior: PackPrior = default_prior()
+    # Tag the prior with a recognisable source so we can confirm it's
+    # the one threaded into admission_meta.
+    prior.source = "test-marker :: external"
+    builder = pack.make_builder(prior)
+    result = builder.build({"seed": 0})
+    assert result.admission_meta["prior_source"] == "test-marker :: external"
 
 
-# ---------------------------------------------------------------------------
-# Patch + evolve curriculum walk
-# ---------------------------------------------------------------------------
+def test_builder_world_admits_through_admit() -> None:
+    """The builder's world graph passes every admission layer.
 
-
-def test_curriculum_walk_progressively_hardens_world() -> None:
-    """The meeting-notes scenario: incrementally patch vulns across snapshots.
-
-    Each evolve step removes one or more vulns; the final world has
-    none left. Demonstrates that patching is a graph mutation, not a
-    special pathway.
+    Structural + ontology + pack invariants + task-binding + task
+    feasibility — all five gates must be satisfied for ``admit`` to
+    return a ``Snapshot`` rather than an ``AdmissionFailure``.
     """
-    s1 = build(V1_MANIFEST)
-    initial_kinds = list(
-        {n.attrs["kind"] for n in s1.world_graph.nodes if n.type == "vulnerability"},
-    )
-    current = s1
-    for kind in initial_kinds:
-        current = evolve(current, curriculum={"patch": [kind]})
-        remaining_kinds = {
-            n.attrs["kind"]
-            for n in current.world_graph.nodes
-            if n.type == "vulnerability"
-        }
-        assert kind not in remaining_kinds
-    final_vulns = [n for n in current.world_graph.nodes if n.type == "vulnerability"]
-    assert final_vulns == []
+    pack = WebappPack()
+    snap = admit(pack, manifest={"seed": 0}, max_repairs=3)
+    assert isinstance(snap, Snapshot), snap
+    # The procedural sampler emits a non-trivial graph.
+    assert len(snap.graph.nodes) >= 10
+    assert len(snap.graph.edges) >= 8
+
+
+def test_admission_yields_both_task_families() -> None:
+    """An admitted snapshot carries one task per family."""
+    pack = WebappPack()
+    snap = admit(pack, manifest={"seed": 0}, max_repairs=3)
+    assert isinstance(snap, Snapshot), snap
+    families = {t.feasibility_check for t in snap.tasks}
+    assert families == {"webapp.build", "webapp.pentest"}
+    # Different entrypoint kinds — build family entrypoints a service,
+    # pentest family entrypoints an endpoint.
+    entrypoint_kinds = {snap.graph.nodes[t.entrypoints[0]].kind for t in snap.tasks}
+    assert entrypoint_kinds == {"service", "endpoint"}
+
+
+def test_admission_snapshot_id_is_deterministic() -> None:
+    """Same seed → same snapshot id (content-addressed identity)."""
+    pack = WebappPack()
+    snap_a = admit(pack, manifest={"seed": 7})
+    snap_b = admit(pack, manifest={"seed": 7})
+    assert isinstance(snap_a, Snapshot)
+    assert isinstance(snap_b, Snapshot)
+    assert snap_a.snapshot_id == snap_b.snapshot_id

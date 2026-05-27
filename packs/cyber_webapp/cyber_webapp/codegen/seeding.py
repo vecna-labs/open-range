@@ -1,23 +1,13 @@
-"""Project a v1 world graph into the seed payload the runtime loads at start.
-
-The generated runtime expects a ``seed.json`` file alongside ``app.py``
-containing the world's accounts/secrets/records and the SQL schema used
-by the records table. The runtime loads it once at startup, populates an
-in-process SQLite db, then deletes the seed file from disk so the agent
-cannot recover the secret by reading workspace files.
-
-Schema reconciliation: if the graph carries a ``sql_injection``
-vulnerability, the records table is named and column-shaped to match
-that vuln's params (so a real ``UNION SELECT`` exfiltration works). Else
-defaults to ``records(key, value)``.
-"""
+"""Project a webapp world graph into the seed payload the runtime loads at start."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
 
-from openrange import Node, PackError, WorldGraph
+from graphschema import Node, WorldGraph
+
+from openrange.core.errors import PackError
 
 _DEFAULT_TABLE = "records"
 _DEFAULT_KEY_COLUMN = "key"
@@ -29,11 +19,9 @@ _BROKEN_AUTHZ_LEAK_FIELDS = ("value", "data", "secret", "content", "result", "fl
 
 
 def project_seed(graph: WorldGraph) -> Mapping[str, object]:
-    """Walk ``graph`` and project the runtime seed payload.
+    """Project the runtime seed payload.
 
-    Returns a mapping with keys: ``flag`` (string), ``accounts``,
-    ``secrets``, ``records``, ``schema``. Raises ``PackError`` if no
-    flag-kind secret exists.
+    Raises :class:`PackError` if the graph has no flag-kind secret.
     """
     flag = ""
     accounts: dict[str, dict[str, object]] = {}
@@ -41,21 +29,21 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
     records: dict[str, dict[str, object]] = {}
 
     creds_by_account: dict[str, str] = {}
-    for edge in graph.edges:
-        if edge.relation == "has_credential":
-            creds_by_account[edge.source] = edge.target
+    for edge in graph.edges.values():
+        if edge.kind == "has_credential":
+            creds_by_account[edge.src] = edge.dst
     cred_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "credential"
+        n.id: n for n in graph.nodes.values() if n.kind == "credential"
     }
 
-    for node in graph.nodes:
-        if node.type == "secret" and node.attrs.get("kind") == "flag":
+    for node in graph.nodes.values():
+        if node.kind == "secret" and node.attrs.get("kind") == "flag":
             flag = str(node.attrs.get("value_ref", ""))
-        elif node.type == "secret":
+        elif node.kind == "secret":
             secrets[str(node.attrs.get("kind", node.id))] = str(
                 node.attrs.get("value_ref", ""),
             )
-        elif node.type == "account":
+        elif node.kind == "account":
             cred_id = creds_by_account.get(node.id)
             password = ""
             if cred_id is not None:
@@ -66,7 +54,7 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
                 "role": str(node.attrs.get("role", "user")),
                 "password": password,
             }
-        elif node.type == "record":
+        elif node.kind == "record":
             fields = node.attrs.get("fields", {})
             if isinstance(fields, Mapping):
                 records[str(node.attrs.get("key", node.id))] = {
@@ -94,14 +82,10 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
 
 
 def _derive_sql_schema(graph: WorldGraph) -> Mapping[str, str]:
-    """Pull table + value column from the SQLi vuln if present, else defaults.
-
-    Reconciling here keeps per-build variation in the SQLi exploit path
-    (table name, column name) without letting the records seed drift
-    from what the SQLi handler queries.
-    """
-    for node in graph.nodes:
-        if node.type != "vulnerability":
+    # SQLi handler's query must match the schema — derive from vuln params,
+    # fall back to defaults.
+    for node in graph.nodes.values():
+        if node.kind != "vulnerability":
             continue
         if str(node.attrs.get("kind", "")) != "sql_injection":
             continue
@@ -140,16 +124,10 @@ def _retarget_records(
     schema: Mapping[str, str],
     flag: str,
 ) -> dict[str, dict[str, str]]:
-    """Rebuild records under the schema's value column name + decoys.
-
-    The graph's record nodes always carry ``fields = {"value": <flag>}``
-    (sampler convention). Real SQLite needs the column to actually
-    exist when the SQLi handler runs ``SELECT key, <col> FROM ...``,
-    so rename ``value`` -> ``schema["value_column"]`` and always
-    include the flag value for the holding record. Adds non-secret
-    decoys so the table isn't a single-row giveaway and an exploit
-    that dumps everything has to pull the secret out of a real row set.
-    """
+    # Graph records always carry ``fields = {"value": <flag>}`` by
+    # sampler convention; rename to the schema's actual value column so
+    # the SQLi handler's ``SELECT key, <col> FROM ...`` resolves. Decoys
+    # keep the table from being a single-row giveaway.
     value_column = schema["value_column"]
     out: dict[str, dict[str, str]] = {}
     for key, fields in records.items():
@@ -171,7 +149,9 @@ def _populate_secrets_with_flag(
     secrets: Mapping[str, str],
     flag: str,
 ) -> dict[str, str]:
-    """Mirror the flag under every leak_field broken_authz might pick."""
+    # Mirror the flag under every leak_field broken_authz might pick so
+    # the in-memory leak path returns the secret regardless of the
+    # sampled field name.
     populated = dict(secrets)
     for field in _BROKEN_AUTHZ_LEAK_FIELDS:
         populated.setdefault(field, flag)
@@ -180,13 +160,9 @@ def _populate_secrets_with_flag(
 
 
 def _safe_ident(value: str, fallback: str) -> str:
-    """Return ``value`` if it's a safe SQL identifier; else ``fallback``.
-
-    SQL identifiers are interpolated unquoted into the rendered handler
-    (this is the bug being modeled). Constrain at codegen time so a
-    sampled value can't break the rendered query — characters allowed:
-    ASCII letters, digits, underscore. Must not start with a digit.
-    """
+    # SQL identifiers are interpolated unquoted into the rendered handler
+    # (this is the bug being modeled); constrain at codegen time so a
+    # sampled value can't break the rendered query.
     if not value:
         return fallback
     if not (value[0].isalpha() or value[0] == "_"):

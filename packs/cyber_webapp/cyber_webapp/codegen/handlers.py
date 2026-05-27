@@ -1,57 +1,38 @@
-"""Handler + route generation from a v1 world graph.
-
-Each ``endpoint`` becomes a Python ``def`` rendered into ``app.py``;
-each ``vulnerability`` with an ``affects`` edge to that endpoint (or
-to its containing service) gets its template body inlined as the
-handler body. Endpoints with no vuln get a default JSON-status body.
-
-The AST splice in ``_extract_handle_body`` is the load-bearing piece:
-vuln templates ship as full Python modules (docstring + imports +
-optional module-level statements + ``def handle``), and we need to
-fold all of that into a single function body so multiple vulns of the
-same kind on different endpoints don't clash on module-level names.
-"""
-
 from __future__ import annotations
 
 import ast
 import textwrap
 from collections.abc import Mapping
 
+from graphschema import Node, WorldGraph
+
 from cyber_webapp.vulnerabilities import (
     CATALOG as VULN_CATALOG,
 )
 from cyber_webapp.vulnerabilities import render_vulnerability
-from openrange import Node, PackError, WorldGraph
+from openrange.core.errors import PackError
 
 
 def build_handlers_and_routes(
     graph: WorldGraph,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """Walk ``graph`` and return ``(handlers, routes)`` for the app template.
-
-    ``handlers`` is a list of ``{name, body, docstring}`` dicts that
-    become per-endpoint handler functions. ``routes`` is a list of
-    ``{path, handler}`` dicts that become entries in the ``ROUTES``
-    table. Web-service endpoints also mount at the public root.
-    """
     services_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "service"
+        n.id: n for n in graph.nodes.values() if n.kind == "service"
     }
     endpoints_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "endpoint"
+        n.id: n for n in graph.nodes.values() if n.kind == "endpoint"
     }
     vulns_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes if n.type == "vulnerability"
+        n.id: n for n in graph.nodes.values() if n.kind == "vulnerability"
     }
     service_for_endpoint: dict[str, str] = {}
-    for edge in graph.edges:
-        if edge.relation == "exposes":
-            service_for_endpoint[edge.target] = edge.source
-    vuln_for_target: dict[str, str] = {}  # target_id -> vuln_id (first wins)
-    for edge in graph.edges:
-        if edge.relation == "affects":
-            vuln_for_target.setdefault(edge.target, edge.source)
+    for edge in graph.edges.values():
+        if edge.kind == "exposes":
+            service_for_endpoint[edge.dst] = edge.src
+    vuln_for_target: dict[str, str] = {}
+    for edge in graph.edges.values():
+        if edge.kind == "affects":
+            vuln_for_target.setdefault(edge.dst, edge.src)
 
     handlers: list[dict[str, str]] = []
     routes: list[dict[str, str]] = []
@@ -59,14 +40,15 @@ def build_handlers_and_routes(
     for endpoint_id, endpoint in endpoints_by_id.items():
         service_id = service_for_endpoint.get(endpoint_id)
         if service_id is None:
-            continue  # orphan endpoint — skip; ontology validation should catch
+            continue
         service = services_by_id[service_id]
         service_name = str(service.attrs.get("name", service_id))
         path = str(endpoint.attrs.get("path", "/"))
+        public_url = str(endpoint.attrs["public_url"])
         handler_name = _handler_name(service_name, endpoint_id)
         vuln_id = vuln_for_target.get(endpoint_id)
-        # Service-level vulns also affect every endpoint of the service.
         if vuln_id is None:
+            # Service-level vulns also affect every endpoint of the service.
             vuln_id = vuln_for_target.get(service_id)
         if vuln_id is not None and vuln_id in vulns_by_id:
             vuln_node = vulns_by_id[vuln_id]
@@ -78,9 +60,7 @@ def build_handlers_and_routes(
         handlers.append(
             {"name": handler_name, "body": body, "docstring": docstring},
         )
-        routes.append({"path": f"/svc/{service_name}{path}", "handler": handler_name})
-        if service.attrs.get("kind") == "web":
-            routes.append({"path": path, "handler": handler_name})
+        routes.append({"path": public_url, "handler": handler_name})
     return handlers, routes
 
 
@@ -97,22 +77,7 @@ def _render_vuln_body(vuln_node: Node) -> str:
 
 
 def _extract_handle_body(rendered: str) -> str:
-    """Splice ``def handle(query, state)`` from rendered template source.
-
-    Vuln templates produce: docstring, imports, optional module-level
-    statements (e.g. SSRF's ``_ALLOWLIST = re.compile(...)``), and a
-    ``def handle``. We parse via ``ast`` and emit:
-
-      1. Module-level statements (NOT imports, NOT docstring) inlined
-         at the top of the handler body — they become handler-local,
-         which avoids name collisions when multiple handlers of the
-         same kind are emitted.
-      2. The body of ``handle`` itself (without its own docstring).
-
-    The generated ``app.py`` already imports the standard-library
-    names the templates need (``json``, ``re``, ``urlopen``,
-    ``URLError``).
-    """
+    # Inline as handler-local to avoid name collisions across handlers of the same kind.
     try:
         module = ast.parse(rendered)
     except SyntaxError as exc:
@@ -132,7 +97,7 @@ def _extract_handle_body(rendered: str) -> str:
             and isinstance(stmt.value, ast.Constant)
             and isinstance(stmt.value.value, str)
         ):
-            continue  # module docstring
+            continue
         if isinstance(stmt, ast.Import | ast.ImportFrom):
             continue
         pre_statements.append(stmt)
@@ -156,17 +121,8 @@ def _extract_handle_body(rendered: str) -> str:
 
 
 def _default_handler_body(service_name: str, path: str, kind: str) -> str:
-    """Generate a kind-specific body for non-vulnerable endpoints.
-
-    Avoids the signal leak from a single boring JSON shape across every
-    default route — agents would otherwise distinguish vulnerable from
-    non-vulnerable endpoints purely by response shape. Per service kind:
-      - api: paginated empty list ``{"items": [], "next_cursor": null}``
-      - db: row count ``{"rows": [], "count": 0}``
-      - auth: ``{"session": null}`` with 401
-      - web: small HTML status snippet
-      - other: short JSON status
-    """
+    # Per-kind bodies so the agent can't distinguish vulnerable from
+    # non-vulnerable endpoints purely by response shape.
     if kind == "api":
         body = (
             f'payload = {{"items": [], "next_cursor": None, '

@@ -1,11 +1,4 @@
-"""User-facing runtime convenience layer.
-
-``OpenRangeRun`` ties build + episode + dashboard together for example
-scripts and the CLI. The episode primitives (subprocess spawning, log
-parsing, file materialization, final-state assembly) live in
-``openrange.core.runtime_helpers``; this module is the wrapper around
-them, not their owner.
-"""
+"""User-facing convenience wrapper around admit + EpisodeService + dashboard."""
 
 from __future__ import annotations
 
@@ -13,23 +6,18 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from openrange.agent_backend import AgentBackend
-from openrange.core import (
-    Manifest,
-    Snapshot,
-)
-from openrange.core import (
-    build as core_build,
-)
+from openrange.core.admit import AdmissionFailure, Snapshot, admit
 from openrange.core.episode import EpisodeService
-from openrange.core.runtime_helpers import EpisodeRuntimeError
+from openrange.core.errors import EpisodeRuntimeError
+from openrange.core.pack import PACKS, Pack
 from openrange.dashboard import (
     DashboardArtifactLog,
     DashboardHTTPServer,
     DashboardView,
 )
-from openrange.llm import LLMBackend
 
 __all__ = [
     "DashboardServerHandle",
@@ -46,13 +34,12 @@ class RunConfig:
     reset_dashboard: bool = True
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int | None = None
-    # Backend handed to NPCs with ``requires_llm = True``. Unset →
-    # those NPCs mark themselves broken with "no backend configured".
     npc_agent_backend: AgentBackend | None = None
-    # Convenience shorthand — auto-promoted to
-    # ``StrandsAgentBackend(model=npc_llm_model)``. Mutually exclusive
-    # with ``npc_agent_backend``.
     npc_llm_model: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, Path):
+            object.__setattr__(self, "root", Path(self.root))  # type: ignore[unreachable]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +67,6 @@ class DashboardServerHandle:
 
 
 class OpenRangeRun:
-    """Convenience wrapper: build + episode + optional dashboard."""
-
     def __init__(self, config: str | Path | RunConfig) -> None:
         self.config = (
             config if isinstance(config, RunConfig) else RunConfig(Path(config))
@@ -109,27 +94,27 @@ class OpenRangeRun:
 
     def build(
         self,
-        manifest: str | Path | Mapping[str, object] | Manifest,
+        manifest: Mapping[str, Any],
         *,
-        prompt: str = "",
-        llm: LLMBackend | None = None,
-        max_repairs: int = 3,
+        max_repairs: int = 2,
     ) -> Snapshot:
-        snapshot = core_build(
-            manifest,
-            prompt=prompt,
-            llm=llm,
-            max_repairs=max_repairs,
-            event_sink=(
-                None if self._dashboard is None else self._dashboard.record_builder_step
-            ),
-        )
+        pack = _resolve_pack(manifest)
+        result = admit(pack, manifest, max_repairs=max_repairs)
+        if isinstance(result, AdmissionFailure):
+            raise EpisodeRuntimeError(
+                f"admission failed after {result.attempts} attempt(s): "
+                f"{len(result.issues)} error(s), "
+                f"{len(result.infeasible_tasks)} infeasible task(s)",
+            )
         if self._dashboard is not None:
             self._dashboard.record_builder_step(
                 "builder_finished",
-                {"snapshot_id": snapshot.id, "task_count": len(snapshot.tasks)},
+                {
+                    "snapshot_id": result.snapshot_id,
+                    "task_count": len(result.tasks),
+                },
             )
-        return snapshot
+        return result
 
     def _ensure_dashboard_view(self, snapshot: Snapshot) -> DashboardView | None:
         if not self.config.dashboard:
@@ -144,8 +129,12 @@ class OpenRangeRun:
         return self._dashboard_view
 
     def episode_service(self, snapshot: Snapshot) -> EpisodeService:
+        """Pack is resolved from `snapshot.lineage["pack"]` so replayed
+        snapshots from another run still work."""
+        pack = _resolve_pack_from_snapshot(snapshot)
         view = self._ensure_dashboard_view(snapshot)
         return EpisodeService(
+            pack,
             self.root,
             dashboard=view,
             npc_agent_backend=self.config.npc_agent_backend,
@@ -163,3 +152,33 @@ class OpenRangeRun:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return DashboardServerHandle(server, thread)
+
+
+def _resolve_pack(manifest: Mapping[str, Any]) -> Pack:
+    pack_field = manifest.get("pack")
+    if isinstance(pack_field, Mapping):
+        pack_id = pack_field.get("id")
+    elif isinstance(pack_field, str):
+        pack_id = pack_field
+    else:
+        pack_id = None
+    if not isinstance(pack_id, str) or not pack_id:
+        raise EpisodeRuntimeError(
+            "manifest must declare a pack via 'pack.id' or 'pack' (string)",
+        )
+    try:
+        return PACKS.resolve(pack_id)
+    except Exception as exc:
+        raise EpisodeRuntimeError(f"unknown pack {pack_id!r}") from exc
+
+
+def _resolve_pack_from_snapshot(snapshot: Snapshot) -> Pack:
+    pack_id = snapshot.lineage.get("pack")
+    if not isinstance(pack_id, str) or not pack_id:
+        raise EpisodeRuntimeError(
+            f"snapshot {snapshot.snapshot_id!r} lineage missing 'pack' id",
+        )
+    try:
+        return PACKS.resolve(pack_id)
+    except Exception as exc:
+        raise EpisodeRuntimeError(f"unknown pack {pack_id!r}") from exc

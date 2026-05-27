@@ -423,6 +423,11 @@ wheels = [
 ]
 
 [[package]]
+name = "graphschema"
+version = "0.1.0"
+source = { git = "https://github.com/vecna-labs/graphschema.git?rev=main#cca7368716523b9cae2eac17a589d94d0fd2a93c" }
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -766,6 +771,7 @@ name = "openrange"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "graphschema" },
     { name = "jinja2" },
     { name = "pyyaml" },
 ]
@@ -787,6 +793,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "graphschema", git = "https://github.com/vecna-labs/graphschema.git?rev=main" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "strands-agents", marker = "extra == 'strands'", specifier = ">=1.38.0" },
@@ -808,6 +815,7 @@ name = "openrange-cyber-webapp"
 version = "0.1.0"
 source = { editable = "packs/cyber_webapp" }
 dependencies = [
+    { name = "graphschema" },
     { name = "jinja2" },
     { name = "openrange" },
     { name = "pyyaml" },
@@ -815,6 +823,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "graphschema", git = "https://github.com/vecna-labs/graphschema.git?rev=main" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "openrange", editable = "." },
     { name = "pyyaml", specifier = ">=6.0.3" },

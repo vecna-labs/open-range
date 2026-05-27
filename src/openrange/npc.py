@@ -1,22 +1,4 @@
-"""NPC contract and registry.
-
-An NPC is an autonomous actor that runs alongside the agent during an
-episode, receiving the same ``interface`` mapping the verifier and
-admission probe see. Two shapes ship: ``NPC`` for scripted actors and
-``AgentNPC`` for LLM-backed loops with tools.
-
-Manifest schema::
-
-    npc:
-      - type: cyber.browsing_user      # NPCRegistry id
-        count: 3                        # default 1
-        config:                         # default {}
-          cadence_ticks: 2
-          paths: ["/search?q=alpha"]
-
-Factories are registered via the ``openrange.npcs`` entry-point group;
-the registry builds each NPC fresh per episode.
-"""
+"""NPC contract and registry."""
 
 from __future__ import annotations
 
@@ -59,8 +41,7 @@ class NPC(ABC):
 
     @property
     def actor_id(self) -> str:
-        # Override or set self._actor_id for a real display name; default
-        # is class name + short instance hash to disambiguate count > 1.
+        # Instance-hash suffix disambiguates when count > 1.
         explicit = getattr(self, "_actor_id", None)
         if isinstance(explicit, str) and explicit:
             return explicit
@@ -72,12 +53,6 @@ class NPC(ABC):
         swallow failures so the episode keeps running."""
 
     def start(self, context: Mapping[str, Any]) -> None:
-        """Optional setup. ``context`` carries
-        ``{episode_id, snapshot_id, task_id, base_url, record_action}``;
-        NPCs with ``requires_llm = True`` also receive ``agent_backend``.
-        ``record_action(action, *, target=None, observation=None)``
-        publishes a dashboard event tagged with this NPC's ``actor_id``.
-        """
         del context
 
     def stop(self) -> None:  # noqa: B027 — intentional default no-op
@@ -295,12 +270,6 @@ def resolve_manifest_npcs(
     *,
     registry: NPCRegistry | None = None,
 ) -> list[NPC]:
-    """Construct NPC instances from manifest entries.
-
-    Each entry is a mapping with ``type`` (required), ``count`` (default
-    1), and ``config`` (default empty). Returns a flat list of NPCs —
-    one per spawn slot, so the caller can iterate and step uniformly.
-    """
     reg = registry if registry is not None else NPCS
     npcs: list[NPC] = []
     for entry in npc_entries:
@@ -318,6 +287,15 @@ def resolve_manifest_npcs(
             raise NPCError(
                 f"manifest npc entry 'config' must be a mapping for {npc_type!r}",
             )
-        for _ in range(count_raw):
-            npcs.append(reg.resolve(npc_type, config_raw))
+        for index in range(count_raw):
+            # ``_replication_suffix`` mirrors the dashboard's row-id
+            # convention (``f"{name}-{index+1}"`` when count > 1, else
+            # bare): a factory that consumes this aligns the NPC's
+            # ``actor_id`` with the dashboard row id for free.
+            slot_config: Mapping[str, object]
+            if count_raw > 1:
+                slot_config = dict(config_raw, _replication_suffix=f"-{index + 1}")
+            else:
+                slot_config = config_raw
+            npcs.append(reg.resolve(npc_type, slot_config))
     return npcs

@@ -1,11 +1,12 @@
 """Tests for the cyber vulnerability catalog.
 
-Three concerns:
+Four concerns:
   1. The catalog round-trips through YAML.
-  2. Templates render with the documented parameters and yield valid Python.
-  3. Each rendered handler is *functionally vulnerable* — the bug actually
-     fires when invoked. This is the test that distinguishes "we have a
-     template" from "we have an injectable, exploitable vulnerability."
+  2. Templates render with documented parameters and yield valid Python.
+  3. Each rendered handler is functionally vulnerable — the bug fires
+     when invoked.
+  4. A catalog entry's metadata drives the ``Node(kind=...,
+     visibility=Visibility.HIDDEN)`` construction the sampler emits.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from cyber_webapp.vulnerabilities import (
     vuln,
     vulns_for_kind,
 )
+from graphschema import Node, Visibility
 
 
 def _exec_handler(source: str) -> Any:
@@ -34,11 +36,6 @@ def _exec_handler(source: str) -> Any:
     namespace: dict[str, Any] = {}
     exec(compile(source, "<rendered>", "exec"), namespace)
     return namespace["handle"]
-
-
-# ---------------------------------------------------------------------------
-# Catalog shape
-# ---------------------------------------------------------------------------
 
 
 def test_catalog_has_starter_vulns() -> None:
@@ -56,11 +53,6 @@ def test_chain_metadata() -> None:
     """SSRF enables broken_authz (per Marinade-style chain modeling)."""
     assert "broken_authz" in SSRF.enables
     assert "data_store_dump" in SQL_INJECTION.enables
-
-
-# ---------------------------------------------------------------------------
-# YAML round-trip
-# ---------------------------------------------------------------------------
 
 
 def test_catalog_yaml_round_trip() -> None:
@@ -94,11 +86,6 @@ def test_merge_catalog_overrides() -> None:
     assert merged["sql_injection"].family == "custom"
     # Other entries preserved.
     assert merged["ssrf"] is SSRF
-
-
-# ---------------------------------------------------------------------------
-# Template rendering — produces valid Python
-# ---------------------------------------------------------------------------
 
 
 def test_sql_injection_template_renders() -> None:
@@ -146,11 +133,6 @@ def test_strict_undefined_catches_missing_param() -> None:
     with pytest.raises((UndefinedError, TypeError)):
         # Missing ``table`` and ``leak_column``.
         render_vulnerability(SQL_INJECTION, {"target_param": "q"})
-
-
-# ---------------------------------------------------------------------------
-# Functional exploitability — the bug actually fires
-# ---------------------------------------------------------------------------
 
 
 def test_sql_injection_actually_exfiltrates() -> None:
@@ -250,3 +232,46 @@ def test_broken_authz_grants_admin_with_forged_header() -> None:
     status, _, body = handle({"X-User-Role": ["admin"]}, state)
     assert status == 200
     assert b"ORANGE{authz_bypass}" in body
+
+
+def test_catalog_entry_drives_hidden_vulnerability_node() -> None:
+    """A catalog entry's id / family drive ``Node`` construction.
+
+    The procedural sampler emits one vulnerability node per chosen
+    catalog entry with ``kind="vulnerability"``, ``visibility=HIDDEN``,
+    and ``attrs={"kind": <catalog id>, "family": <catalog family>,
+    "params": {...}}``.
+    """
+    entry = SQL_INJECTION
+    node = Node(
+        id="vuln_sql_injection_0",
+        kind="vulnerability",
+        attrs={
+            "kind": entry.id,
+            "family": entry.family,
+            "params": {
+                "target_param": "q",
+                "table": "records",
+                "leak_column": "value",
+            },
+        },
+        visibility=Visibility.HIDDEN,
+    )
+    assert node.kind == "vulnerability"
+    assert node.visibility is Visibility.HIDDEN
+    assert node.attrs["kind"] == "sql_injection"
+    assert node.attrs["family"] == "code_web"
+
+
+def test_every_catalog_entry_targets_a_real_ontology_kind() -> None:
+    """Every catalog entry's ``target_kinds`` are kinds the new ontology declares.
+
+    The ``affects`` edge in the new ontology accepts
+    ``(vulnerability, endpoint)`` and ``(vulnerability, service)``; the
+    catalog must restrict ``target_kinds`` to that domain or the
+    sampler would emit an edge the conformance check would reject.
+    """
+    allowed = {"endpoint", "service"}
+    for vid, v in CATALOG.items():
+        unknown = set(v.target_kinds) - allowed
+        assert not unknown, f"catalog {vid!r} targets unknown kinds: {unknown}"

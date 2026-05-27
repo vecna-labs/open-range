@@ -1,34 +1,4 @@
-"""Agent backend protocol — drives an agent loop with optional tools.
-
-Used by ``AgentNPC`` at runtime. The protocol is intentionally
-narrow: a backend is a factory that returns *something callable* —
-a session that takes a prompt, runs one agent turn (with whatever
-tool dispatch the backend natively supports), and returns. Anything
-beyond that is provider-specific and lives behind the backend.
-
-Two implementations ship:
-
-* :class:`StrandsAgentBackend` — canonical, wraps ``strands.Agent``.
-  Lazy-imports strands so the optional ``strands-agents`` extra is
-  only required if this backend is actually instantiated. Supports
-  tool dispatch.
-* :class:`CodexAgentBackend` — wraps the existing
-  :class:`openrange.llm.CodexBackend`. Single-shot, no tool
-  injection — Codex's own tool surface (its sandboxed shell) isn't
-  exposed for arbitrary callable injection. Useful for tool-less
-  agent NPCs and for tests that want to exercise the agent path
-  without an Anthropic key.
-
-The two implementations are siblings, not adapter-and-adaptee — you
-don't need strands installed to use Codex, and you don't need Codex
-to use strands. ``AgentBackend`` is the seam that lets the runtime
-plug either in without re-tooling its callers.
-
-Future: the builder will likely accept an ``AgentBackend`` too,
-collapsing build-time and runtime LLM configuration onto one
-protocol. For now they remain separate (the builder uses the
-:class:`openrange.llm.LLMBackend` single-shot protocol directly).
-"""
+"""Agent backend protocol. `StrandsAgentBackend` + `CodexAgentBackend` ship."""
 
 from __future__ import annotations
 
@@ -45,63 +15,29 @@ from openrange.llm import (
 )
 
 AgentSession = Callable[[str], Any]
-"""A live agent ready to receive prompts.
-
-Calling it runs one agent turn. Tool dispatch (if the backend
-supports it) happens inside the call as side effects on the tools
-the backend was built with. The return value is provider-specific
-and most callers can ignore it — NPCs care about the *side effects*
-of tool calls, not the agent's text response.
-"""
 
 
 class AgentBackendError(OpenRangeError):
-    """Raised when an agent backend cannot fulfill a request."""
+    pass
 
 
 class AgentBackend(Protocol):
-    """Builds agent sessions, optionally with a tool surface.
+    """Factory for agent sessions. `preflight` validates dependencies;
+    `build_agent` returns a callable session. Backends without tool
+    dispatch must raise on non-empty `tools`."""
 
-    Implementations wrap a provider SDK (strands, codex, ...) into a
-    consistent factory. Callers (NPCs, in the future the builder)
-    don't bind to a specific provider — they configure one
-    ``AgentBackend`` and pass it down.
-    """
-
-    def preflight(self) -> None:
-        """Raise :class:`AgentBackendError` if this backend cannot run.
-
-        Cheap checks only — verify imports, binaries, configuration.
-        Don't make API calls. Called at NPC construction (when the
-        backend is supplied directly) and at episode start (when the
-        backend is supplied by the runtime), so a missing optional
-        dep is detectable before the first acting tick.
-        """
-        ...
+    def preflight(self) -> None: ...
 
     def build_agent(
         self,
         *,
         system_prompt: str,
         tools: Sequence[Callable[..., Any]] = (),
-    ) -> AgentSession:
-        """Return a callable session for the configured provider.
-
-        Backends that don't support tool dispatch must raise
-        :class:`AgentBackendError` when ``tools`` is non-empty —
-        silent dropping of tools would produce subtly broken
-        agents.
-        """
-        ...
+    ) -> AgentSession: ...
 
 
 class StrandsAgentBackend:
-    """Drive ``strands.Agent``. Lazy-imports the optional SDK.
-
-    Tool dispatch, multi-turn loops, retries, and streaming are
-    delegated to strands. This is the canonical backend for NPCs
-    that need to call tools.
-    """
+    """Wraps `strands.Agent`. Lazy-imports the optional SDK."""
 
     def __init__(self, *, model: str | None = None) -> None:
         self._model = model
@@ -140,19 +76,8 @@ class StrandsAgentBackend:
 
 
 class CodexAgentBackend:
-    """Drive the Codex CLI for tool-less agent prompts.
-
-    Wraps :class:`openrange.llm.CodexBackend` (or any
-    :class:`openrange.llm.LLMBackend`) — the same Codex binary,
-    sandbox, and model the builder uses. Each ``AgentSession``
-    invocation is a single ``LLMBackend.complete`` call; there is no
-    multi-turn loop and no per-tool dispatch.
-
-    Rejects ``tools`` loudly: Codex's tool surface (its sandboxed
-    shell + edits) is fixed and not exposed for arbitrary callable
-    injection. Pass an empty ``tools`` for chatter-only NPCs, or use
-    :class:`StrandsAgentBackend` when you need real tool dispatch.
-    """
+    """Wraps an `LLMBackend` (Codex CLI) for single-shot, tool-less agents.
+    Raises on non-empty `tools`."""
 
     def __init__(
         self,

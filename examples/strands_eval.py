@@ -1,8 +1,4 @@
-"""Minimal Strands Agents eval loop over an OpenRange episode.
-
-Builds a v1 cyber webapp world (procedural — no LLM at build time),
-then drops a Strands agent into the episode workspace to solve it.
-"""
+"""Minimal Strands Agents eval loop over an OpenRange episode."""
 
 from __future__ import annotations
 
@@ -20,7 +16,7 @@ import openrange as OR
 
 MANIFEST: dict[str, object] = {
     "world": {"goal": "find the admin flag in a vulnerable webapp"},
-    "pack": {"id": "cyber.webapp", "source": {"kind": "builtin"}},
+    "pack": {"id": "webapp"},
     "runtime": {"tick": {"mode": "auto", "rate_hz": 1.5}},
     "npc": [
         {
@@ -68,7 +64,7 @@ class StrandsAgentHarness:
 
 def run_task(
     snapshot: OR.Snapshot,
-    task: OR.Task,
+    task: OR.TaskSpec,
     harness: EpisodeHarness,
     run: OR.OpenRangeRun,
 ) -> dict[str, object]:
@@ -80,31 +76,13 @@ def run_task(
         episode_report = svc.stop_episode(handle)
     finally:
         svc.close()
-    return {
-        **episode_report.as_dict(),
-        "passed": (
-            episode_report.verifier_result is not None
-            and episode_report.verifier_result.get("passed") is True
-        ),
-    }
+    return {**episode_report.as_dict(), "passed": episode_report.passed}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--agent-model")
-    parser.add_argument(
-        "--no-builder-llm",
-        action="store_true",
-        help=(
-            "Skip the LLM enrichment step at build time — graphs are "
-            "still procedurally sampled, but task instruction and "
-            "verifier source come from templates instead of Codex."
-        ),
-    )
-    parser.add_argument("--builder-codex-command", type=Path, default=Path("codex"))
-    parser.add_argument("--builder-model", default=OR.CODEX_DEFAULT_MODEL)
-    parser.add_argument("--builder-timeout", type=float, default=300.0)
     parser.add_argument("--dashboard-host", default="127.0.0.1")
     parser.add_argument("--dashboard-port", type=int)
     parser.add_argument("--no-dashboard", action="store_true")
@@ -118,14 +96,7 @@ def main() -> None:
             dashboard_port=args.dashboard_port,
         ),
     )
-    builder_llm: OR.LLMBackend | None = None
-    if not args.no_builder_llm:
-        builder_llm = OR.CodexBackend(
-            command=args.builder_codex_command,
-            model=args.builder_model,
-            timeout=args.builder_timeout,
-        )
-    snapshot = run.build(MANIFEST, llm=builder_llm)
+    snapshot = run.build(MANIFEST)
     harness = StrandsAgentHarness(model=args.agent_model)
     try:
         reports = [
@@ -135,7 +106,7 @@ def main() -> None:
                 harness,
                 run,
             )
-            for task in snapshot.get_tasks()
+            for task in snapshot.tasks
         ]
     except StrandsDependencyError as exc:
         raise SystemExit(
@@ -144,7 +115,7 @@ def main() -> None:
         ) from exc
     output = {
         "run_root": str(args.run_root),
-        "snapshot_id": snapshot.id,
+        "snapshot_id": snapshot.snapshot_id,
         "reports": reports,
     }
     write_report(args.run_root, output)

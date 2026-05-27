@@ -1,18 +1,4 @@
-"""Runs directory discovery + per-run ``DashboardView`` registry.
-
-Tensorboard-style: the dashboard server points at a parent directory
-(``--runs-dir``), discovers every subdirectory that has the dashboard
-artifacts written by ``OpenRangeRun`` (``dashboard.events.jsonl`` +
-``dashboard.json``), and surfaces them as runs the SPA can list and
-switch between.
-
-Discovery is filesystem-driven and refreshed lazily — each call to
-``RunsRegistry.list_runs()`` re-scans, so newly minted run directories
-appear without a server restart. Per-run ``DashboardView`` instances
-are cached on first request and reused thereafter; each one is
-constructed with ``tail=True`` so its bridge keeps pace with events
-the writer process appends after the view was created.
-"""
+"""Tensorboard-style discovery of run directories under `runs_dir`."""
 
 from __future__ import annotations
 
@@ -44,12 +30,7 @@ class RunRecord:
 
 
 def discover_runs(runs_dir: Path) -> list[RunRecord]:
-    """Return every subdirectory of ``runs_dir`` that has dashboard artifacts.
-
-    Sorted newest-first by mtime of ``dashboard.events.jsonl``. Missing
-    or non-directory ``runs_dir`` returns an empty list (caller decides
-    how to surface that).
-    """
+    # Missing or non-directory ``runs_dir`` returns []; caller surfaces that.
     if not runs_dir.exists() or not runs_dir.is_dir():
         return []
     records: list[RunRecord] = []
@@ -68,18 +49,9 @@ def discover_runs(runs_dir: Path) -> list[RunRecord]:
 
 
 class RunsRegistry:
-    """Multi-run view manager backed by a runs directory.
-
-    Server holds one of these. Routes resolve a ``DashboardView`` per
-    request via ``view_for(run_id)``; the registry creates views
-    lazily and caches them so the event bridge stays warm across
-    requests within a run.
-
-    Each cached view is constructed with ``tail=True`` so it polls
-    the on-disk event log and surfaces new appends in near-real-time
-    — otherwise the dashboard would freeze on whatever was on disk
-    at view-creation time.
-    """
+    """Cached views use ``tail=True`` so they poll the on-disk event log;
+    otherwise the dashboard freezes on what was on disk at view-creation
+    time."""
 
     def __init__(self, runs_dir: Path) -> None:
         self.runs_dir = Path(runs_dir)

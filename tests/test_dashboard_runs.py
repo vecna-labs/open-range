@@ -6,6 +6,14 @@ writes events to ``dashboard.events.jsonl``. The reader-side
 the per-run tail thread, events appended *after* the view exists
 never reach the in-memory bridge that drives the SSE stream. These
 tests pin the tail-thread contract.
+
+A second block of tests (at the bottom) drives ``DashboardView``
+against a real admitted ``Snapshot`` produced by
+``admit(WebappPack(), ...)``. These are the post-migration coverage
+for the snapshot-shaped reads — ``topology()``, ``lineage()``, and
+``briefing()`` against the new ``Snapshot`` shape (graph + history +
+flat-lineage Mapping; no more ``world`` / ``artifacts`` / per-snapshot
+``LineageNode`` chain).
 """
 
 from __future__ import annotations
@@ -15,8 +23,12 @@ import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from cyber_webapp import WebappPack
+
+from openrange.core.admit import Snapshot, admit
 from openrange.dashboard.events import DashboardEvent
 from openrange.dashboard.runs import RunsRegistry
+from openrange.dashboard.view import DashboardView
 
 
 def _make_run_dir(parent: Path, run_id: str) -> Path:
@@ -267,3 +279,111 @@ def test_tail_ignores_partial_trailing_line(tmp_path: Path) -> None:
         assert ids.count("partial:env_turn") == 1
     finally:
         registry.close()
+
+
+def _admit_seed_snapshot() -> Snapshot:
+    """Admit one snapshot from :class:`WebappPack` at ``seed=0``.
+
+    The pack lands a feasible world for ``seed=0``, so use it as the
+    canonical fixture. Failure here indicates a pack-side regression.
+    """
+    snap = admit(WebappPack(), manifest={"seed": 0})
+    assert isinstance(snap, Snapshot), (
+        f"webapp pack must produce a Snapshot at seed=0; got {type(snap).__name__}"
+    )
+    return snap
+
+
+def test_topology_carries_new_snapshot_id_and_no_artifact_paths() -> None:
+    """``topology()`` uses ``snapshot.snapshot_id`` and has no ``artifact_paths``."""
+    snap = _admit_seed_snapshot()
+    view = DashboardView(snap)
+    try:
+        payload = view.topology()
+        snapshot_id = payload["snapshot_id"]
+        assert isinstance(snapshot_id, str)
+        assert snapshot_id == snap.snapshot_id
+        assert snapshot_id.startswith("sha256:")
+        assert "artifact_paths" not in payload
+        tasks = payload["tasks"]
+        assert isinstance(tasks, list)
+        for task_dict in tasks:
+            assert isinstance(task_dict, Mapping)
+            entrypoints = task_dict["entrypoints"]
+            assert isinstance(entrypoints, list)
+            for ep in entrypoints:
+                assert isinstance(ep, str)
+    finally:
+        view.close()
+
+
+def test_lineage_uses_history_and_lineage_mapping() -> None:
+    """``lineage()`` ships ``history`` and the ``lineage`` mapping.
+
+    Published fields:
+      - ``snapshot_id``: the content-addressed id
+      - ``history``: phases ``admit()`` recorded (build / validate /
+        feasibility / freeze + any repair attempts)
+      - ``lineage``: the flat provenance mapping (manifest, pack
+        id+version, attempt count)
+      - ``parent_snapshot_id``: forward-compat hook.
+    """
+    snap = _admit_seed_snapshot()
+    view = DashboardView(snap)
+    try:
+        payload = view.lineage()
+        assert payload["snapshot_id"] == snap.snapshot_id
+        lineage = payload["lineage"]
+        assert isinstance(lineage, Mapping)
+        assert lineage["pack"] == "webapp"
+        assert lineage["pack_version"] == "v2"
+        assert lineage["manifest"] == {"seed": 0}
+        history = payload["history"]
+        assert isinstance(history, list) and history, "history must not be empty"
+        phases = [event["phase"] for event in history]
+        assert phases[0] == "build"
+        assert phases[-1] == "freeze"
+        assert payload["parent_snapshot_id"] is None
+    finally:
+        view.close()
+
+
+def test_briefing_renders_entrypoints_as_node_id_kind_rows() -> None:
+    """``briefing()`` projects each entrypoint as ``{task_id, node_id, node_kind}``."""
+    snap = _admit_seed_snapshot()
+    view = DashboardView(snap)
+    try:
+        payload = view.briefing()
+        assert payload["snapshot_id"] == snap.snapshot_id
+        entrypoints = payload["entrypoints"]
+        assert isinstance(entrypoints, list) and entrypoints, (
+            "webapp pack should always produce at least one task entrypoint"
+        )
+        for row in entrypoints:
+            assert isinstance(row, Mapping)
+            assert set(row.keys()) == {"task_id", "node_id", "node_kind"}
+            # The kind MUST resolve from the graph; an unknown id would
+            # leave an empty string — none of the pack's emitted
+            # entrypoints should be unresolvable.
+            assert row["node_kind"] != ""
+            assert row["node_id"] in snap.graph.nodes
+            assert snap.graph.nodes[row["node_id"]].kind == row["node_kind"]
+    finally:
+        view.close()
+
+
+def test_snapshot_id_helper_resolves_from_new_snapshot() -> None:
+    """`_snapshot_id()` (and through it, the state payload) reads the new field.
+
+    Sanity-pin for the rename: `Snapshot.id` → `Snapshot.snapshot_id`.
+    A regression here would surface as a stale or missing id in the
+    SPA's runs-picker.
+    """
+    snap = _admit_seed_snapshot()
+    view = DashboardView(snap)
+    try:
+        assert view._snapshot_id() == snap.snapshot_id  # noqa: SLF001
+        state = view.state()
+        assert state["snapshot_id"] == snap.snapshot_id
+    finally:
+        view.close()

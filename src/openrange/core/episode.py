@@ -1,17 +1,9 @@
-"""Episode service: the agent harness's seam into running worlds.
-
-The agent acts on the world through whatever entrypoints the world
-exposes (HTTP, shell, file, MCP, browser). OpenRange does not own the
-agent action; ``record_turn`` is observational only. ``tick`` and
-``advance`` move the world (NPCs, timers, state machines).
-``checkpoint`` / ``restore`` / ``fork`` enable counterfactual training.
-"""
+"""EpisodeService — the agent harness's seam into running worlds."""
 
 from __future__ import annotations
 
 import atexit
-import shutil
-import tempfile
+import contextlib
 import threading
 import uuid
 import weakref
@@ -22,34 +14,24 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from openrange.agent_backend import AgentBackend, StrandsAgentBackend
+from openrange.core.admit import Snapshot
 from openrange.core.errors import OpenRangeError
-from openrange.core.pack import Entrypoint, Task
-from openrange.core.runtime_backing import (
-    RUNTIME_BACKINGS,
-    BackingContext,
-    RunningArtifact,
-)
-from openrange.core.runtime_helpers import (
-    final_state_from_episode,
-    read_requests,
-    validate_public_interface_interaction,
-    write_task_file,
+from openrange.core.pack import (
+    Backing,
+    EpisodeResult,
+    Pack,
+    RuntimeHandle,
+    TaskSpec,
 )
 from openrange.core.turn import ActorTurn
 from openrange.npc import NPC, resolve_manifest_npcs
 
 if TYPE_CHECKING:
-    from openrange.core.snapshot import Snapshot
     from openrange.dashboard import DashboardView
 
 
 class EpisodeError(OpenRangeError):
-    """Raised when an episode operation cannot proceed."""
-
-
-# ---------------------------------------------------------------------------
-# Public data shapes
-# ---------------------------------------------------------------------------
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +43,9 @@ class EpisodeHandle:
 
 @dataclass(frozen=True, slots=True)
 class Observation:
+    """`events` from `RuntimeHandle.poll_events`; `visible_state` is the
+    pack-defined static surface mapping."""
+
     visible_state: Mapping[str, Any] = field(default_factory=dict)
     events: tuple[Mapping[str, Any], ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -68,6 +53,8 @@ class Observation:
 
 @dataclass(frozen=True, slots=True)
 class AgentTurn:
+    """Harness-supplied note. Observational only."""
+
     message: str | None = None
     tool_calls: tuple[Mapping[str, Any], ...] = ()
     tool_results: tuple[Mapping[str, Any], ...] = ()
@@ -90,6 +77,11 @@ class TickResult:
 
 @dataclass(frozen=True, slots=True)
 class AdvanceRequest:
+    """`until` decides when the multi-tick loop yields. `"observation"`
+    and `"event"` return at the first poll that produces events;
+    `"terminal"` ticks until the handle reports terminal; `"idle"`
+    behaves like `"observation"`."""
+
     until: Literal["observation", "event", "terminal", "idle"] = "observation"
     max_ticks: int = 16
     timeout_seconds: float | None = None
@@ -105,96 +97,85 @@ class EpisodeUpdate:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeReport:
+    """Terminal artifact from a stopped episode. Implements `EpisodeReportLike`."""
+
     snapshot_id: str
     task_id: str
-    final_state: Mapping[str, object]
-    verifier_result: Mapping[str, object] | None = None
+    episode_result: EpisodeResult
+    final_state: Mapping[str, Any] = field(default_factory=dict)
     agent_summary: str = ""
 
-    def as_dict(self) -> dict[str, object]:
+    @property
+    def passed(self) -> bool:
+        return self.episode_result.success
+
+    def as_dict(self) -> dict[str, Any]:
         return {
             "snapshot_id": self.snapshot_id,
             "task_id": self.task_id,
+            "episode_result": {
+                "success": self.episode_result.success,
+                "subgoals": dict(self.episode_result.subgoals),
+                "reason": self.episode_result.reason,
+            },
             "final_state": dict(self.final_state),
-            "verifier_result": (
-                None if self.verifier_result is None else dict(self.verifier_result)
-            ),
             "agent_summary": self.agent_summary,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class EpisodeCheckpoint:
-    """Captured state for a running episode.
-
-    Cheap for stateless backings (process: just record the log offset);
-    expensive for stateful ones (pickle the state machine). Captures
-    enough to restart the cyber pack's HTTP server fresh while
-    preserving the agent_root contents.
-    """
+    """Pack-defined opaque blob from `RuntimeHandle.checkpoint()`."""
 
     id: str
     episode_id: str
     snapshot_id: str
     task_id: str
-    request_log_offset: int
-    agent_root_snapshot: Path
+    state: Any
     metadata: Mapping[str, Any] = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Internal per-episode state
-# ---------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
 class _RunningEpisode:
-    """Per-episode state owned by EpisodeService."""
-
     handle: EpisodeHandle
     snapshot: Snapshot
-    task: Task
-    entrypoint: Entrypoint
+    task: TaskSpec
+    runtime: RuntimeHandle
     run_root: Path
-    env_root: Path
-    agent_root: Path
-    base_url: str
-    running_artifact: RunningArtifact | None = None
-    request_log: Path | None = None
-    request_count: int = 0
-    request_lock: threading.Lock = field(default_factory=threading.Lock)
+    surface_cache: Mapping[str, Any]
     dashboard: DashboardView | None = None
     agent_summary: str = ""
-    final_state: Mapping[str, object] | None = None
-    verifier_result: Mapping[str, object] | None = None
+    final_state: Mapping[str, Any] | None = None
+    episode_result: EpisodeResult | None = None
     tick_thread: threading.Thread | None = None
     tick_stop: threading.Event | None = None
     npcs: list[NPC] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# EpisodeService
-# ---------------------------------------------------------------------------
+    stopped: bool = False
 
 
 class EpisodeService:
-    """Owns running worlds; provides start, observe, advance, checkpoint, fork."""
+    """Owns running worlds against a fixed `Pack`. One per `Pack`.
+
+    `npc_agent_backend` and `npc_llm_model` are mutually exclusive
+    shorthands; both unset means LLM-backed NPCs mark themselves broken
+    at start.
+    """
 
     def __init__(
         self,
+        pack: Pack,
         run_root: str | Path,
         *,
         dashboard: DashboardView | None = None,
         npc_agent_backend: AgentBackend | None = None,
         npc_llm_model: str | None = None,
+        backing: Backing = Backing.PROCESS,
     ) -> None:
+        self.pack = pack
         self.run_root = Path(run_root)
         self.run_root.mkdir(parents=True, exist_ok=True)
         self.dashboard = dashboard
-        # Resolve the NPC agent backend now: an explicit backend wins;
-        # otherwise the model-id convenience auto-promotes to a
-        # StrandsAgentBackend. Both unset means LLM-backed NPCs go
-        # broken at start with a clear "no backend configured" reason.
+        self.backing = backing
         if npc_agent_backend is not None and npc_llm_model is not None:
             raise EpisodeError(
                 "EpisodeService: pass either 'npc_agent_backend' or "
@@ -207,172 +188,158 @@ class EpisodeService:
         else:
             self.npc_agent_backend = None
         self._episodes: dict[str, _RunningEpisode] = {}
-        # Backstop: if the caller's try/finally misses ``close()``
-        # (KeyboardInterrupt mid-cleanup, uncaught exception, etc.)
-        # this still kills runtime subprocesses so they don't get
-        # reparented to PID 1.
-        atexit.register(_atexit_kill_episodes, weakref.ref(self))
-
-    # -- lifecycle ----------------------------------------------------------
+        # Cached reports for stopped episodes — populated by
+        # ``stop_episode`` so ``check_episode`` keeps working after the
+        # running entry is evicted.
+        self._reports: dict[str, EpisodeReport] = {}
+        # Backstop if a caller skips `close()` — keeps subprocesses
+        # from reparenting to PID 1.
+        atexit.register(_atexit_stop_episodes, weakref.ref(self))
 
     def start_episode(
         self,
         snapshot: Snapshot,
         task_id: str | None = None,
     ) -> EpisodeHandle:
-        task = (
-            snapshot.task(task_id) if task_id is not None else snapshot.get_tasks()[0]
-        )
+        task = _resolve_task(snapshot, task_id)
         if not task.entrypoints:
             raise EpisodeError(f"task {task.id!r} has no entrypoints")
-        entrypoint = task.entrypoints[0]
-        backing = RUNTIME_BACKINGS.require(entrypoint.kind)
 
         episode_id = uuid.uuid4().hex[:12]
-        # First episode for this task in this run uses the bare task.id;
-        # forks / restores / parallel episodes append the id.
         candidate = self.run_root / task.id
         episode_root = (
             candidate
             if not candidate.exists()
             else self.run_root / f"{task.id}-{episode_id}"
         )
-        agent_root = episode_root / "agent"
-        agent_root.mkdir(parents=True)
-        # env_root holds the materialized world (rendered app source,
-        # SQLite seed, request log). Place it OUTSIDE the run root so an
-        # agent confined to its workspace cannot reach the rendered
-        # source files via ``../env``. The dashboard records the env
-        # path in events so a human can find it for inspection.
-        env_root = Path(
-            tempfile.mkdtemp(prefix=f"openrange-env-{episode_id}-"),
-        )
+        episode_root.mkdir(parents=True)
 
-        running_artifact = backing.start(
-            entrypoint,
-            snapshot.artifacts,
-            snapshot.world,
-            BackingContext(episode_id=episode_id, workdir=env_root),
-        )
-        base_url = str(running_artifact.metadata["base_url"])
-        request_log = Path(str(running_artifact.metadata["request_log"]))
-        write_task_file(agent_root, task, entrypoint, base_url)
+        runtime = self.pack.realize(snapshot.graph, self.backing)
+        try:
+            runtime.reset()
+            surface_mapping = MappingProxyType(dict(runtime.surface()))
+        except Exception:
+            with contextlib.suppress(Exception):
+                runtime.stop()
+            raise
 
-        handle = EpisodeHandle(episode_id, snapshot.id, task.id)
+        handle = EpisodeHandle(episode_id, snapshot.snapshot_id, task.id)
         running = _RunningEpisode(
             handle=handle,
             snapshot=snapshot,
             task=task,
-            entrypoint=entrypoint,
+            runtime=runtime,
             run_root=episode_root,
-            env_root=env_root,
-            agent_root=agent_root,
-            base_url=base_url,
-            running_artifact=running_artifact,
-            request_log=request_log,
+            surface_cache=surface_mapping,
             dashboard=self.dashboard,
         )
         self._episodes[handle.id] = running
         self._record_system(
             running,
             {"reset": True},
-            state={"env_root": str(env_root), "agent_root": str(agent_root)},
+            state={"run_root": str(episode_root)},
         )
         self._record_system(
             running,
-            {"start": "http_server"},
-            observation={"base_url": base_url},
+            {"start": "runtime"},
+            observation=_observation_metadata(surface_mapping),
         )
         self._start_npcs(running)
-        if snapshot.manifest.runtime.tick.mode == "auto":
-            self._start_auto_tick(running, snapshot.manifest.runtime.tick.rate_hz)
+        rate = _manifest_auto_tick_rate(snapshot)
+        if rate is not None:
+            self._start_auto_tick(running, rate)
         return handle
 
     def stop_episode(self, episode: EpisodeHandle) -> EpisodeReport:
+        """Stop the runtime, run the success check, return the report.
+        A second call returns the cached report; does not re-stop. The
+        running entry is evicted from ``_episodes`` once stopped so a
+        long-running harness does not accumulate dead handles."""
+        cached = self._reports.get(episode.id)
+        if cached is not None and episode.id not in self._episodes:
+            return cached
         running = self._require(episode)
+        if running.episode_result is not None and running.stopped:
+            report = self._cached_report(running)
+            self._reports[episode.id] = report
+            self._episodes.pop(episode.id, None)
+            return report
         self._stop_auto_tick(running)
         self._stop_npcs(running)
-        if running.running_artifact is not None:
-            backing = RUNTIME_BACKINGS.require(running.running_artifact.kind)
-            backing.stop(running.running_artifact)
-            running.running_artifact = None
-        self._sync_request_log(running)
-        requests = (
-            read_requests(running.request_log)
-            if running.request_log is not None
-            else ()
-        )
-        validate_public_interface_interaction(running.entrypoint, requests)
-        final_state = final_state_from_episode(
-            running.agent_root,
-            running.entrypoint,
-            running.snapshot.world,
-            requests,
+        self._drain_events(running)
+        final_state: Mapping[str, Any] = MappingProxyType(
+            dict(running.runtime.collect()),
         )
         running.final_state = final_state
-        verifier = running.snapshot.verifier(running.task.id)
-        verifier_result = MappingProxyType(dict(verifier(final_state)))
-        running.verifier_result = verifier_result
-        self._record_system(running, {"finish": True}, state=final_state)
-        # Now that the agent process is gone, snapshot the env tree into
-        # the run root for human inspection. The runtime already deleted
-        # ``seed.json`` at startup, so this copy contains rendered
-        # source + request log only — no in-flight secrets.
-        self._snapshot_env_to_run_root(running)
-        return EpisodeReport(
-            snapshot_id=running.snapshot.id,
-            task_id=running.task.id,
-            final_state=final_state,
-            verifier_result=verifier_result,
-            agent_summary=running.agent_summary,
+        episode_result = self._check_success(running, final_state)
+        running.episode_result = episode_result
+        try:
+            running.runtime.stop()
+        except Exception as exc:  # noqa: BLE001
+            # A failed stop must not mask the agent's result.
+            self._record_system(
+                running,
+                {"stop_error": type(exc).__name__},
+                observation={"reason": str(exc)},
+            )
+        running.stopped = True
+        self._record_system(
+            running,
+            {"finish": True},
+            state=dict(final_state),
         )
-
-    def _snapshot_env_to_run_root(self, running: _RunningEpisode) -> None:
-        if not running.env_root.exists():
-            return
-        destination = running.run_root / "env"
-        if destination.exists():
-            shutil.rmtree(destination)
-        try:
-            shutil.copytree(running.env_root, destination)
-        except OSError:
-            return
-        try:
-            shutil.rmtree(running.env_root)
-        except OSError:
-            return
+        report = self._cached_report(running)
+        self._reports[episode.id] = report
+        self._episodes.pop(episode.id, None)
+        return report
 
     def check_episode(self, episode: EpisodeHandle) -> EpisodeReport:
-        """Idempotent: returns the report from a stopped episode."""
+        """Return the report from a stopped episode, stopping first if live."""
+        cached = self._reports.get(episode.id)
+        if cached is not None:
+            return cached
         running = self._require(episode)
-        if running.final_state is None:
+        if running.episode_result is None or not running.stopped:
             return self.stop_episode(episode)
-        return EpisodeReport(
-            snapshot_id=running.snapshot.id,
-            task_id=running.task.id,
-            final_state=running.final_state,
-            verifier_result=running.verifier_result,
-            agent_summary=running.agent_summary,
-        )
+        return self._cached_report(running)
+
+    def surface(self, episode: EpisodeHandle) -> Mapping[str, Any]:
+        """The pack-defined IO surface dict for this episode."""
+        return self._require(episode).surface_cache
 
     def base_url(self, episode: EpisodeHandle) -> str:
-        return self._require(episode).base_url
+        """The base URL of the agent-facing IO surface, when one is declared."""
+        surface = self._require(episode).surface_cache
+        value = surface.get("base_url")
+        if not isinstance(value, str):
+            raise EpisodeError(
+                f"episode {episode.id!r} surface does not expose 'base_url'",
+            )
+        return value
 
     def agent_root(self, episode: EpisodeHandle) -> Path:
-        return self._require(episode).agent_root
-
-    # -- agent / world flow -------------------------------------------------
+        """The agent's working directory, when the surface declares one."""
+        surface = self._require(episode).surface_cache
+        value = surface.get("agent_root")
+        if not isinstance(value, (str, Path)):
+            raise EpisodeError(
+                f"episode {episode.id!r} surface does not expose 'agent_root'",
+            )
+        return Path(value)
 
     def observe(self, episode: EpisodeHandle) -> Observation:
+        """Drain pending events and return them with surface metadata."""
         running = self._require(episode)
-        events = self._sync_request_log(running)
+        events = self._drain_events(running)
         return Observation(
-            visible_state=MappingProxyType({"base_url": running.base_url}),
+            visible_state=running.surface_cache,
             events=events,
-            metadata=MappingProxyType({"agent_root": str(running.agent_root)}),
+            metadata=_observation_metadata(running.surface_cache),
         )
 
     def record_turn(self, episode: EpisodeHandle, turn: AgentTurn) -> None:
+        """Observational breadcrumb. The latest non-empty `message` lands
+        in `EpisodeReport.agent_summary`."""
         running = self._require(episode)
         if turn.message:
             running.agent_summary = turn.message
@@ -382,11 +349,12 @@ class EpisodeService:
         episode: EpisodeHandle,
         request: TickRequest | None = None,
     ) -> TickResult:
-        request = request or TickRequest()
+        """One tick: drive NPCs, drain events, check terminal."""
+        req = request or TickRequest()
         running = self._require(episode)
-        if request.process_npcs:
+        if req.process_npcs:
             self._step_npcs(running)
-        events = self._sync_request_log(running)
+        events = self._drain_events(running)
         done, reason = self._terminal_state(running)
         return TickResult(events=events, done=done, terminal_reason=reason)
 
@@ -395,23 +363,31 @@ class EpisodeService:
         episode: EpisodeHandle,
         request: AdvanceRequest | None = None,
     ) -> EpisodeUpdate:
-        request = request or AdvanceRequest()
+        """Tick up to `request.max_ticks` times. Yields early on terminal,
+        or on the first event burst when `until` is observation/event/idle."""
+        req = request or AdvanceRequest()
         running = self._require(episode)
         all_events: list[Mapping[str, Any]] = []
-        for _ in range(request.max_ticks):
-            events = self._sync_request_log(running)
+        for _ in range(req.max_ticks):
+            events = self._drain_events(running)
             all_events.extend(events)
             done, reason = self._terminal_state(running)
             if done:
                 return EpisodeUpdate(
-                    observation=Observation(events=tuple(events)),
+                    observation=Observation(
+                        visible_state=running.surface_cache,
+                        events=tuple(events),
+                    ),
                     events=tuple(all_events),
                     done=True,
                     terminal_reason=reason,
                 )
-            if request.until == "observation" and events:
+            if req.until in ("observation", "event", "idle") and events:
                 return EpisodeUpdate(
-                    observation=Observation(events=tuple(events)),
+                    observation=Observation(
+                        visible_state=running.surface_cache,
+                        events=tuple(events),
+                    ),
                     events=tuple(all_events),
                     done=False,
                 )
@@ -421,43 +397,24 @@ class EpisodeService:
             terminal_reason="max_ticks",
         )
 
-    # -- counterfactual support --------------------------------------------
-
     def checkpoint(self, episode: EpisodeHandle) -> EpisodeCheckpoint:
-        """Capture enough state to spin up a sibling episode at this point.
-
-        Captures the request log offset and a copy of the agent_root.
-        Restoring kills the process and starts a fresh one — the cyber
-        pack's HTTP server is stateless modulo the log + flag arg, so
-        a fresh start at the same flag value yields a comparable world.
-        """
+        """Capture an opaque pack-defined snapshot of episode state."""
         running = self._require(episode)
-        offset = running.request_count
-        snapshot_id = f"{episode.id}-{uuid.uuid4().hex[:8]}"
-        snapshot_root = self.run_root / "checkpoints" / snapshot_id
-        snapshot_root.mkdir(parents=True)
-        agent_snapshot = snapshot_root / "agent"
-        if running.agent_root.exists():
-            shutil.copytree(running.agent_root, agent_snapshot)
+        state = running.runtime.checkpoint()
         return EpisodeCheckpoint(
             id=uuid.uuid4().hex[:12],
             episode_id=episode.id,
-            snapshot_id=running.snapshot.id,
+            snapshot_id=running.snapshot.snapshot_id,
             task_id=running.task.id,
-            request_log_offset=offset,
-            agent_root_snapshot=agent_snapshot,
+            state=state,
         )
 
     def restore(self, checkpoint: EpisodeCheckpoint) -> EpisodeHandle:
-        """Spin up a fresh episode from the checkpoint.
-
-        Starts the world fresh with the same snapshot+task and copies
-        agent-written files from the captured agent_root, giving the
-        agent the same workspace contents it had at checkpoint time.
-        The env-supplied task file is preserved from the new episode
-        so the agent talks to the new world. Process state itself is
-        not preserved — packs that need that ship a stateful backing.
-        """
+        """Start a fresh episode and `RuntimeHandle.restore` it from
+        `checkpoint.state`. The originating episode must still be live.
+        If ``runtime.restore`` raises, the freshly-started runtime is
+        stopped and its ``_episodes`` entry is popped before re-raising —
+        otherwise a failed restore would leak a subprocess + dict entry."""
         running = self._episodes.get(checkpoint.episode_id)
         if running is None:
             raise EpisodeError(
@@ -465,48 +422,31 @@ class EpisodeService:
             )
         new_handle = self.start_episode(running.snapshot, running.task.id)
         new_running = self._require(new_handle)
-        self._copy_agent_workspace(
-            checkpoint.agent_root_snapshot,
-            new_running,
+        try:
+            new_running.runtime.restore(checkpoint.state)
+        except Exception:
+            self._record_system(
+                new_running,
+                {"restore_error": True},
+                observation={"reason": "runtime.restore() raised"},
+            )
+            self._stop_auto_tick(new_running)
+            self._stop_npcs(new_running)
+            with contextlib.suppress(Exception):
+                new_running.runtime.stop()
+            new_running.stopped = True
+            self._episodes.pop(new_handle.id, None)
+            raise
+        # restore() may have rebound transport (e.g. new port).
+        new_running.surface_cache = MappingProxyType(
+            dict(new_running.runtime.surface()),
         )
         return new_handle
 
     def fork(self, episode: EpisodeHandle) -> EpisodeHandle:
-        """Spin up a sibling episode from the current point.
-
-        Equivalent to checkpoint+restore; differs only in not leaving
-        a checkpoint artifact on disk.
-        """
-        running = self._require(episode)
-        new_handle = self.start_episode(running.snapshot, running.task.id)
-        new_running = self._require(new_handle)
-        self._copy_agent_workspace(running.agent_root, new_running)
-        return new_handle
-
-    def _copy_agent_workspace(
-        self,
-        source: Path,
-        target_running: _RunningEpisode,
-    ) -> None:
-        if not source.exists():
-            return
-        # Skip env-supplied files so the agent sees the new world's URL,
-        # not the parent's stale task file.
-        task_file_name = target_running.entrypoint.metadata.get(
-            "task_file",
-            "OPENRANGE_TASK.json",
-        )
-        env_supplied = {str(task_file_name)}
-        for item in source.iterdir():
-            if item.name in env_supplied:
-                continue
-            destination = target_running.agent_root / item.name
-            if item.is_dir():
-                shutil.copytree(item, destination, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, destination)
-
-    # -- internals ----------------------------------------------------------
+        """Spin up a sibling episode from the current point."""
+        checkpoint = self.checkpoint(episode)
+        return self.restore(checkpoint)
 
     def _require(self, episode: EpisodeHandle) -> _RunningEpisode:
         running = self._episodes.get(episode.id)
@@ -514,30 +454,52 @@ class EpisodeService:
             raise EpisodeError(f"unknown episode {episode.id!r}")
         return running
 
+    def _cached_report(self, running: _RunningEpisode) -> EpisodeReport:
+        assert running.episode_result is not None
+        assert running.final_state is not None
+        return EpisodeReport(
+            snapshot_id=running.snapshot.snapshot_id,
+            task_id=running.task.id,
+            episode_result=running.episode_result,
+            final_state=running.final_state,
+            agent_summary=running.agent_summary,
+        )
+
+    def _check_success(
+        self,
+        running: _RunningEpisode,
+        final_state: Mapping[str, Any],
+    ) -> EpisodeResult:
+        family = self.pack.task_family(running.task.success_check)
+        if family is None:
+            return EpisodeResult(
+                success=False,
+                reason=(
+                    f"pack {self.pack.id!r} has no TaskFamily "
+                    f"{running.task.success_check!r}"
+                ),
+            )
+        return family.check_success(running.snapshot.graph, running.task, final_state)
+
     def _terminal_state(
         self,
         running: _RunningEpisode,
     ) -> tuple[bool, str | None]:
-        result_file = str(running.entrypoint.metadata.get("result_file", ""))
-        if result_file and (running.agent_root / result_file).exists():
-            return True, "result_written"
-        if running.running_artifact is None:
+        if running.stopped:
             return True, "stopped"
-        return False, None
+        return running.runtime.terminal()
 
-    def _sync_request_log(
+    def _drain_events(
         self,
         running: _RunningEpisode,
     ) -> tuple[Mapping[str, Any], ...]:
-        if running.request_log is None:
+        try:
+            events = running.runtime.poll_events()
+        except Exception:  # noqa: BLE001
             return ()
-        with running.request_lock:
-            requests = read_requests(running.request_log)
-            new = tuple(requests[running.request_count :])
-            running.request_count = len(requests)
-        for row in new:
-            self._record_agent_request(running, row)
-        return new
+        for event in events:
+            self._record_world_event(running, event)
+        return tuple(events)
 
     def _record_system(
         self,
@@ -561,64 +523,56 @@ class EpisodeService:
             ),
         )
 
-    def _record_agent_request(
+    def _record_world_event(
         self,
         running: _RunningEpisode,
-        row: Mapping[str, Any],
+        event: Mapping[str, Any],
     ) -> None:
         if running.dashboard is None:
             return
+        target = running.task.entrypoints[0] if running.task.entrypoints else "world"
+        action = {str(k): v for k, v in event.items()}
         running.dashboard.record_turn(
             ActorTurn(
                 running.task.id,
                 "agent",
                 "agent",
-                running.entrypoint.target,
-                {
-                    "method": str(row.get("method", "")),
-                    "path": str(row.get("path", "")),
-                },
-                observation={"status": row.get("status", 0)},
-                metadata={"source": "http_access_log"},
+                target,
+                action,
+                metadata={"source": "runtime_event"},
             ),
         )
 
     def _start_npcs(self, running: _RunningEpisode) -> None:
-        # Manifest-shape errors (unknown type, malformed config) still
-        # propagate from ``resolve_manifest_npcs`` — those are config
-        # mistakes the operator needs to fix. Per-NPC SDK / preflight
-        # failures are caught inside the NPC and surfaced via
-        # ``broken_reason`` (recorded below as a dashboard event).
-        npcs = resolve_manifest_npcs(running.snapshot.manifest.npc)
+        npc_entries = _manifest_npc_entries(running.snapshot)
+        if not npc_entries:
+            return
+        # Manifest-shape errors propagate; per-NPC failures land in
+        # `broken_reason`.
+        npcs = resolve_manifest_npcs(npc_entries)
         if not npcs:
             return
         base_context: dict[str, Any] = {
             "episode_id": running.handle.id,
-            "snapshot_id": running.snapshot.id,
+            "snapshot_id": running.snapshot.snapshot_id,
             "task_id": running.task.id,
-            "base_url": running.base_url,
         }
+        for key, value in running.surface_cache.items():
+            base_context.setdefault(str(key), value)
         for npc in npcs:
             ctx = dict(base_context)
             ctx["record_action"] = self._make_npc_recorder(running, npc)
             if npc.requires_llm:
                 ctx["agent_backend"] = self.npc_agent_backend
             npc.start(MappingProxyType(ctx))
-            # NPCs may set ``broken_reason`` during start() (e.g. the
-            # AgentNPC pre-flight catching a missing SDK). Report it
-            # so it surfaces in the dashboard immediately rather than
-            # waiting for the first acting tick.
             if npc.broken_reason is not None:
                 self._record_npc_broken(running, npc)
         running.npcs = npcs
 
     def _step_npcs(self, running: _RunningEpisode) -> None:
-        if not running.npcs or running.running_artifact is None:
+        if not running.npcs:
             return
-        backing = RUNTIME_BACKINGS.require(running.running_artifact.kind)
-        interface = backing.interface(running.running_artifact)
-        # Per-NPC failures are swallowed: one NPC throwing on a
-        # malformed response shouldn't sink the whole episode.
+        interface = running.surface_cache
         for npc in running.npcs:
             already_broken = npc.broken_reason is not None
             try:
@@ -633,14 +587,6 @@ class EpisodeService:
         running: _RunningEpisode,
         npc: NPC,
     ) -> Callable[..., None]:
-        """Build the per-NPC ``record_action`` callable handed via context.
-
-        Returns a closure tagged with the NPC's ``actor_id`` so events
-        flow into the dashboard with consistent attribution. Errors
-        (e.g. dashboard offline) are silent — recording is
-        observational and must never sink an NPC tick.
-        """
-
         def record(
             action: Mapping[str, object],
             *,
@@ -655,7 +601,7 @@ class EpisodeService:
                         running.task.id,
                         npc.actor_id,
                         "npc",
-                        target if target is not None else "office",
+                        target if target is not None else "world",
                         action,
                         observation=observation,
                     ),
@@ -666,7 +612,6 @@ class EpisodeService:
         return record
 
     def _record_npc_broken(self, running: _RunningEpisode, npc: NPC) -> None:
-        """Surface an NPC's transition to broken on the dashboard."""
         self._record_system(
             running,
             {"npc_broken": type(npc).__name__},
@@ -699,35 +644,96 @@ class EpisodeService:
         running.tick_stop = None
 
     def close(self) -> None:
-        """Stop all live episodes."""
+        """Best-effort stop of all live episodes."""
         for running in list(self._episodes.values()):
             self._stop_auto_tick(running)
             self._stop_npcs(running)
-            if running.running_artifact is not None:
-                backing = RUNTIME_BACKINGS.require(running.running_artifact.kind)
-                backing.stop(running.running_artifact)
-                running.running_artifact = None
+            if not running.stopped:
+                with contextlib.suppress(Exception):
+                    running.runtime.stop()
+                running.stopped = True
         self._episodes.clear()
 
 
-def _atexit_kill_episodes(service_ref: weakref.ref[EpisodeService]) -> None:
-    service = service_ref()
-    if service is None:
+def _resolve_task(snapshot: Snapshot, task_id: str | None) -> TaskSpec:
+    if not snapshot.tasks:
+        raise EpisodeError(
+            f"snapshot {snapshot.snapshot_id!r} has no tasks",
+        )
+    if task_id is None:
+        return snapshot.tasks[0]
+    for task in snapshot.tasks:
+        if task.id == task_id:
+            return task
+    raise EpisodeError(
+        f"snapshot {snapshot.snapshot_id!r} has no task {task_id!r}",
+    )
+
+
+def _observation_metadata(surface: Mapping[str, Any]) -> Mapping[str, Any]:
+    # Surface may carry callables the dashboard JSON serializer can't handle.
+    out: dict[str, Any] = {}
+    for key in ("base_url", "agent_root"):
+        value = surface.get(key)
+        if isinstance(value, str):
+            out[key] = value
+        elif isinstance(value, Path):
+            out[key] = str(value)
+    return MappingProxyType(out)
+
+
+def _manifest_mapping(snapshot: Snapshot) -> Mapping[str, Any]:
+    manifest = snapshot.lineage.get("manifest")
+    if isinstance(manifest, Mapping):
+        return manifest
+    return {}
+
+
+def _manifest_npc_entries(snapshot: Snapshot) -> tuple[Mapping[str, Any], ...]:
+    raw = _manifest_mapping(snapshot).get("npc")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    entries: list[Mapping[str, Any]] = []
+    for item in raw:
+        if isinstance(item, Mapping):
+            entries.append(item)
+    return tuple(entries)
+
+
+def _manifest_auto_tick_rate(snapshot: Snapshot) -> float | None:
+    runtime_cfg = _manifest_mapping(snapshot).get("runtime")
+    if not isinstance(runtime_cfg, Mapping):
+        return None
+    tick_cfg = runtime_cfg.get("tick")
+    if not isinstance(tick_cfg, Mapping):
+        return None
+    mode = tick_cfg.get("mode")
+    if mode != "auto":
+        return None
+    rate_raw = tick_cfg.get("rate_hz")
+    if isinstance(rate_raw, (int, float)) and not isinstance(rate_raw, bool):
+        rate = float(rate_raw)
+        if rate > 0:
+            return rate
+    return None
+
+
+def _atexit_stop_episodes(svc_ref: weakref.ref[EpisodeService]) -> None:
+    svc = svc_ref()
+    if svc is None:
         return
-    for running in list(service._episodes.values()):
-        artifact = running.running_artifact
-        if artifact is None:
+    for running in list(svc._episodes.values()):
+        if running.stopped:
             continue
         try:
-            backing = RUNTIME_BACKINGS.require(artifact.kind)
-            backing.stop(artifact)
+            running.runtime.stop()
         except Exception:  # noqa: BLE001 — best-effort cleanup
             continue
-        running.running_artifact = None
+        running.stopped = True
 
 
 def _auto_tick_loop(
-    service: EpisodeService,
+    svc: EpisodeService,
     running: _RunningEpisode,
     rate_hz: float,
 ) -> None:
@@ -736,6 +742,6 @@ def _auto_tick_loop(
     interval = 1.0 / rate_hz
     while not running.tick_stop.wait(interval):
         try:
-            service.tick(running.handle)
+            svc.tick(running.handle)
         except EpisodeError:
-            return  # episode was stopped
+            return

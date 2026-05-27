@@ -5,15 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import webbrowser
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
-from openrange.core import Snapshot, SnapshotStore, build
+from openrange.core.admit import AdmissionFailure, admit, snapshot_to_dict
+from openrange.core.errors import EpisodeRuntimeError
+from openrange.core.pack import PACKS
+from openrange.core.store import SnapshotStore
 from openrange.dashboard import (
     DashboardHTTPServer,
     DashboardView,
     RunsRegistry,
 )
-from openrange.llm import CodexBackend
 
 
 def main() -> None:
@@ -23,7 +27,7 @@ def main() -> None:
     build_parser = subparsers.add_parser("build")
     build_parser.add_argument("manifest", type=Path)
     build_parser.add_argument("--output", type=Path)
-    build_parser.add_argument("--prompt", default="")
+    build_parser.add_argument("--max-repairs", type=int, default=2)
 
     inspect_parser = subparsers.add_parser("inspect")
     inspect_parser.add_argument("snapshot", type=Path)
@@ -54,28 +58,68 @@ def main() -> None:
 
     args = parser.parse_args()
     if args.command == "build":
-        snapshot = build(
-            args.manifest,
-            prompt=args.prompt,
-            llm=CodexBackend(),
-        )
-        payload = snapshot.as_dict()
-        if args.output is not None:
-            path = SnapshotStore(args.output).save(snapshot)
-            print(path)
-        else:
-            print(json.dumps(payload, sort_keys=True))
+        _run_build(args)
         return
     if args.command == "dashboard":
         _run_dashboard(args, parser)
         return
+    _run_inspect(args)
+
+
+def _run_build(args: argparse.Namespace) -> None:
+    raw = json.loads(args.manifest.read_text(encoding="utf-8"))
+    if not isinstance(raw, Mapping):
+        raise EpisodeRuntimeError("manifest must be a JSON object")
+    manifest = cast(Mapping[str, object], raw)
+    pack_field = manifest.get("pack")
+    if isinstance(pack_field, Mapping):
+        pack_id = pack_field.get("id")
+    elif isinstance(pack_field, str):
+        pack_id = pack_field
+    else:
+        pack_id = None
+    if not isinstance(pack_id, str) or not pack_id:
+        raise EpisodeRuntimeError(
+            "manifest must declare a pack via 'pack.id' or 'pack' (string)",
+        )
+    try:
+        pack = PACKS.resolve(pack_id)
+    except Exception as exc:
+        raise EpisodeRuntimeError(f"unknown pack {pack_id!r}") from exc
+    result = admit(pack, manifest, max_repairs=args.max_repairs)
+    if isinstance(result, AdmissionFailure):
+        raise EpisodeRuntimeError(
+            f"admission failed after {result.attempts} attempt(s): "
+            f"{len(result.issues)} error(s), "
+            f"{len(result.infeasible_tasks)} infeasible task(s)",
+        )
+    if args.output is not None:
+        path = SnapshotStore(args.output).save(result)
+        print(path)
+    else:
+        print(json.dumps(snapshot_to_dict(result), sort_keys=True))
+
+
+def _run_inspect(args: argparse.Namespace) -> None:
     data = json.loads(args.snapshot.read_text(encoding="utf-8"))
+    lineage = data.get("lineage", {})
+    if not isinstance(lineage, Mapping):
+        lineage = {}
+    tasks_raw = data.get("tasks", [])
+    if not isinstance(tasks_raw, list):
+        tasks_raw = []
+    task_ids = [
+        task["id"]
+        for task in tasks_raw
+        if isinstance(task, Mapping) and isinstance(task.get("id"), str)
+    ]
     print(
         json.dumps(
             {
-                "id": data["id"],
-                "tasks": [task["id"] for task in data["tasks"]],
-                "lineage": [node["id"] for node in data["lineage"]],
+                "snapshot_id": data.get("snapshot_id"),
+                "tasks": task_ids,
+                "pack": lineage.get("pack"),
+                "pack_version": lineage.get("pack_version"),
             },
             sort_keys=True,
         ),
@@ -83,13 +127,6 @@ def main() -> None:
 
 
 def _run_dashboard(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    """Boot the dashboard server in one of three modes.
-
-    1. ``--run-root`` set       -> single-run mode (one DashboardView).
-    2. ``--snapshot-id`` set    -> snapshot-store mode (no live events).
-    3. otherwise (default)      -> tensorboard-style multi-run mode
-       backed by a ``RunsRegistry`` over ``--runs-dir``.
-    """
     server: DashboardHTTPServer
     if args.run_root is not None:
         events = args.run_root / "dashboard.events.jsonl"
@@ -106,7 +143,7 @@ def _run_dashboard(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
         )
         server = DashboardHTTPServer((args.host, args.port), view=view)
     elif args.snapshot_id is not None:
-        snapshot: Snapshot | None = SnapshotStore(args.store_dir).load(args.snapshot_id)
+        snapshot = SnapshotStore(args.store_dir).load(args.snapshot_id)
         view = DashboardView(snapshot)
         server = DashboardHTTPServer((args.host, args.port), view=view)
     else:

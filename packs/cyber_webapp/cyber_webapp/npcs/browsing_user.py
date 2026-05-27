@@ -1,15 +1,3 @@
-"""``cyber.browsing_user`` — generates background HTTP traffic.
-
-Every ``cadence_ticks`` ticks, GET the next path from a configured
-rotation. Keeps the agent's exploit requests from being the only
-entries in the request log.
-
-Config:
-    cadence_ticks: int = 2       — act every Nth tick
-    paths: list[str] = ["/"]     — paths to rotate through (cycled)
-    timeout_seconds: float = 1.0 — per-request HTTP timeout
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping

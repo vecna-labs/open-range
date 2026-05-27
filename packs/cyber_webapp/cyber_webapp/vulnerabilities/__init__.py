@@ -1,21 +1,3 @@
-"""Composable vulnerability catalog for the cyber webapp offense pack.
-
-A ``Vulnerability`` is a code-template + dependency metadata. It tells
-the realizer how to inject the bug into a target service (the ``template``
-field is a Jinja2 template path under ``vulnerabilities/templates/``)
-and tells the procedural builder how vulns combine (``requires`` /
-``enables`` dependency edges).
-
-The catalog is a Python module — vulnerability records are
-``Vulnerability`` instances declared inline. ``catalog_to_yaml()`` and
-``catalog_from_yaml()`` round-trip the catalog through YAML for
-configurability (a manifest can override or extend the bundled catalog).
-
-Format choice (per the cyber-pack-plan): Python module is the canonical
-form (templates are paths to real Jinja2 files); YAML is the configurable
-serialization.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -30,22 +12,8 @@ VULN_TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 @dataclass(frozen=True, slots=True)
 class Vulnerability:
-    """One catalog entry: a vuln kind that can be injected into a service.
-
-    Fields:
-        id: stable identifier, e.g. "sql_injection"
-        family: category for analytics / filtering (e.g. "code_web")
-        description: short human-readable summary
-        target_kinds: which graph node types this vuln can affect
-                      (typically {"endpoint"} or {"service"})
-        template: Jinja2 template path (relative to templates/), rendered
-                  by the realizer to produce the vulnerable handler code
-        requires: ids of other vulns that must precede this one in a chain
-                  (empty for "primary" vulns)
-        enables: ids of vulns this one can chain into
-        attrs_schema: nominal attrs the graph's vulnerability node should
-                      carry (documentation; not enforced deeply in v1)
-    """
+    # ``attrs_schema`` is documentation only — not validated against
+    # the graph's vulnerability node attrs.
 
     id: str
     family: str
@@ -92,11 +60,6 @@ class Vulnerability:
             enables=frozenset(str(k) for k in enables_raw),
             attrs_schema={str(k): str(v) for k, v in attrs_raw.items()},
         )
-
-
-# ---------------------------------------------------------------------------
-# Catalog
-# ---------------------------------------------------------------------------
 
 
 SQL_INJECTION = Vulnerability(
@@ -168,11 +131,6 @@ def vulns_for_kind(kind: str) -> tuple[Vulnerability, ...]:
     return tuple(v for v in CATALOG.values() if kind in v.target_kinds)
 
 
-# ---------------------------------------------------------------------------
-# Template rendering
-# ---------------------------------------------------------------------------
-
-
 def _jinja_env() -> Environment:
     """Build a Jinja2 environment scoped to the bundled templates dir.
 
@@ -201,11 +159,6 @@ def render_vulnerability(
     return template.render(vuln=vulnerability, **params)
 
 
-# ---------------------------------------------------------------------------
-# YAML serialization (for configurability)
-# ---------------------------------------------------------------------------
-
-
 def catalog_to_yaml(catalog: Mapping[str, Vulnerability] = CATALOG) -> str:
     """Serialize the catalog to a YAML string."""
     payload = [v.as_dict() for v in catalog.values()]
@@ -215,9 +168,7 @@ def catalog_to_yaml(catalog: Mapping[str, Vulnerability] = CATALOG) -> str:
 def catalog_from_yaml(text: str) -> dict[str, Vulnerability]:
     """Parse a YAML catalog into a Vulnerability dict.
 
-    A manifest can ship a YAML override that adds new vulns or replaces
-    the templates of existing ones. ``id`` collisions overwrite the
-    bundled entry.
+    ``id`` collisions overwrite the bundled entry.
     """
     data = yaml.safe_load(text)
     if not isinstance(data, list):

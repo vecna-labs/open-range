@@ -1,23 +1,7 @@
-"""``cyber.office_chatter`` — a person walking around the office.
-
-Scripted, no LLM. The chatter owns every "what NPCs do" decision
-itself and ships them on its events: which desk slot it lives at
-(``home_index``), which colleague it's visiting on a given walk
-(``target_name``), and the opener-and-reply pair the two will
-exchange. The dashboard reads those fields straight from the event
-data and renders — it doesn't invent identity-to-position mappings
-or pick who visits whom.
-
-Config:
-    name: str (required)             — display name + actor_id
-    colleagues: list[str] = ()       — names of other chatters this
-                                       NPC can visit; required for
-                                       walks to land on a real host
-    cadence_ticks: int = 6           — act every Nth tick
-    home: str | None = None          — optional service-id ``target``
-                                       on the move event
-    walk_probability: float = 1.0    — chance an acting tick walks
-    seed: int | None = None          — deterministic randomness
+"""The chatter owns every ``what NPCs do`` decision itself and ships them on
+its events (``home_index``, ``target_name``, opener/reply). The dashboard
+reads those fields verbatim — it doesn't invent identity-to-position
+mappings or pick who visits whom.
 """
 
 from __future__ import annotations

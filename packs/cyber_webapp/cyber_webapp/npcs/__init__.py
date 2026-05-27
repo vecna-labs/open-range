@@ -1,12 +1,3 @@
-"""Cyber NPCs for the v1 webapp offense pack.
-
-NPCs are registered as entry points in the ``openrange.npcs`` group
-via pyproject.toml (referencing the per-NPC module's ``factory``).
-Imports of the NPC classes themselves go via the leaf modules
-(``cyber_webapp.npcs.admin_audit``,
-``cyber_webapp.npcs.browsing_user``).
-"""
-
 from __future__ import annotations
 
 from abc import abstractmethod
@@ -17,14 +8,6 @@ from openrange.npc import NPC
 
 
 class _HTTPCadenceNPC(NPC):
-    """Base for cyber NPCs that hit HTTP at a fixed tick cadence.
-
-    Subclasses implement ``_next_path`` to choose the path to GET on
-    each acting tick. The base class owns the cooldown state machine
-    (act once, then idle for ``cadence_ticks - 1`` ticks) and the
-    http_get safety wrapper (silently swallows missing handle / errors).
-    """
-
     def __init__(self, *, cadence_ticks: int) -> None:
         if cadence_ticks < 1:
             raise ValueError("cadence_ticks must be >= 1")

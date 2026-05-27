@@ -1,309 +1,292 @@
-"""Cyber webapp offense ontology v1.
+"""Ontology contract for the cyber webapp pack.
 
-Defines the typed graph language the procedural builder samples over to
-produce realistic cyber worlds. Multi-node-type structure that admits
-real generation and combination.
-
-Scope: HTTP-shaped web-offense scenarios at business scale (3-10
-services, multi-host topologies, vulnerability chains across services).
-Out of scope for v1: kubernetes-native primitives (CRDs, operators),
-cloud-IAM-shaped permission graphs, defender NPCs, scheduled jobs.
+The realizer is a pure projection of this graph — it never decides URLs,
+table names, or other agent-observable strings of its own.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from graphschema import AttrSpec, AttrType, EdgeKind, NodeKind, Ontology
 
-from openrange import (
-    EdgeType,
-    GraphConstraint,
-    NodeType,
-    ValidationError,
-    WorldGraph,
-    WorldSchema,
-)
-
-# ---------------------------------------------------------------------------
-# Attribute schemas
-# ---------------------------------------------------------------------------
-
-# Schemas are nominal in v1 (Core does not enforce them deeply). Intent is
-# documentation-as-code: a procedural builder consults these to know what
-# attrs each node type expects, and tests can reject malformed graphs.
-
-_HOST_ATTRS: Mapping[str, type] = {
-    "hostname": str,
-    "os": str,  # "linux" | "windows" | "container"
-    "zone": str,  # "dmz" | "corp" | "data" | "management" | "external"
-}
-
-_SERVICE_ATTRS: Mapping[str, type] = {
-    "name": str,
-    "kind": str,  # "web" | "api" | "auth" | "db" | "queue" | "mail" | "fileshare"
-    "language": str,  # "python" | "node" | "go" | ...
-    "exposure": str,  # "public" | "internal" | "management"
-}
-
-_ENDPOINT_ATTRS: Mapping[str, type] = {
-    "path": str,
-    "method": str,  # "GET" | "POST" | ...
-    "auth_required": bool,
-    "behavior_ref": str,  # template ref the realizer renders
-}
-
-_ACCOUNT_ATTRS: Mapping[str, type] = {
-    "username": str,
-    "role": str,  # "user" | "admin" | "service"
-    "active": bool,
-}
-
-_CREDENTIAL_ATTRS: Mapping[str, type] = {
-    "kind": str,  # "password" | "api_key" | "session" | "token"
-    "value_ref": str,  # opaque ref the realizer resolves
-}
-
-_SECRET_ATTRS: Mapping[str, type] = {
-    "kind": str,  # "flag" | "api_key" | "password" | "private_key"
-    "value_ref": str,
-    "description": str,
-}
-
-_VULNERABILITY_ATTRS: Mapping[str, type] = {
-    "kind": str,  # catalog id: "sql_injection", "ssrf", "broken_authz", ...
-    "family": str,  # "code_web" | "config_identity" | "secret_exposure" | ...
-    "params": dict,  # vuln-specific tuning (e.g. SQLi target column)
-}
-
-_NETWORK_ATTRS: Mapping[str, type] = {
-    "name": str,
-    "isolation": str,  # "bridge" | "host" | "isolated"
-    "zone": str,
-}
-
-_DATA_STORE_ATTRS: Mapping[str, type] = {
-    "name": str,
-    "kind": str,  # "sql" | "kv" | "file" | "object"
-    "engine": str,  # "sqlite" | "postgres" | "redis" | ...
-}
-
-_RECORD_ATTRS: Mapping[str, type] = {
-    "key": str,
-    "fields": dict,  # column name -> seed value (or value_ref for secrets)
-}
+ONTOLOGY_ID = "cyber.webapp@v2"
 
 
-# ---------------------------------------------------------------------------
-# Node + edge type tables
-# ---------------------------------------------------------------------------
-
-
-NODE_TYPES: tuple[NodeType, ...] = (
-    NodeType("host", _HOST_ATTRS),
-    NodeType("service", _SERVICE_ATTRS),
-    NodeType("endpoint", _ENDPOINT_ATTRS),
-    NodeType("account", _ACCOUNT_ATTRS),
-    NodeType("credential", _CREDENTIAL_ATTRS),
-    NodeType("secret", _SECRET_ATTRS),
-    NodeType("vulnerability", _VULNERABILITY_ATTRS),
-    NodeType("network", _NETWORK_ATTRS),
-    NodeType("data_store", _DATA_STORE_ATTRS),
-    NodeType("record", _RECORD_ATTRS),
-)
-
-
-# Edge attribute schemas
-_EXPOSES_ATTRS: Mapping[str, type] = {}
-_BACKED_BY_ATTRS: Mapping[str, type] = {"mode": str}  # "read" | "write" | "readwrite"
-_CONTAINS_ATTRS: Mapping[str, type] = {}
-_HOLDS_ATTRS: Mapping[str, type] = {"field": str}
-_HAS_CREDENTIAL_ATTRS: Mapping[str, type] = {}
-_CAN_ACCESS_ATTRS: Mapping[str, type] = {"auth_method": str}
-_RUNS_ON_ATTRS: Mapping[str, type] = {}
-_CONNECTED_TO_ATTRS: Mapping[str, type] = {}
-_AFFECTS_ATTRS: Mapping[str, type] = {"injection_site": str}  # path / param / handler
-_ENABLES_ATTRS: Mapping[str, type] = {}  # vuln chain: vuln A enables vuln B
-_DERIVES_ATTRS: Mapping[str, type] = {}  # credential derives from secret
-
-
-EDGE_TYPES: tuple[EdgeType, ...] = (
-    EdgeType("service", "exposes", "endpoint", _EXPOSES_ATTRS),
-    EdgeType("service", "backed_by", "data_store", _BACKED_BY_ATTRS),
-    EdgeType("data_store", "contains", "record", _CONTAINS_ATTRS),
-    EdgeType("record", "holds", "secret", _HOLDS_ATTRS),
-    EdgeType("account", "has_credential", "credential", _HAS_CREDENTIAL_ATTRS),
-    EdgeType("account", "can_access", "endpoint", _CAN_ACCESS_ATTRS),
-    EdgeType("service", "runs_on", "host", _RUNS_ON_ATTRS),
-    EdgeType("service", "connected_to", "network", _CONNECTED_TO_ATTRS),
-    EdgeType("vulnerability", "affects", "endpoint", _AFFECTS_ATTRS),
-    EdgeType("vulnerability", "affects", "service", _AFFECTS_ATTRS),
-    EdgeType("vulnerability", "enables", "vulnerability", _ENABLES_ATTRS),
-    EdgeType("credential", "derives", "secret", _DERIVES_ATTRS),
-)
-
-
-# ---------------------------------------------------------------------------
-# Graph constraints
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class NoOrphanNodesConstraint(GraphConstraint):
-    """Every node must be referenced by at least one edge.
-
-    Exemptions: ``host`` and ``network`` may be orphaned (they're scaffolding;
-    a graph with one isolated host is still valid). The intent is to catch
-    accidentally dropped references — accounts with no credentials, vulns
-    affecting nothing, etc.
-    """
-
-    exempt_types: frozenset[str] = frozenset({"host", "network"})
-
-    def validate(self, graph: WorldGraph) -> list[ValidationError]:
-        referenced: set[str] = set()
-        for edge in graph.edges:
-            referenced.add(edge.source)
-            referenced.add(edge.target)
-        errors: list[ValidationError] = []
-        for node in graph.nodes:
-            if node.type in self.exempt_types:
-                continue
-            if node.id not in referenced:
-                errors.append(
-                    ValidationError(
-                        f"orphan node {node.id!r} (type {node.type!r})",
-                        node_id=node.id,
+def webapp_ontology() -> Ontology:
+    # fresh instance per call so callers can mutate without leaking into other consumers
+    s = AttrSpec
+    return Ontology(
+        id=ONTOLOGY_ID,
+        node_kinds={
+            "host": NodeKind(
+                "host",
+                attrs={
+                    "hostname": s(AttrType.STRING, required=True),
+                    "os": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["linux", "windows", "container"],
                     ),
-                )
-        return errors
-
-
-@dataclass(frozen=True)
-class SecretReachableConstraint(GraphConstraint):
-    """Every secret must be reachable from a record via ``holds``.
-
-    A secret floating in the graph with no record holding it is a bug —
-    the realizer wouldn't know where to seed the value.
-    """
-
-    def validate(self, graph: WorldGraph) -> list[ValidationError]:
-        held_secrets = {edge.target for edge in graph.edges if edge.relation == "holds"}
-        errors: list[ValidationError] = []
-        for node in graph.nodes:
-            if node.type == "secret" and node.id not in held_secrets:
-                errors.append(
-                    ValidationError(
-                        f"secret {node.id!r} is not held by any record",
-                        node_id=node.id,
+                    "zone": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["dmz", "corp", "data", "management", "external"],
                     ),
-                )
-        return errors
-
-
-@dataclass(frozen=True)
-class OraclePathExistsConstraint(GraphConstraint):
-    """At least one secret must be reachable through an attack chain.
-
-    Concrete check (v1, deliberately permissive):
-        - There exists a flag-kind secret S
-        - S is held by record R in data_store D
-        - Some service V is backed_by D
-        - V exposes some endpoint E
-        - Some vulnerability affects E (or affects V directly)
-
-    This doesn't prove the chain works at runtime; it proves the graph
-    *describes* a feasible chain. Runtime feasibility is checked by the
-    admission probe.
-    """
-
-    def validate(self, graph: WorldGraph) -> list[ValidationError]:
-        flags = [
-            n
-            for n in graph.nodes
-            if n.type == "secret" and n.attrs.get("kind") == "flag"
-        ]
-        if not flags:
-            return [
-                ValidationError(
-                    "no flag-kind secret in graph; agents cannot complete a task",
+                },
+                description="a runtime host (VM / container / bare-metal)",
+            ),
+            "service": NodeKind(
+                "service",
+                attrs={
+                    "name": s(AttrType.STRING, required=True),
+                    "kind": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["web", "api", "auth", "db", "queue", "mail", "fileshare"],
+                    ),
+                    "language": s(
+                        AttrType.ENUM,
+                        enum=["python", "node", "go", "ruby", "java"],
+                        default="python",
+                    ),
+                    "exposure": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["public", "internal", "management"],
+                    ),
+                },
+                description="a running service in the realized webapp",
+            ),
+            "endpoint": NodeKind(
+                "endpoint",
+                attrs={
+                    "path": s(
+                        AttrType.STRING,
+                        required=True,
+                        description="logical path inside the application",
+                    ),
+                    "public_url": s(
+                        AttrType.STRING,
+                        required=True,
+                        description=(
+                            "agent-facing URL the realizer mounts this endpoint at; "
+                            "the realizer is a pure projection — it never invents URLs"
+                        ),
+                    ),
+                    "method": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["GET", "POST", "PUT", "DELETE", "PATCH"],
+                    ),
+                    "auth_required": s(AttrType.BOOL, default=False),
+                    "behavior_ref": s(
+                        AttrType.STRING,
+                        description="template ref the realizer renders",
+                    ),
+                },
+                description="one HTTP endpoint exposed by a service",
+            ),
+            "account": NodeKind(
+                "account",
+                attrs={
+                    "username": s(AttrType.STRING, required=True),
+                    "role": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["user", "admin", "service"],
+                    ),
+                    "active": s(AttrType.BOOL, default=True),
+                },
+                description="a user / admin / service account",
+            ),
+            "credential": NodeKind(
+                "credential",
+                attrs={
+                    "kind": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["password", "api_key", "session", "token"],
+                    ),
+                    "value_ref": s(
+                        AttrType.STRING,
+                        required=True,
+                        description="opaque ref the realizer resolves",
+                    ),
+                },
+                description="an authenticator (something the account 'has')",
+            ),
+            "secret": NodeKind(
+                "secret",
+                attrs={
+                    "kind": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["flag", "api_key", "password", "private_key"],
+                    ),
+                    "value_ref": s(
+                        AttrType.STRING,
+                        required=True,
+                        description="opaque ref the realizer resolves",
+                    ),
+                    "description": s(AttrType.STRING),
+                },
+                description="a hidden value the agent may need to discover; "
+                "always Visibility.HIDDEN at construction",
+            ),
+            "vulnerability": NodeKind(
+                "vulnerability",
+                attrs={
+                    "kind": s(
+                        AttrType.STRING,
+                        required=True,
+                        description="catalog id from cyber_webapp.vulnerabilities",
+                    ),
+                    "family": s(
+                        AttrType.ENUM,
+                        enum=[
+                            "code_web",
+                            "config_identity",
+                            "secret_exposure",
+                            "logic_flaw",
+                            "supply_chain",
+                        ],
+                    ),
+                    "params": s(
+                        AttrType.JSON,
+                        description="vuln-specific tuning",
+                    ),
+                },
+                description="an exploitable defect; always Visibility.HIDDEN at "
+                "construction",
+            ),
+            "network": NodeKind(
+                "network",
+                attrs={
+                    "name": s(AttrType.STRING, required=True),
+                    "isolation": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["bridge", "host", "isolated"],
+                    ),
+                    "zone": s(AttrType.STRING),
+                },
+                description="a network segment connecting services",
+            ),
+            "data_store": NodeKind(
+                "data_store",
+                attrs={
+                    "name": s(AttrType.STRING, required=True),
+                    "kind": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["sql", "kv", "file", "object"],
+                    ),
+                    "engine": s(
+                        AttrType.ENUM,
+                        required=True,
+                        enum=["sqlite", "postgres", "mysql", "redis", "fs", "s3"],
+                    ),
+                },
+                description="a backing data store",
+            ),
+            "record": NodeKind(
+                "record",
+                attrs={
+                    "key": s(AttrType.STRING, required=True),
+                    "fields": s(
+                        AttrType.JSON,
+                        description=(
+                            "column name -> seed value (or value_ref for secrets)"
+                        ),
+                    ),
+                },
+                description="one row / document in a data_store",
+            ),
+        },
+        edge_kinds={
+            "exposes": EdgeKind(
+                "exposes",
+                endpoints=[("service", "endpoint")],
+                description="this service serves this endpoint",
+            ),
+            "backed_by": EdgeKind(
+                "backed_by",
+                endpoints=[("service", "data_store")],
+                attrs={
+                    "mode": s(
+                        AttrType.ENUM,
+                        enum=["read", "write", "readwrite"],
+                        default="readwrite",
+                    ),
+                },
+                description="this service reads/writes this store",
+            ),
+            "contains": EdgeKind(
+                "contains",
+                endpoints=[("data_store", "record")],
+                description="this record lives in this store",
+            ),
+            "holds": EdgeKind(
+                "holds",
+                endpoints=[("record", "secret")],
+                attrs={
+                    "field": s(
+                        AttrType.STRING,
+                        description="column / attribute name the secret occupies",
+                    ),
+                },
+                description="this record holds this secret in the given field",
+            ),
+            "has_credential": EdgeKind(
+                "has_credential",
+                endpoints=[("account", "credential")],
+                description="this account authenticates with this credential",
+            ),
+            "can_access": EdgeKind(
+                "can_access",
+                endpoints=[("account", "endpoint")],
+                attrs={
+                    "auth_method": s(
+                        AttrType.STRING,
+                        description="how the account authenticates to this endpoint",
+                    ),
+                },
+                description="legitimate access — the agent's negative space",
+            ),
+            "runs_on": EdgeKind(
+                "runs_on",
+                endpoints=[("service", "host")],
+                description="this service runs on this host",
+            ),
+            "connected_to": EdgeKind(
+                "connected_to",
+                endpoints=[("service", "network")],
+                description="this service is wired to this network segment",
+            ),
+            "affects": EdgeKind(
+                "affects",
+                endpoints=[
+                    ("vulnerability", "endpoint"),
+                    ("vulnerability", "service"),
+                ],
+                attrs={
+                    "injection_site": s(
+                        AttrType.STRING,
+                        description="where the vuln is reachable",
+                    ),
+                },
+                description=(
+                    "this weakness is reachable through this endpoint / service"
                 ),
-            ]
-        # Build adjacency once.
-        holds_by_secret: dict[str, str] = {}
-        contains_by_record: dict[str, str] = {}
-        backed_by_store: dict[str, list[str]] = {}
-        exposes_by_service: dict[str, list[str]] = {}
-        vuln_targets: set[str] = set()
-        for edge in graph.edges:
-            if edge.relation == "holds":
-                holds_by_secret[edge.target] = edge.source
-            elif edge.relation == "contains":
-                contains_by_record[edge.target] = edge.source
-            elif edge.relation == "backed_by":
-                backed_by_store.setdefault(edge.target, []).append(edge.source)
-            elif edge.relation == "exposes":
-                exposes_by_service.setdefault(edge.source, []).append(edge.target)
-            elif edge.relation == "affects":
-                vuln_targets.add(edge.target)
-        errors: list[ValidationError] = []
-        for flag in flags:
-            record_id = holds_by_secret.get(flag.id)
-            if record_id is None:
-                # SecretReachable will already complain; skip duplicate
-                continue
-            store_id = contains_by_record.get(record_id)
-            if store_id is None:
-                errors.append(
-                    ValidationError(
-                        f"flag {flag.id!r}: holding record {record_id!r} not contained "
-                        f"in any data_store",
-                        node_id=flag.id,
-                    ),
-                )
-                continue
-            services = backed_by_store.get(store_id, [])
-            if not services:
-                errors.append(
-                    ValidationError(
-                        f"flag {flag.id!r}: data_store {store_id!r} has no service "
-                        f"backing it (no attack surface)",
-                        node_id=flag.id,
-                    ),
-                )
-                continue
-            chain_found = False
-            for service_id in services:
-                if service_id in vuln_targets:
-                    chain_found = True
-                    break
-                for endpoint_id in exposes_by_service.get(service_id, []):
-                    if endpoint_id in vuln_targets:
-                        chain_found = True
-                        break
-                if chain_found:
-                    break
-            if not chain_found:
-                errors.append(
-                    ValidationError(
-                        f"flag {flag.id!r}: no vulnerability affects any service or "
-                        f"endpoint in the path (no oracle chain)",
-                        node_id=flag.id,
-                    ),
-                )
-        return errors
-
-
-# ---------------------------------------------------------------------------
-# Composed schema
-# ---------------------------------------------------------------------------
-
-
-ONTOLOGY = WorldSchema(
-    node_types=NODE_TYPES,
-    edge_types=EDGE_TYPES,
-    constraints=(
-        NoOrphanNodesConstraint(),
-        SecretReachableConstraint(),
-        OraclePathExistsConstraint(),
-    ),
-)
+            ),
+            "enables": EdgeKind(
+                "enables",
+                endpoints=[("vulnerability", "vulnerability")],
+                description="a vuln chain: A enables exploitation of B",
+            ),
+            "derives": EdgeKind(
+                "derives",
+                endpoints=[("credential", "secret")],
+                description="a credential whose value comes from this secret",
+            ),
+        },
+    )

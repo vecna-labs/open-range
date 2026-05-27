@@ -11,12 +11,13 @@ license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "openrange",
+    "graphschema",
     "PyYAML>=6.0.3",
     "Jinja2>=3.1",
 ]
 
 [project.entry-points."openrange.packs"]
-"cyber.webapp" = "cyber_webapp:CyberWebappPack"
+"webapp" = "cyber_webapp:WebappPack"
 
 [project.entry-points."openrange.npcs"]
 "cyber.browsing_user" = "cyber_webapp.npcs.browsing_user:factory"
@@ -30,3 +31,4 @@ packages = ["cyber_webapp"]
 
 [tool.uv.sources]
 openrange = { workspace = true }
+graphschema = { git = "https://github.com/vecna-labs/graphschema.git", rev = "main" }

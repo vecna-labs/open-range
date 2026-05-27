@@ -1,16 +1,3 @@
-"""``cyber.admin_audit`` — periodic privileged probe.
-
-Every ``cadence_ticks`` ticks, GET the configured ``audit_path``
-(default ``/openapi.json``). Models an internal admin / monitor
-that polls a status / discovery endpoint, giving the request log a
-third party beyond the agent + browsing users.
-
-Config:
-    cadence_ticks: int = 5
-    audit_path: str = "/openapi.json"
-    timeout_seconds: float = 1.0
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping

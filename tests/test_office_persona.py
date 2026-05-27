@@ -2,21 +2,18 @@
 
 The persona is a single-shot LLM-backed NPC: each cadence tick the
 configured backend returns a JSON ``{speak, visit}`` payload; the NPC
-does the HTTP visit itself via the runtime interface and records the
-speech via ``record_action``.
+does the HTTP visit itself via the runtime interface.
 
 Two backend shapes get exercised:
 
-* ``_PermissiveBackend`` — accepts any ``tools`` argument. Stands in
-  for a flexible Strands-style backend.
-* ``_CodexLikeBackend`` — rejects non-empty ``tools``. Proves the
-  persona works against ``CodexAgentBackend``, which is the bug we
-  hit when running ``examples/codex_eval.py`` end-to-end (the prior
-  AgentNPC + ``visit_url`` tool design failed at construction).
+* ``_PermissiveBackend`` — accepts any ``tools`` argument.
+* ``_CodexLikeBackend`` — rejects non-empty ``tools``; confirms the
+  persona works against :class:`CodexAgentBackend`.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -113,16 +110,26 @@ def _record(actions: list[dict[str, Any]]) -> Callable[..., None]:
 
 
 def _interface(http_calls: list[str]) -> dict[str, Any]:
+    """Hand-built mock matching ``WebappRuntimeHandle.surface()``.
+
+    Returns every key the cyber pack's runtime surface advertises
+    (``base_url``, ``http_get``, ``http_get_json``, ``agent_root``)
+    while recording call paths into ``http_calls``.
+    """
+
     def http_get(path: object) -> bytes:
         http_calls.append(str(path))
         return b'{"ok": true, "page": "demo"}'
 
-    return {"base_url": "http://test.local", "http_get": http_get}
+    def http_get_json(path: object) -> object:
+        return json.loads(http_get(path).decode())
 
-
-# ---------------------------------------------------------------------------
-# Factory + construction
-# ---------------------------------------------------------------------------
+    return {
+        "base_url": "http://test.local",
+        "http_get": http_get,
+        "http_get_json": http_get_json,
+        "agent_root": "/tmp/fake-agent-root",
+    }
 
 
 def test_factory_constructs_with_required_name() -> None:
@@ -131,6 +138,58 @@ def test_factory_constructs_with_required_name() -> None:
     assert npc.actor_id == "Alice"
     assert npc._role == "engineer"
     assert npc.requires_llm is True
+
+
+def test_factory_appends_replication_suffix_to_actor_id() -> None:
+    """`_replication_suffix` (set by `resolve_manifest_npcs` when count > 1)
+    is appended to ``name`` so the NPC's actor_id matches the dashboard
+    row id (``f"{name}-{index+1}"``)."""
+    npc = op_factory(
+        {
+            "name": "Alice",
+            "role": "engineer",
+            "_replication_suffix": "-2",
+        },
+    )
+    assert isinstance(npc, OfficePersona)
+    assert npc.actor_id == "Alice-2"
+
+
+def test_resolve_manifest_aligns_actor_ids_with_dashboard_row_ids() -> None:
+    """For count>1 the resolved NPCs and `personas_from_manifest` rows
+    agree on ids — the bug was the NPC kept the bare name while rows
+    were suffixed."""
+    from openrange.dashboard.topology import personas_from_manifest
+    from openrange.npc import resolve_manifest_npcs
+
+    entries = (
+        {
+            "type": "cyber.office_persona",
+            "count": 2,
+            "config": {"name": "Alice", "role": "engineer"},
+        },
+    )
+    npcs = resolve_manifest_npcs(entries)
+    rows = personas_from_manifest([dict(e) for e in entries])
+    assert [n.actor_id for n in npcs] == [r["id"] for r in rows]
+    assert [n.actor_id for n in npcs] == ["Alice-1", "Alice-2"]
+
+
+def test_resolve_manifest_leaves_actor_id_bare_when_count_is_one() -> None:
+    """Single-spawn entries get no suffix."""
+    from openrange.dashboard.topology import personas_from_manifest
+    from openrange.npc import resolve_manifest_npcs
+
+    entries = (
+        {
+            "type": "cyber.office_persona",
+            "config": {"name": "Solo", "role": "ops"},
+        },
+    )
+    npcs = resolve_manifest_npcs(entries)
+    rows = personas_from_manifest([dict(e) for e in entries])
+    assert [n.actor_id for n in npcs] == ["Solo"]
+    assert [r["id"] for r in rows] == ["Solo"]
 
 
 def test_factory_promotes_model_to_strands_backend() -> None:
@@ -169,11 +228,6 @@ def test_factory_rejects_bad_config() -> None:
         op_factory({"name": "x", "seed": "high"})
 
 
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
-
-
 def test_persona_emits_presence_event_with_role_and_home_index() -> None:
     backend = _PermissiveBackend(response='{"speak": "morning", "visit": "/"}')
     npc = OfficePersona(
@@ -198,11 +252,6 @@ def test_persona_emits_presence_event_with_role_and_home_index() -> None:
     assert presence["tone"] == "dry, precise"
     assert isinstance(presence["home_index"], int)
     assert presence["home_index"] == _stable_home_index("Alice")
-
-
-# ---------------------------------------------------------------------------
-# Single-shot dispatch — works against both backend shapes.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

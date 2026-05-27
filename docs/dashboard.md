@@ -10,7 +10,7 @@ doing right now.
 The dashboard has three jobs:
 
 - show the generated world and tasks
-- show Builder lineage: manifest, pack, prompt, output, verifier result, and evolution
+- show Builder lineage: manifest, pack, prompt, output, admission verdict, and evolution
 - show episode activity
 
 For episode viewing, the event feed is the source of truth. Any visual view is
@@ -18,7 +18,7 @@ just a view of that event stream.
 
 ## Builder Review
 
-After the Builder verifies a world and its tasks, the dashboard lets you inspect
+After admission accepts a world and its tasks, the dashboard lets you inspect
 what it made before you rely on it.
 
 You should be able to inspect:
@@ -26,7 +26,8 @@ You should be able to inspect:
 - generated world state
 - generated tasks
 - entrypoints
-- verifier status
+- admission verdict (per-layer: structural, ontology, pack invariants, task
+  bindings, feasibility)
 - Builder reasoning or summary
 - pack files touched by the Builder
 
@@ -36,7 +37,7 @@ snapshot.
 
 Use this loop until the pack is stable:
 
-`build -> inspect -> prompt changes -> verify -> inspect again`
+`build -> inspect -> prompt changes -> admit -> inspect again`
 
 Every prompt and Builder result belongs in lineage.
 
@@ -44,9 +45,9 @@ While the Builder is running inside an `OpenRangeRun`, the environment-owned run
 contract attaches the dashboard artifact log as the Builder event sink. That
 writes `builder_step` rows to `dashboard.events.jsonl` and mirrors them under
 `builder.steps` in `dashboard.json`, so a dashboard can show pack loading, world
-generation, verifier generation, admission, and snapshot creation before the
-episode starts. The stream intentionally uses public summaries and does not
-include generated secret values such as the flag.
+generation, admission verdicts, and snapshot creation before the episode
+starts. The stream intentionally uses public summaries and does not include
+generated secret values.
 
 ## Controls
 
@@ -78,13 +79,13 @@ It exposes:
   `dashboard.events.jsonl` for tailing and `dashboard.json` for polling
 - optional narration over the recent event buffer
 
-The hidden verifier, private reference traces, and private builder probes stay
+Hidden world state, private reference traces, and private builder probes stay
 hidden. The dashboard can say that admission passed or failed. It must not turn
 the private oracle into an agent-visible walkthrough.
 
-The dashboard API intentionally exposes verifier ids and admission verifier
-result summaries, but not verifier source code, generated admission source code,
-or admission probe final state.
+The dashboard API intentionally exposes TaskFamily handle ids
+(`feasibility_check`, `success_check`) and admission verdict summaries, but
+not pack-internal check source code or admission probe final state.
 
 ## Lineage
 
@@ -97,7 +98,7 @@ A lineage node should show:
 - user prompt to the Builder
 - builder changes
 - generated tasks
-- verifier status
+- admission verdict
 - admitted snapshot id
 - curriculum or evolution input, if this node came from `evolve`
 
@@ -122,20 +123,22 @@ Useful flags:
 - `--snapshot-id <id>` loads a specific snapshot on reset
 - `--no-browser` starts the server without opening a browser
 
-For a live eval episode, pass `--dashboard-port`; `OpenRangeRun` starts the
-live dashboard server internally when the episode resets:
+A live eval writes dashboard artifacts to the run root (`dashboard.events.jsonl`
++ `dashboard.json`) as the episode progresses. The dashboard HTTP server is a
+separate process — start it against the run root in another shell to inspect
+the run live:
 
 ```bash
-uv run python -m examples.codex_eval --runs-dir or-runs --dashboard-port 8000
+# shell 1: run the eval
+uv run python -m examples.codex_eval --runs-dir or-runs
+
+# shell 2: open the live view against the run root
+uv run openrange dashboard --run-root or-runs/<run-id>
 ```
 
 Each eval run gets a unique subdirectory under `or-runs` by default. Use
 `--run-root <path>` only when you want to name the exact immutable run
-directory yourself. Open a saved run with:
-
-```bash
-uv run openrange dashboard --run-root or-runs/<run-id>
-```
+directory yourself.
 
 ## API Shape
 
@@ -155,5 +158,5 @@ The current dashboard backend is small:
 - `GET /api/narrate` returns narration for recent events
 - `GET /api/narrate/stream` streams narration updates
 
-The UI should stay disposable. The snapshot store, runtime, verifier outputs,
+The UI should stay disposable. The snapshot store, runtime, episode results,
 and lineage records are the durable parts.
