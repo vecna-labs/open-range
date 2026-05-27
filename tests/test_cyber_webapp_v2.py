@@ -132,8 +132,37 @@ def _build_cyber_world() -> WorldGraph:
         )
     )
 
+    g.add_node(
+        Node(
+            "svc.api",
+            "service",
+            attrs={
+                "name": "api-service",
+                "kind": "api",
+                "language": "python",
+                "exposure": "internal",
+            },
+            roles={Role.ACTOR},
+        )
+    )
+    g.add_node(
+        Node(
+            "ep.api.items",
+            "endpoint",
+            attrs={
+                "path": "/api/items",
+                "public_url": "/svc/api/api/items",
+                "method": "GET",
+                "auth_required": False,
+                "behavior_ref": "api/list",
+            },
+        )
+    )
+
     g.add_edge(Edge("e.svc-host", "runs_on", "svc.auth", "host.web"))
+    g.add_edge(Edge("e.api-host", "runs_on", "svc.api", "host.web"))
     g.add_edge(Edge("e.svc-ep", "exposes", "svc.auth", "ep.login"))
+    g.add_edge(Edge("e.api-ep", "exposes", "svc.api", "ep.api.items"))
     g.add_edge(
         Edge(
             "e.svc-store",
@@ -310,23 +339,6 @@ def test_build_feasibility_requires_exposed_endpoint() -> None:
     assert len(tasks) == 1
     verdict = WebappBuild().check_feasibility(g, tasks[0])
     assert verdict.feasible
-
-
-def test_build_success_when_smoke_passes() -> None:
-    g = _build_cyber_world()
-    build_task = WebappBuild().generate(g, {}, None)[0]
-    ok = WebappBuild().check_success(
-        g,
-        build_task,
-        final_state={"endpoint_serves_200": True},
-    )
-    assert ok.success
-    bad = WebappBuild().check_success(
-        g,
-        build_task,
-        final_state={"endpoint_serves_200": False},
-    )
-    assert not bad.success
 
 
 def test_no_orphan_nodes_passes_for_clean_world() -> None:

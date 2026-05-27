@@ -136,13 +136,15 @@ def test_repair_resamples_a_different_graph() -> None:
     assert first.graph.content_hash() != repaired.graph.content_hash()
 
 
-def test_repair_preserves_task_family_set() -> None:
-    """After a repair both families still produce tasks against the new world."""
+def test_repair_preserves_pentest_family() -> None:
+    """Repair must still produce a pentest task — that's the family the
+    infeasible report targeted. Build is conditional on world shape (api
+    service present) and may legitimately not appear in either result."""
     builder = WebappBuilder(default_prior())
     first = builder.build({"seed": 0})
     repaired = builder.repair(first, errors=[], infeasible=["webapp.pentest.0"])
-    families = {t.feasibility_check for t in repaired.tasks}
-    assert families == {"webapp.build", "webapp.pentest"}
+    repaired_families = {t.feasibility_check for t in repaired.tasks}
+    assert "webapp.pentest" in repaired_families, repaired_families
 
 
 def test_builder_falls_back_to_default_prior_when_none() -> None:

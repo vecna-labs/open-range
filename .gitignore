@@ -25,7 +25,7 @@ htmlcov/
 .uv-cache/
 .venv/
 venv/
-build/
+/build/
 dist/
 *.egg-info/
 .openrange-runs/

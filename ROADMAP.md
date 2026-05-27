@@ -39,16 +39,15 @@ parallel.
   TaskFamily. Already shipping. LLM enrichment is wired only on the
   pentest family's curriculum (`available_mutations`); task-instruction
   enrichment is unwired.
-- 🚧 **`webapp.build` is a stub grader, not a real one** — admission
-  verifies the build task is feasible in the realized world, but
-  `check_success` probes only the landing page (`/`, always 200), so
-  episodes pass regardless of what the agent did. Fix needs two
-  pieces: (a) a defined locus where agent work lands (handler source
-  in `result.json` + sandboxed exec, or `agent_root` edits the realizer
-  reloads), and (b) a per-endpoint behavioral contract the family
-  verifies. Pentest family is shaped right (graph carries the flag,
-  agent submits, check is `submitted == expected`); build needs the
-  equivalent shape. Until then, treat build episode passes as no-signal.
+- 🚧 **`webapp.build` rigorous grader — staged rollout.** Stage 1 has
+  landed: agent submits a handler source string into `result.json`;
+  `check_success` runs it through a sandboxed subprocess against a
+  held-out behavioral contract. Admission validates the contract is
+  well-posed (clean reference passes; bug-injecting mutation breaks).
+  Only the `api` service kind is wired; other kinds emit no build task.
+  Stages 2–4 expand the mutation/contract library, add curriculum
+  mutations on build, and plumb live realizer reload + an agent
+  test-runner tool so the loop is multi-turn instead of single-shot.
 - 🟢 **Kind / Kubernetes runtime backing**
   ([#189](https://github.com/vecna-labs/open-range/issues/189)) —
   unblocks real cross-service exploit chains.
@@ -128,7 +127,10 @@ Primitives every pack and harness depends on.
   ([#202](https://github.com/vecna-labs/open-range/issues/202)) —
   the pack/admission refactor replaced exec'd verifier source with
   regular Python methods on TaskFamily; revisit isolation/timeouts at
-  training scale.
+  training scale. The cyber `webapp.build` grader exec's untrusted
+  agent source as a subprocess with wall-clock + best-effort RLIMIT_CPU
+  only — no filesystem, network, or syscall isolation. Production use
+  needs firejail / bwrap / seccomp / container.
 - 🟡 **Lineage as a pool, not a chain**
   ([#203](https://github.com/vecna-labs/open-range/issues/203)) —
   multi-parent reference graph for curriculum / multi-snapshot training.
