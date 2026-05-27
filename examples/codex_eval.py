@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from openrange_pack_sdk import LLMRequest, LLMResult, Snapshot, TaskSpec
+
 import openrange as OR
 
 MANIFEST: dict[str, object] = {
@@ -149,8 +151,8 @@ def main() -> None:
 
 
 def _run_task(
-    snapshot: OR.Snapshot,
-    task: OR.TaskSpec,
+    snapshot: Snapshot,
+    task: TaskSpec,
     harness: CodexHarness,
     run: OR.OpenRangeRun,
 ) -> OR.EpisodeReport:
@@ -178,7 +180,7 @@ class CodexHarness:
     sandbox: str = "workspace-write"
     timeout: float = 300.0
 
-    def run(self, prompt: str, cwd: Path) -> OR.LLMResult:
+    def run(self, prompt: str, cwd: Path) -> LLMResult:
         config_overrides: tuple[str, ...] = ()
         if self.sandbox == "workspace-write":
             config_overrides = ("sandbox_workspace_write.network_access=true",)
@@ -189,7 +191,7 @@ class CodexHarness:
             sandbox=self.sandbox,
             timeout=self.timeout,
             config_overrides=config_overrides,
-        ).complete(OR.LLMRequest(prompt))
+        ).complete(LLMRequest(prompt))
 
 
 def _parse_args() -> argparse.Namespace:

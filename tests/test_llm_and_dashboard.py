@@ -14,7 +14,14 @@ from urllib.request import Request, urlopen
 
 import pytest
 from cyber_webapp import WebappPack
-from openrange_pack_sdk import LLMBackendError, Snapshot
+from openrange_pack_sdk import (
+    LLMBackendError,
+    LLMRequest,
+    LLMRequestError,
+    LLMResult,
+    OpenRangeError,
+    Snapshot,
+)
 
 import openrange as OR
 from openrange.core.admit import admit
@@ -136,13 +143,13 @@ def wait_for_dashboard_action(
 
 
 def test_llm_request_validation_and_json_parser() -> None:
-    request = OR.LLMRequest("hello", system="system", json_schema={"type": "object"})
+    request = LLMRequest("hello", system="system", json_schema={"type": "object"})
     assert request.as_prompt() == "system\n\nhello"
-    assert OR.LLMRequest("hello").as_prompt() == "hello"
+    assert LLMRequest("hello").as_prompt() == "hello"
     assert parse_json_object('{"ok": true}') == {"ok": True}
 
-    with pytest.raises(OR.LLMRequestError, match="JSON serializable"):
-        OR.LLMRequest("bad", json_schema={"x": object()})
+    with pytest.raises(LLMRequestError, match="JSON serializable"):
+        LLMRequest("bad", json_schema={"x": object()})
     with pytest.raises(LLMBackendError, match="invalid JSON"):
         parse_json_object("{")
     with pytest.raises(LLMBackendError, match="not an object"):
@@ -160,10 +167,10 @@ def test_codex_backend_runs_local_command_without_schema(tmp_path: Path) -> None
         """,
     )
     result = OR.CodexBackend(command=command, model="local", timeout=5).complete(
-        OR.LLMRequest("hello", system="system"),
+        LLMRequest("hello", system="system"),
     )
 
-    assert result == OR.LLMResult("SYSTEM\n\nHELLO")
+    assert result == LLMResult("SYSTEM\n\nHELLO")
 
 
 def test_codex_backend_reads_schema_output_from_local_command(
@@ -188,7 +195,7 @@ def test_codex_backend_reads_schema_output_from_local_command(
         """,
     )
     result = OR.CodexBackend(command=command, model="local", timeout=5).complete(
-        OR.LLMRequest("return json", json_schema={"type": "object"}),
+        LLMRequest("return json", json_schema={"type": "object"}),
     )
 
     assert result.parsed_json == {"schema": "object", "prompt": "return json"}
@@ -224,15 +231,15 @@ def test_codex_backend_reports_process_failures(tmp_path: Path) -> None:
 
     with pytest.raises(LLMBackendError, match="boom") as stderr_error:
         OR.CodexBackend(command=stderr_command, model="local", timeout=5).complete(
-            OR.LLMRequest("hello"),
+            LLMRequest("hello"),
         )
     with pytest.raises(LLMBackendError, match="bad stdout"):
         OR.CodexBackend(command=stdout_command, model="local", timeout=5).complete(
-            OR.LLMRequest("hello"),
+            LLMRequest("hello"),
         )
     with pytest.raises(LLMBackendError, match="no output"):
         OR.CodexBackend(command=silent_command, model="local", timeout=5).complete(
-            OR.LLMRequest("hello"),
+            LLMRequest("hello"),
         )
 
     assert stderr_error.value.returncode == 7
@@ -251,7 +258,7 @@ def test_codex_backend_requires_schema_output_file(tmp_path: Path) -> None:
 
     with pytest.raises(LLMBackendError, match="did not write"):
         OR.CodexBackend(command=command, model="local", timeout=5).complete(
-            OR.LLMRequest("return json", json_schema={"type": "object"}),
+            LLMRequest("return json", json_schema={"type": "object"}),
         )
 
 
@@ -849,7 +856,7 @@ def test_restore_failure_does_not_leak_handle(tmp_path: Path) -> None:
             state={"agent_root_snapshot": 42},
         )
         before = set(svc._episodes)
-        with pytest.raises(OR.OpenRangeError):
+        with pytest.raises(OpenRangeError):
             svc.restore(broken)
         # No new handle stuck in _episodes; the originating handle still lives.
         assert set(svc._episodes) == before

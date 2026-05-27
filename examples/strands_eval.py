@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from openrange_pack_sdk import LLMResult, OpenRangeError, Snapshot, TaskSpec
+
 import openrange as OR
 
 MANIFEST: dict[str, object] = {
@@ -30,10 +32,10 @@ DEFAULT_RUN_ROOT = Path("or-runs/strands-eval")
 
 
 class EpisodeHarness(Protocol):
-    def run(self, instruction: str, cwd: Path) -> OR.LLMResult: ...
+    def run(self, instruction: str, cwd: Path) -> LLMResult: ...
 
 
-class StrandsDependencyError(OR.OpenRangeError):
+class StrandsDependencyError(OpenRangeError):
     """Raised when optional Strands dependencies are unavailable."""
 
 
@@ -43,10 +45,10 @@ class StrandsAgentHarness:
 
     model: str | None = None
 
-    def run(self, instruction: str, cwd: Path) -> OR.LLMResult:
+    def run(self, instruction: str, cwd: Path) -> LLMResult:
         with working_directory(cwd):
             result = self.agent()(instruction)
-        return OR.LLMResult(str(getattr(result, "message", result)))
+        return LLMResult(str(getattr(result, "message", result)))
 
     def agent(self) -> Callable[[str], object]:
         try:
@@ -63,8 +65,8 @@ class StrandsAgentHarness:
 
 
 def run_task(
-    snapshot: OR.Snapshot,
-    task: OR.TaskSpec,
+    snapshot: Snapshot,
+    task: TaskSpec,
     harness: EpisodeHarness,
     run: OR.OpenRangeRun,
 ) -> dict[str, object]:

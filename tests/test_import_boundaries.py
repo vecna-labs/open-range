@@ -3,6 +3,8 @@
 1. ``packs/`` MUST NOT import from ``openrange`` (except ``openrange_pack_sdk``).
 2. ``src/openrange/`` MUST NOT import from any pack.
 3. ``packages/openrange-pack-sdk/`` MUST NOT import from any pack.
+4. ``openrange.__init__`` MUST NOT re-export ``openrange_pack_sdk`` symbols
+   (no migration shim — callers import from the SDK directly).
 """
 
 from __future__ import annotations
@@ -71,5 +73,12 @@ def test_import_boundaries() -> None:
         for pack in pack_modules:
             for leak in sorted(_imports_under(imports, pack)):
                 violations.append(f"sdk→pack  {file.relative_to(REPO_ROOT)} → {leak}")
+
+    openrange_init = REPO_ROOT / "src" / "openrange" / "__init__.py"
+    init_imports = _imports_in(openrange_init)
+    for leak in sorted(_imports_under(init_imports, "openrange_pack_sdk")):
+        violations.append(
+            f"openrange-reexports-sdk  src/openrange/__init__.py → {leak}"
+        )
 
     assert not violations, "import-boundary violations:\n  " + "\n  ".join(violations)
