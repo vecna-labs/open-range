@@ -39,7 +39,7 @@ def _sample_graph(seed: int = 0) -> WorldGraph:
 
 
 def test_realize_graph_emits_app_and_seed_files() -> None:
-    """The new codegen returns a plain mapping containing both required files."""
+    """The codegen returns a plain mapping containing both required files."""
     files = _realize_graph(_sample_graph())
     assert APP_FILE_NAME in files
     assert SEED_FILE_NAME in files

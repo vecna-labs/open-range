@@ -277,7 +277,6 @@ class NPC(ABC):
 
     @property
     def actor_id(self) -> str:
-        # Instance-hash suffix disambiguates when count > 1.
         explicit = getattr(self, "_actor_id", None)
         if isinstance(explicit, str) and explicit:
             return explicit

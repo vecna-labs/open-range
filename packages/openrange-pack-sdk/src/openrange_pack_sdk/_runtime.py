@@ -177,7 +177,6 @@ class _FilesystemRuntime(ABC):
         self._checkpoint_dirs.clear()
 
     def _read_result(self) -> Mapping[str, Any]:
-        # Caller (`collect`) already gated on agent_root.
         assert self._agent_root is not None
         result_path = self._agent_root / self.RESULT_FILE
         if not result_path.exists():
@@ -349,7 +348,6 @@ class SubprocessRuntime(_FilesystemRuntime):
 
     def surface(self) -> Mapping[str, Any]:
         base = super().surface()
-        # base raised if agent_root was None; safe to merge startup_info.
         return {**base, **self._startup_info, **self.surface_extras()}
 
     def _teardown_subprocess(self) -> None:

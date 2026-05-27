@@ -47,7 +47,6 @@ class WebappRuntime(SubprocessRuntime):
                 "only Backing.PROCESS is wired",
             )
         super().__init__(graph)
-        self._backing = backing
         # Render eagerly so a graph that breaks codegen fails at construction
         # (admission can re-raise) rather than inside an episode.
         self._files: dict[str, str] = _realize_graph(graph)

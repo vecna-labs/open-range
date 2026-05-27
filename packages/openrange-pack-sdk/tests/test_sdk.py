@@ -865,15 +865,6 @@ class TestMakeMutation:
         assert mut.note == ""
 
 
-class _LongRunningRuntime:
-    """SubprocessRuntime subclass for the test suite.
-
-    Spawns ``python -c <SCRIPT>`` that prints one JSON startup line then
-    sleeps forever. Tests drive lifecycle methods + override hooks against
-    this real subprocess (no mocks).
-    """
-
-
 _SUBPROCESS_SCRIPT = (
     "import json, os, sys, time\n"
     "payload = {'ready': True, 'pid': os.getpid()}\n"
@@ -882,10 +873,6 @@ _SUBPROCESS_SCRIPT = (
     "while True:\n"
     "    time.sleep(0.1)\n"
 )
-
-
-class _MinimalSubprocessRuntime:
-    pass
 
 
 def _make_simple_subprocess_runtime() -> Any:

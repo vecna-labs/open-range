@@ -23,9 +23,7 @@ if TYPE_CHECKING:
 
 
 class WebappBuild(TaskFamily):
-    """Stub grader — `check_success` reads `endpoint_serves_200` which
-    is set from a probe of `/` (always 200), so passes do not reflect
-    agent work. See ROADMAP / cyber `webapp.build`."""
+    """`webapp.build` TaskFamily — implement a service endpoint that serves a 200."""
 
     id = "webapp.build"
     pack_id = "webapp"
