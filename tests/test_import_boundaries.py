@@ -1,9 +1,11 @@
 """Repo-wide import-boundary invariants:
 
-1. ``packs/`` MUST NOT import from ``openrange`` (except ``openrange_pack_sdk``).
+1. ``packs/`` MUST NOT import from ``openrange``.
 2. ``src/openrange/`` MUST NOT import from any pack.
 3. ``packages/openrange-pack-sdk/`` MUST NOT import from any pack.
-4. ``openrange.__init__`` MUST NOT re-export ``openrange_pack_sdk`` symbols
+4. ``packages/openrange-pack-sdk/`` MUST NOT import from ``openrange``
+   (the SDK is contract-only, zero runtime deps beyond ``graphschema``).
+5. ``openrange.__init__`` MUST NOT re-export ``openrange_pack_sdk`` symbols
    (no migration shim — callers import from the SDK directly).
 """
 
@@ -32,12 +34,13 @@ def _py_files(root: Path) -> list[Path]:
 
 
 def _pack_module_names() -> set[str]:
+    # The pack convention is `packs/<name>/<name>/__init__.py` — the workspace
+    # folder and the import package share a name. Enforce the convention so a
+    # stray `packs/<name>/tests/__init__.py` doesn't pollute the pack set.
     return {
-        sub.name
+        pack_dir.name
         for pack_dir in (REPO_ROOT / "packs").iterdir()
-        if pack_dir.is_dir()
-        for sub in pack_dir.iterdir()
-        if sub.is_dir() and (sub / "__init__.py").exists()
+        if pack_dir.is_dir() and (pack_dir / pack_dir.name / "__init__.py").exists()
     }
 
 
@@ -49,17 +52,17 @@ def test_import_boundaries() -> None:
     pack_modules = _pack_module_names()
     assert pack_modules, "expected at least one pack module under packs/"
 
+    sdk_src = REPO_ROOT / "packages" / "openrange-pack-sdk" / "src"
+    openrange_src = REPO_ROOT / "src" / "openrange"
+    openrange_init = openrange_src / "__init__.py"
+
     violations: list[str] = []
 
     for file in _py_files(REPO_ROOT / "packs"):
-        imports = _imports_in(file)
-        leaks = _imports_under(imports, "openrange") - _imports_under(
-            imports, "openrange_pack_sdk"
-        )
-        for leak in sorted(leaks):
+        for leak in sorted(_imports_under(_imports_in(file), "openrange")):
             violations.append(f"pack→openrange  {file.relative_to(REPO_ROOT)} → {leak}")
 
-    for file in _py_files(REPO_ROOT / "src" / "openrange"):
+    for file in _py_files(openrange_src):
         imports = _imports_in(file)
         for pack in pack_modules:
             for leak in sorted(_imports_under(imports, pack)):
@@ -67,14 +70,14 @@ def test_import_boundaries() -> None:
                     f"openrange→pack  {file.relative_to(REPO_ROOT)} → {leak}"
                 )
 
-    sdk_src = REPO_ROOT / "packages" / "openrange-pack-sdk" / "src"
     for file in _py_files(sdk_src):
         imports = _imports_in(file)
         for pack in pack_modules:
             for leak in sorted(_imports_under(imports, pack)):
                 violations.append(f"sdk→pack  {file.relative_to(REPO_ROOT)} → {leak}")
+        for leak in sorted(_imports_under(imports, "openrange")):
+            violations.append(f"sdk→openrange  {file.relative_to(REPO_ROOT)} → {leak}")
 
-    openrange_init = REPO_ROOT / "src" / "openrange" / "__init__.py"
     init_imports = _imports_in(openrange_init)
     for leak in sorted(_imports_under(init_imports, "openrange_pack_sdk")):
         violations.append(

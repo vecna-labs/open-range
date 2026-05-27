@@ -14,7 +14,8 @@ from typing import Protocol, cast
 
 from openrange_pack_sdk import LLMResult, OpenRangeError, Snapshot, TaskSpec
 
-import openrange as OR
+from openrange.core.episode import AgentTurn
+from openrange.runtime import OpenRangeRun, RunConfig
 
 MANIFEST: dict[str, object] = {
     "world": {"goal": "find the admin flag in a vulnerable webapp"},
@@ -68,13 +69,13 @@ def run_task(
     snapshot: Snapshot,
     task: TaskSpec,
     harness: EpisodeHarness,
-    run: OR.OpenRangeRun,
+    run: OpenRangeRun,
 ) -> dict[str, object]:
     svc = run.episode_service(snapshot)
     handle = svc.start_episode(snapshot, task.id)
     try:
         agent_result = harness.run(task.instruction, svc.agent_root(handle))
-        svc.record_turn(handle, OR.AgentTurn(message=agent_result.text))
+        svc.record_turn(handle, AgentTurn(message=agent_result.text))
         episode_report = svc.stop_episode(handle)
     finally:
         svc.close()
@@ -90,8 +91,8 @@ def main() -> None:
     parser.add_argument("--no-dashboard", action="store_true")
     args = parser.parse_args()
 
-    run = OR.OpenRangeRun(
-        OR.RunConfig(
+    run = OpenRangeRun(
+        RunConfig(
             args.run_root,
             dashboard=not args.no_dashboard,
             dashboard_host=args.dashboard_host,

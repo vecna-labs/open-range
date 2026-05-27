@@ -23,8 +23,14 @@ from openrange_pack_sdk import (
     Snapshot,
 )
 
-import openrange as OR
+from openrange.core import ActorTurn
 from openrange.core.admit import admit
+from openrange.core.episode import (
+    EpisodeCheckpoint,
+    EpisodeError,
+    EpisodeHandle,
+    EpisodeService,
+)
 from openrange.dashboard import (
     DashboardArtifactLog,
     DashboardEvent,
@@ -36,7 +42,8 @@ from openrange.dashboard import (
 from openrange.dashboard import (
     read_dashboard_events as read_dashboard_artifact_events,
 )
-from openrange.llm import parse_json_object, run_codex
+from openrange.llm import CodexBackend, parse_json_object, run_codex
+from openrange.runtime import OpenRangeRun, RunConfig
 
 MANIFEST = {
     "world": {"goal": "find the admin flag", "title": "Ops Portal"},
@@ -166,7 +173,7 @@ def test_codex_backend_runs_local_command_without_schema(tmp_path: Path) -> None
         print(sys.stdin.read().strip().upper())
         """,
     )
-    result = OR.CodexBackend(command=command, model="local", timeout=5).complete(
+    result = CodexBackend(command=command, model="local", timeout=5).complete(
         LLMRequest("hello", system="system"),
     )
 
@@ -194,7 +201,7 @@ def test_codex_backend_reads_schema_output_from_local_command(
         print("ignored stdout")
         """,
     )
-    result = OR.CodexBackend(command=command, model="local", timeout=5).complete(
+    result = CodexBackend(command=command, model="local", timeout=5).complete(
         LLMRequest("return json", json_schema={"type": "object"}),
     )
 
@@ -230,15 +237,15 @@ def test_codex_backend_reports_process_failures(tmp_path: Path) -> None:
     )
 
     with pytest.raises(LLMBackendError, match="boom") as stderr_error:
-        OR.CodexBackend(command=stderr_command, model="local", timeout=5).complete(
+        CodexBackend(command=stderr_command, model="local", timeout=5).complete(
             LLMRequest("hello"),
         )
     with pytest.raises(LLMBackendError, match="bad stdout"):
-        OR.CodexBackend(command=stdout_command, model="local", timeout=5).complete(
+        CodexBackend(command=stdout_command, model="local", timeout=5).complete(
             LLMRequest("hello"),
         )
     with pytest.raises(LLMBackendError, match="no output"):
-        OR.CodexBackend(command=silent_command, model="local", timeout=5).complete(
+        CodexBackend(command=silent_command, model="local", timeout=5).complete(
             LLMRequest("hello"),
         )
 
@@ -257,7 +264,7 @@ def test_codex_backend_requires_schema_output_file(tmp_path: Path) -> None:
     )
 
     with pytest.raises(LLMBackendError, match="did not write"):
-        OR.CodexBackend(command=command, model="local", timeout=5).complete(
+        CodexBackend(command=command, model="local", timeout=5).complete(
             LLMRequest("return json", json_schema={"type": "object"}),
         )
 
@@ -639,7 +646,7 @@ def test_dashboard_view_can_open_persisted_run_artifacts(
 def test_dashboard_records_actor_turns_from_env_actors(tmp_path: Path) -> None:
     snapshot = _admit()
     view = DashboardView(snapshot)
-    agent_turn = OR.ActorTurn(
+    agent_turn = ActorTurn(
         task_id="find_admin_flag",
         actor_id="agent",
         actor_kind="agent",
@@ -649,14 +656,14 @@ def test_dashboard_records_actor_turns_from_env_actors(tmp_path: Path) -> None:
         state={"result": {}},
         metadata={"entrypoint": "http"},
     )
-    npc_turn = OR.ActorTurn(
+    npc_turn = ActorTurn(
         task_id="find_admin_flag",
         actor_id="mentor",
         actor_kind="npc",
         target="agent",
         action={"say": "inspect public hints"},
     )
-    system_turn = OR.ActorTurn(
+    system_turn = ActorTurn(
         task_id="audit",
         actor_id="clock",
         actor_kind="system",
@@ -729,7 +736,7 @@ def test_dashboard_records_actor_turns_from_env_actors(tmp_path: Path) -> None:
 def test_openrange_run_can_disable_dashboard_artifacts(tmp_path: Path) -> None:
     """``dashboard=False`` keeps the run root free of dashboard artifacts."""
     run_root = tmp_path / "run"
-    run = OR.OpenRangeRun(OR.RunConfig(run_root, dashboard=False))
+    run = OpenRangeRun(RunConfig(run_root, dashboard=False))
     snapshot = run.build(MANIFEST)
     task = snapshot.tasks[0]
     svc = run.episode_service(snapshot)
@@ -749,7 +756,7 @@ def test_openrange_run_can_disable_dashboard_artifacts(tmp_path: Path) -> None:
 
 def test_run_config_starts_live_dashboard_internally(tmp_path: Path) -> None:
     run_root = tmp_path / "run"
-    run = OR.OpenRangeRun(OR.RunConfig(run_root, dashboard_port=0))
+    run = OpenRangeRun(RunConfig(run_root, dashboard_port=0))
     snapshot = run.build(MANIFEST)
     task = snapshot.tasks[0]
     svc = run.episode_service(snapshot)
@@ -784,7 +791,7 @@ def test_episode_each_start_gives_fresh_roots(tmp_path: Path) -> None:
     # ``EpisodeService`` now takes the Pack as the first positional arg
     # (resolved design Q1 — one service per Pack) so a service can
     # never realize a snapshot built by a different pack.
-    svc = OR.EpisodeService(WebappPack(), run_root, dashboard=dashboard)
+    svc = EpisodeService(WebappPack(), run_root, dashboard=dashboard)
     first = svc.start_episode(snapshot, task.id)
     first_root = svc.agent_root(first)
     marker = first_root / "old.txt"
@@ -805,10 +812,10 @@ def test_runtime_error_and_reader_paths(tmp_path: Path) -> None:
     """``EpisodeService.stop_episode`` raises on an unknown episode handle."""
     snapshot = _admit()
     task = snapshot.tasks[0]
-    svc = OR.EpisodeService(WebappPack(), tmp_path / "episode")
+    svc = EpisodeService(WebappPack(), tmp_path / "episode")
 
-    bogus_handle = OR.EpisodeHandle("missing", snapshot.snapshot_id, task.id)
-    with pytest.raises(OR.EpisodeError, match="unknown episode"):
+    bogus_handle = EpisodeHandle("missing", snapshot.snapshot_id, task.id)
+    with pytest.raises(EpisodeError, match="unknown episode"):
         svc.stop_episode(bogus_handle)
 
 
@@ -818,9 +825,9 @@ def test_stop_episode_evicts_running_entry_but_keeps_report(tmp_path: Path) -> N
     ``check_episode`` (and a re-``stop_episode`` call)."""
     snapshot = _admit()
     task = snapshot.tasks[0]
-    svc = OR.EpisodeService(WebappPack(), tmp_path / "episode")
+    svc = EpisodeService(WebappPack(), tmp_path / "episode")
     try:
-        handles: list[OR.EpisodeHandle] = []
+        handles: list[EpisodeHandle] = []
         for _ in range(3):
             handle = svc.start_episode(snapshot, task.id)
             svc.stop_episode(handle)
@@ -843,12 +850,12 @@ def test_restore_failure_does_not_leak_handle(tmp_path: Path) -> None:
     subprocess + dict entry leaked on every retry."""
     snapshot = _admit()
     task = snapshot.tasks[0]
-    svc = OR.EpisodeService(WebappPack(), tmp_path / "episode")
+    svc = EpisodeService(WebappPack(), tmp_path / "episode")
     try:
         handle = svc.start_episode(snapshot, task.id)
         ckpt = svc.checkpoint(handle)
         # A payload missing required keys forces WebappRuntimeError.
-        broken = OR.EpisodeCheckpoint(
+        broken = EpisodeCheckpoint(
             id=ckpt.id,
             episode_id=ckpt.episode_id,
             snapshot_id=ckpt.snapshot_id,

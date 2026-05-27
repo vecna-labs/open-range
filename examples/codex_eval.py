@@ -18,7 +18,11 @@ from pathlib import Path
 
 from openrange_pack_sdk import LLMRequest, LLMResult, Snapshot, TaskSpec
 
-import openrange as OR
+from openrange.agent_backend import CodexAgentBackend
+from openrange.core import PACKS, auto_evolve
+from openrange.core.episode import AgentTurn, EpisodeReport
+from openrange.llm import CODEX_DEFAULT_MODEL, CodexBackend
+from openrange.runtime import EpisodeRuntimeError, OpenRangeRun, RunConfig
 
 MANIFEST: dict[str, object] = {
     "world": {"goal": "find the admin flag in a vulnerable webapp"},
@@ -81,21 +85,21 @@ MANIFEST: dict[str, object] = {
 def main() -> None:
     args = _parse_args()
 
-    pack = OR.PACKS.resolve(_pack_id(MANIFEST))
+    pack = PACKS.resolve(_pack_id(MANIFEST))
 
     npc_backend = (
         None
         if args.no_npc_llm
-        else OR.CodexAgentBackend(
-            backend=OR.CodexBackend(
+        else CodexAgentBackend(
+            backend=CodexBackend(
                 command=args.codex_command,
                 model=args.model,
                 timeout=args.npc_timeout,
             ),
         )
     )
-    run = OR.OpenRangeRun(
-        OR.RunConfig(
+    run = OpenRangeRun(
+        RunConfig(
             _resolve_run_root(args),
             dashboard=not args.no_dashboard,
             dashboard_host=args.dashboard_host,
@@ -117,7 +121,7 @@ def main() -> None:
         sandbox=args.agent_sandbox,
         timeout=args.agent_timeout,
     )
-    curriculum_llm = OR.CodexBackend(
+    curriculum_llm = CodexBackend(
         command=args.codex_command,
         model=args.model,
         timeout=args.builder_timeout,
@@ -132,7 +136,7 @@ def main() -> None:
                 "report": report.as_dict(),
             }
         )
-        evolved = OR.auto_evolve(snapshot, report, pack=pack, llm=curriculum_llm)
+        evolved = auto_evolve(snapshot, report, pack=pack, llm=curriculum_llm)
         if evolved is None:
             break
         snapshot = evolved
@@ -154,13 +158,13 @@ def _run_task(
     snapshot: Snapshot,
     task: TaskSpec,
     harness: CodexHarness,
-    run: OR.OpenRangeRun,
-) -> OR.EpisodeReport:
+    run: OpenRangeRun,
+) -> EpisodeReport:
     svc = run.episode_service(snapshot)
     handle = svc.start_episode(snapshot, task.id)
     try:
         result = harness.run(task.instruction, svc.agent_root(handle))
-        svc.record_turn(handle, OR.AgentTurn(message=result.text))
+        svc.record_turn(handle, AgentTurn(message=result.text))
         return svc.stop_episode(handle)
     finally:
         svc.close()
@@ -176,7 +180,7 @@ class CodexHarness:
     """
 
     command: str | Path = "codex"
-    model: str = OR.CODEX_DEFAULT_MODEL
+    model: str = CODEX_DEFAULT_MODEL
     sandbox: str = "workspace-write"
     timeout: float = 300.0
 
@@ -184,7 +188,7 @@ class CodexHarness:
         config_overrides: tuple[str, ...] = ()
         if self.sandbox == "workspace-write":
             config_overrides = ("sandbox_workspace_write.network_access=true",)
-        return OR.CodexBackend(
+        return CodexBackend(
             command=self.command,
             model=self.model,
             cwd=cwd,
@@ -205,7 +209,7 @@ def _parse_args() -> argparse.Namespace:
         help="Number of episodes; auto_evolve runs between each (default 2).",
     )
     parser.add_argument("--codex-command", type=Path, default=Path("codex"))
-    parser.add_argument("--model", default=OR.CODEX_DEFAULT_MODEL)
+    parser.add_argument("--model", default=CODEX_DEFAULT_MODEL)
     parser.add_argument(
         "--agent-sandbox",
         "--codex-sandbox",
@@ -234,7 +238,7 @@ def _parse_args() -> argparse.Namespace:
 def _resolve_run_root(args: argparse.Namespace) -> Path:
     if args.run_root is not None:
         if args.run_root.exists() and any(args.run_root.iterdir()):
-            raise OR.EpisodeRuntimeError(
+            raise EpisodeRuntimeError(
                 f"run root already exists and is not empty: {args.run_root}",
             )
         args.run_root.mkdir(parents=True, exist_ok=True)
@@ -267,7 +271,7 @@ def _pack_id(manifest: Mapping[str, object]) -> str:
             return candidate
     elif isinstance(pack_field, str) and pack_field:
         return pack_field
-    raise OR.EpisodeRuntimeError(
+    raise EpisodeRuntimeError(
         "manifest must declare a pack via 'pack.id' or 'pack' (string)",
     )
 
