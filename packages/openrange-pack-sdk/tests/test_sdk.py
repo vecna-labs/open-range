@@ -30,6 +30,7 @@ from openrange_pack_sdk import (
     Pack,
     PackPrior,
     RuntimeHandle,
+    Snapshot,
     TaskFamily,
     TaskSpec,
 )
@@ -182,12 +183,14 @@ class TestTaskFamilyDefaults:
     def test_available_mutations_default_returns_empty(self) -> None:
         family = _NoopFamily()
         graph = _empty_graph()
-        snap_like = type(
-            "FakeSnap",
-            (),
-            {"graph": graph, "tasks": (), "lineage": {}, "history": ()},
-        )()
-        assert family.available_mutations(snap_like, ()) == ()
+        snap = Snapshot(
+            snapshot_id="",
+            ontology_id=graph.ontology,
+            graph=graph,
+            tasks=(),
+            lineage={},
+        )
+        assert family.available_mutations(snap, ()) == ()
 
 
 class TestPackTaskFamilyLookup:
@@ -243,13 +246,16 @@ class TestBuilderDefaults:
 
         builder = _NoopBuilder()
         patch = GraphPatch()
-        snap_like = type(
-            "FakeSnap",
-            (),
-            {"graph": _empty_graph(), "tasks": (), "lineage": {}, "history": ()},
-        )()
+        graph = _empty_graph()
+        snap = Snapshot(
+            snapshot_id="",
+            ontology_id=graph.ontology,
+            graph=graph,
+            tasks=(),
+            lineage={},
+        )
         mut = Mutation(patch=patch, direction="harden", relevance=1.0, family="test")
-        out = builder.evolve(snap_like, mut)
+        out = builder.evolve(snap, mut)
         assert out is patch
 
 

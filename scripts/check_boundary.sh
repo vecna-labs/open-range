@@ -152,18 +152,6 @@ done < <(
     | sort -u
 )
 
-# --- Pack-isolation scan: packs/ MUST NOT import from openrange. -----
-#
-# A pack lives in its own folder (and may be published as a third-party
-# package). It depends on ``openrange-pack-sdk`` (the contract layer) and
-# ``graphschema`` — never on the openrange runtime. If a pack needs a
-# concrete LLM backend or agent backend, the harness/runtime supplies it
-# via context/RunConfig — never imported by pack code.
-#
-# No exemption. If you have a genuine reason to need a concrete openrange
-# class inside a pack, lift the abstraction into the SDK or carry the
-# concrete class in a separate package the pack depends on.
-
 while IFS= read -r match; do
   violations=$((violations + 1))
   echo "boundary: pack-imports-openrange $match" >&2

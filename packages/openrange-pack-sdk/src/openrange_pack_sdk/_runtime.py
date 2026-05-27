@@ -41,7 +41,8 @@ from openrange_pack_sdk._helpers import write_tree
 class _FilesystemRuntime(ABC):
     """Shared lifecycle base for filesystem-backed RuntimeHandles.
 
-    Owns the tempdir trio (``env_root``, ``agent_root``, ``pack_root``),
+    Owns the tempdir trio (``env_root``, ``agent_root``, ``pack_root``;
+    each ``None`` before the first ``reset()`` and after ``stop()``),
     file-snapshot ``checkpoint`` / ``restore`` of the agent's workspace,
     ``terminal()`` via ``result.json``, and the default ``collect()``
     shape. Packs subclass one of the public siblings, not this directly.
@@ -58,18 +59,14 @@ class _FilesystemRuntime(ABC):
 
     @property
     def env_root(self) -> Path | None:
-        """The scratch directory for this episode; ``None`` before ``reset()``."""
         return self._env_root
 
     @property
     def agent_root(self) -> Path | None:
-        """Where the agent writes its artifacts (incl. ``result.json``).
-        ``None`` before ``reset()``."""
         return self._agent_root
 
     @property
     def pack_root(self) -> Path | None:
-        """Where ``prepare_env_files`` is materialized. ``None`` before ``reset()``."""
         return self._pack_root
 
     @abstractmethod
