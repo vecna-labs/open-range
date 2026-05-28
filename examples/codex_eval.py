@@ -173,10 +173,8 @@ def _run_task(
             result = harness.run(task.instruction, svc.agent_root(handle))
             svc.record_turn(handle, AgentTurn(message=result.text))
         except LLMBackendError as exc:
-            # A backend failure (timeout, unavailable model, rate limit) is
-            # a failed episode, not a reason to abort a multi-step run. The
-            # agent wrote no result.json, so stop_episode grades it a fail;
-            # surface the cause so it can't be mistaken for an agent miss.
+            # A failed call is a failed episode, not a reason to abort the
+            # multi-step run; print it so it isn't read as an agent miss.
             print(f"agent backend failed on {task.id}: {exc}", flush=True)
             svc.record_turn(handle, AgentTurn(message=f"backend error: {exc}"))
         return svc.stop_episode(handle)

@@ -142,17 +142,13 @@ def _evolve_snapshot(
         dict(manifest_in) if isinstance(manifest_in, dict) else {}
     )
 
-    # Regenerate tasks from the evolved graph. A mutation that changes a
-    # task's shape (e.g. the build family's difficulty level) must surface
-    # in the agent-facing instruction, not just the graph — reusing the
-    # parent's tasks would leave the instruction stale while the grader
-    # reads the evolved graph, an unfair, silently-wrong task.
+    # Regenerate tasks from the evolved graph — a mutation that changes a
+    # task's shape (e.g. build's difficulty level) has to reach the agent's
+    # instruction, not just the graph.
     regenerated: list[TaskSpec] = []
     for family in pack.task_families():
         regenerated.extend(family.generate(evolved_graph, base_manifest, None))
 
-    # Wrap the pack so admission sees the pre-evolved graph + tasks
-    # while ontology / invariants / families flow through unchanged.
     wrapped = _PreBuiltPack(pack, evolved_graph, regenerated)
     evolved_manifest = {
         **base_manifest,
