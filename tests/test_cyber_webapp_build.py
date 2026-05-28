@@ -12,6 +12,7 @@ from cyber_webapp import WebappPack
 from cyber_webapp.families.build import (
     _KIND_GENERATORS,
     KindGenerators,
+    KindSpec,
     WebappBuild,
 )
 from cyber_webapp.families.build.contracts import (
@@ -588,10 +589,10 @@ class TestPickTarget:
     ) -> None:
         target = family._pick_target(_api_world())
         assert target is not None
-        endpoint, service, kind = target
-        assert endpoint.id == "ep_a"
-        assert service.id == "svc_api"
-        assert kind == "api"
+        assert target.endpoint.id == "ep_a"
+        assert target.service.id == "svc_api"
+        assert target.kind == "api"
+        assert target.level == 1
 
     def test_exposes_edge_to_missing_or_non_endpoint_is_skipped(
         self,
@@ -721,7 +722,9 @@ class TestAdmissionValidityViaInjection:
             return "def handle(q, s): return 500, {}, b''"
 
         generators: KindGenerators = {
-            "api": (broken_reference, self._api_contract, (api_wrong_field_name,), 1),
+            "api": KindSpec(
+                broken_reference, self._api_contract, (api_wrong_field_name,), 1
+            ),
         }
         family = WebappBuild(generators=generators)
         verdict = family.check_feasibility(_api_world(), _api_task())
@@ -730,7 +733,7 @@ class TestAdmissionValidityViaInjection:
 
     def test_feasibility_rejects_when_no_mutations_registered(self) -> None:
         generators: KindGenerators = {
-            "api": (self._api_reference, self._api_contract, (), 1),
+            "api": KindSpec(self._api_reference, self._api_contract, (), 1),
         }
         family = WebappBuild(generators=generators)
         verdict = family.check_feasibility(_api_world(), _api_task())
@@ -742,7 +745,7 @@ class TestAdmissionValidityViaInjection:
             return source
 
         generators: KindGenerators = {
-            "api": (
+            "api": KindSpec(
                 self._api_reference,
                 self._api_contract,
                 (api_wrong_field_name, identity_mutation),

@@ -21,6 +21,7 @@ generator set (custom contracts, test fixtures), construct
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from graphschema import GraphPatch, Node, WorldGraph
@@ -50,17 +51,33 @@ if TYPE_CHECKING:
 ContractFn = Callable[[int], tuple[ContractCase, ...]]
 ReferenceFn = Callable[[int], str]
 MutationFn = Callable[[str], str]
-KindGenerators = Mapping[
-    str, tuple[ReferenceFn, ContractFn, tuple[MutationFn, ...], int]
-]
+
+
+@dataclass(frozen=True)
+class KindSpec:
+    """How to generate, grade, and harden the build task for one service kind.
+
+    ``reference(level)`` / ``contract(level)`` produce the clean handler and
+    the behavioral cases for a difficulty level in ``1..max_level``;
+    ``admission_mutations`` are bug-injectors used only to prove the contract
+    distinguishes a correct handler from a broken one.
+    """
+
+    reference: ReferenceFn
+    contract: ContractFn
+    admission_mutations: tuple[MutationFn, ...]
+    max_level: int
+
+
+KindGenerators = Mapping[str, KindSpec]
 
 
 _KIND_GENERATORS: KindGenerators = {
-    "api": (
-        api_list_reference,
-        api_list_contract,
-        (api_wrong_field_name,),
-        API_MAX_LEVEL,
+    "api": KindSpec(
+        reference=api_list_reference,
+        contract=api_list_contract,
+        admission_mutations=(api_wrong_field_name,),
+        max_level=API_MAX_LEVEL,
     ),
 }
 
@@ -74,6 +91,20 @@ _LEVEL_REQUIREMENTS = {
     2: '- Include a top-level "count" equal to the number of items.',
     3: '- Sort "items" by "id" in ascending order.',
 }
+
+
+@dataclass(frozen=True)
+class _Target:
+    """A resolved build target: the endpoint to implement, its service, the
+    kind's spec, and the current difficulty level — resolved once so the
+    generate / feasibility / success / mutation paths don't each re-derive it.
+    """
+
+    endpoint: Node
+    service: Node
+    kind: str
+    spec: KindSpec
+    level: int
 
 
 def _endpoint_level(endpoint: Node, max_level: int) -> int:
@@ -141,25 +172,22 @@ class WebappBuild(TaskFamily):
         target = self._pick_target(graph)
         if target is None:
             return []
-        endpoint, service, kind = target
-        max_level = self._generators[kind][3]
-        level = _endpoint_level(endpoint, max_level)
         instruction = _instruction(
-            method=str(endpoint.attrs.get("method", "GET")),
-            path=str(endpoint.attrs.get("path", "/")),
-            service=str(service.attrs.get("name", service.id)),
-            level=level,
+            method=str(target.endpoint.attrs.get("method", "GET")),
+            path=str(target.endpoint.attrs.get("path", "/")),
+            service=str(target.service.attrs.get("name", target.service.id)),
+            level=target.level,
         )
         return [
             self.make_task(
                 instruction=instruction,
-                entrypoints=service.id,
-                goal_nodes=endpoint.id,
-                difficulty=0.3 + 0.2 * level,
+                entrypoints=target.service.id,
+                goal_nodes=target.endpoint.id,
+                difficulty=target.level / target.spec.max_level,
                 meta={
-                    "kind": kind,
-                    "endpoint_path": str(endpoint.attrs.get("path", "/")),
-                    "build_level": level,
+                    "kind": target.kind,
+                    "endpoint_path": str(target.endpoint.attrs.get("path", "/")),
+                    "build_level": target.level,
                 },
             ),
         ]
@@ -172,26 +200,23 @@ class WebappBuild(TaskFamily):
         target = self._resolve_target(graph, task)
         if isinstance(target, FeasibilityVerdict):
             return target
-        endpoint, _service, kind = target
-        reference, contract, mutations, max_level = self._generators[kind]
-        level = _endpoint_level(endpoint, max_level)
-        cases = contract(level)
-        clean = grade_source(reference(level), cases)
+        spec, level, kind = target.spec, target.level, target.kind
+        cases = spec.contract(level)
+        clean = grade_source(spec.reference(level), cases)
         if not clean.all_passed:
             return FeasibilityVerdict(
                 False,
                 f"reference impl for kind {kind!r} L{level} fails its own "
                 f"contract: {clean.passed}/{clean.total} pass",
             )
-        if not mutations:
+        if not spec.admission_mutations:
             return FeasibilityVerdict(
                 False,
                 f"no admission mutations registered for kind {kind!r} — "
                 "cannot validate contract distinguishes good from broken",
             )
-        for index, mutation in enumerate(mutations):
-            mutated = grade_source(mutation(reference(level)), cases)
-            if mutated.all_passed:
+        for index, mutation in enumerate(spec.admission_mutations):
+            if grade_source(mutation(spec.reference(level)), cases).all_passed:
                 return FeasibilityVerdict(
                     False,
                     f"mutation {index} for kind {kind!r} L{level} did not break "
@@ -211,7 +236,6 @@ class WebappBuild(TaskFamily):
                 success=False,
                 reason=f"task target unresolvable: {target.reason}",
             )
-        endpoint, _service, kind = target
         result = final_state.get("result")
         if not isinstance(result, Mapping):
             return EpisodeResult(
@@ -224,9 +248,7 @@ class WebappBuild(TaskFamily):
                 success=False,
                 reason="result.json missing non-empty 'endpoint_impl' string",
             )
-        _reference, contract, _mutations, max_level = self._generators[kind]
-        level = _endpoint_level(endpoint, max_level)
-        report = grade_source(source, contract(level))
+        report = grade_source(source, target.spec.contract(target.level))
         subgoals = {case.description: case.passed for case in report.cases}
         return EpisodeResult(
             success=report.all_passed,
@@ -247,23 +269,24 @@ class WebappBuild(TaskFamily):
     ) -> tuple[Mutation, ...]:
         # Build difficulty is the contract level on the target endpoint;
         # harden raises it, soften lowers it. Procedural only — the
-        # offense-flavored LLM enrichment the pentest family uses has no
+        # offense-flavored LLM the pentest family enriches with has no
         # signal for build and would zero these out.
         del reports, llm
         target = self._pick_target(snapshot.graph)
         if target is None:
             return ()
-        endpoint, _service, kind = target
-        max_level = self._generators[kind][3]
-        level = _endpoint_level(endpoint, max_level)
         options: list[Mutation] = []
-        if level < max_level:
+        if target.level < target.spec.max_level:
             options.append(
-                self._level_mutation(endpoint, level + 1, "harden", _HARDEN_RELEVANCE)
+                self._level_mutation(
+                    target.endpoint, target.level + 1, "harden", _HARDEN_RELEVANCE
+                )
             )
-        if level > 1:
+        if target.level > 1:
             options.append(
-                self._level_mutation(endpoint, level - 1, "soften", _SOFTEN_RELEVANCE)
+                self._level_mutation(
+                    target.endpoint, target.level - 1, "soften", _SOFTEN_RELEVANCE
+                )
             )
         return tuple(options)
 
@@ -290,26 +313,30 @@ class WebappBuild(TaskFamily):
             note=f"build level {new_level} on {endpoint.id}",
         )
 
-    def _pick_target(
-        self,
-        graph: WorldGraph,
-    ) -> tuple[Node, Node, str] | None:
+    def _pick_target(self, graph: WorldGraph) -> _Target | None:
         for service in graph.by_kind("service"):
-            kind = str(service.attrs.get("kind", ""))
-            if kind not in self._generators:
+            spec = self._generators.get(str(service.attrs.get("kind", "")))
+            if spec is None:
                 continue
             for edge in graph.out_edges(service.id, "exposes"):
                 endpoint = graph.nodes.get(edge.dst)
                 if endpoint is None or endpoint.kind != "endpoint":
                     continue
-                return endpoint, service, kind
+                kind = str(service.attrs.get("kind", ""))
+                return _Target(
+                    endpoint,
+                    service,
+                    kind,
+                    spec,
+                    _endpoint_level(endpoint, spec.max_level),
+                )
         return None
 
     def _resolve_target(
         self,
         graph: WorldGraph,
         task: TaskSpec,
-    ) -> tuple[Node, Node, str] | FeasibilityVerdict:
+    ) -> _Target | FeasibilityVerdict:
         if not task.entrypoints or not task.goal_nodes:
             return FeasibilityVerdict(False, "missing entrypoint or goal")
         service = graph.nodes.get(task.entrypoints[0])
@@ -326,9 +353,12 @@ class WebappBuild(TaskFamily):
                 "service does not expose the goal endpoint",
             )
         kind = str(service.attrs.get("kind", ""))
-        if kind not in self._generators:
+        spec = self._generators.get(kind)
+        if spec is None:
             return FeasibilityVerdict(
                 False,
                 f"no build contract for service kind {kind!r}",
             )
-        return endpoint, service, kind
+        return _Target(
+            endpoint, service, kind, spec, _endpoint_level(endpoint, spec.max_level)
+        )
