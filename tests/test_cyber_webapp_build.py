@@ -303,7 +303,7 @@ class TestGrading:
         src = "import os\nos._exit(7)\ndef handle(q, s): pass\n"
         report = grade_source(src, (self._trivial_case(),))
         assert report.passed == 0
-        assert "subprocess exited 7" in report.cases[0].reason
+        assert "exited (7)" in report.cases[0].reason
 
     def test_subprocess_writes_non_json_then_exits_zero(self) -> None:
         src = (
@@ -315,7 +315,7 @@ class TestGrading:
         )
         report = grade_source(src, (self._trivial_case(),))
         assert report.passed == 0
-        assert "non-JSON" in report.cases[0].reason
+        assert "without a result" in report.cases[0].reason
 
 
 class TestContractReport:

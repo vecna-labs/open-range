@@ -2,7 +2,7 @@
 
 Each case runs through the SDK sandbox (``openrange_pack_sdk.run_submission``)
 — see its module docstring for the full trust model and isolation caveats.
-The handler is the untrusted submission; ``_DRIVER`` is the trusted glue that
+The handler is the untrusted submission; ``_drive`` is the trusted glue that
 calls it as ``handle(query, state) -> (status, headers, body)`` and serializes
 the response for the predicate to check. Each case is its own subprocess.
 """
@@ -10,28 +10,28 @@ the response for the predicate to check. Each case is its own subprocess.
 from __future__ import annotations
 
 import base64
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from openrange_pack_sdk import run_submission
 
-from cyber_webapp.families.build.contracts import ContractCase
+if TYPE_CHECKING:
+    from cyber_webapp.families.build.contracts import ContractCase
 
 _DEFAULT_WALL_TIMEOUT = 5.0
 
-# Body is base64'd because it may be non-UTF-8 bytes that can't go into JSON.
-_DRIVER = """
-import base64
 
-status, headers, body = entry(case["query"], case["state"])
-if isinstance(body, str):
-    body = body.encode("utf-8")
-payload = {
-    "status": int(status),
-    "headers": dict(headers),
-    "body_b64": base64.b64encode(body).decode("ascii"),
-}
-"""
+def _drive(entry: Callable[..., Any], case: Mapping[str, Any]) -> dict[str, object]:
+    status, headers, body = entry(case["query"], case["state"])
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    # base64 the body — it may be non-UTF-8 bytes that can't go into JSON.
+    return {
+        "status": int(status),
+        "headers": dict(headers),
+        "body_b64": base64.b64encode(body).decode("ascii"),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +74,7 @@ def _run_case(source: str, case: ContractCase, *, timeout: float) -> CaseResult:
     run = run_submission(
         source,
         entry="handle",
-        driver=_DRIVER,
+        driver=_drive,
         stdin_obj={"query": dict(case.query), "state": dict(case.state)},
         timeout=timeout,
     )

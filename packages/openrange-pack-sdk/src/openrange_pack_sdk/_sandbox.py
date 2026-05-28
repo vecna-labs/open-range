@@ -2,12 +2,12 @@
 
 Trust model — read before deploying.
 
-This runs an untrusted *submission* (agent-written Python source) together
-with a trusted *driver* (pack-written Python source that exercises the
-submission) in a single subprocess, fed one JSON input over stdin, and
-returns whatever JSON ``payload`` the driver produces. Each call is its own
-subprocess, so a misbehaving submission (infinite loop, raised exception,
-mutated globals) cannot taint the parent or another call.
+Runs an untrusted *submission* (agent-written Python source) together with a
+trusted *driver* (a pack-supplied module-level function that exercises the
+submission) in a single subprocess, fed one JSON envelope over stdin. The
+result is written to a private file the submission has no handle to — not
+stdout — so a submission that scribbles on stdout or exits early cannot forge a
+result. Each call is its own subprocess.
 
 What IS enforced
 - Wall-clock timeout (parent ``subprocess.run(..., timeout=...)``). Hard.
@@ -17,8 +17,7 @@ What IS enforced
 - ``PYTHONDONTWRITEBYTECODE=1`` — no ``__pycache__`` writes.
 
 What is NOT enforced
-- Filesystem isolation. The submission can read/write anything the host UID
-  can.
+- Filesystem isolation. The submission can read/write anything the host UID can.
 - Network egress. The submission can open sockets.
 - Syscall surface. The submission can shell out.
 
@@ -27,87 +26,37 @@ host where the model is yours and exfiltration is not the threat. It is NOT
 safe for adversarial code on a host you care about: hardening it for that
 (firejail / bwrap / seccomp / container) is a prerequisite for public-facing
 eval traffic.
-
-The driver runs *after* the submission loads; it sees the entry callable as
-``entry`` and the decoded stdin as ``case``, and must assign a
-JSON-serializable ``payload``. The driver is trusted pack code: subprocess
-isolation protects the host from the submission, not the driver from it.
 """
 
 from __future__ import annotations
 
-import base64
+import inspect
 import json
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 _DEFAULT_WALL_TIMEOUT = 5.0
 _DEFAULT_MEMORY_BYTES = 256 * 1024 * 1024
 _DEFAULT_CPU_SECONDS = 5
 
-# A .format() template. Submission and driver are base64'd, so their own braces
-# never reach .format(); only the fields below and the doubled literal braces do.
-_HARNESS = """
-import base64
-import io
-import json
-import resource
-import sys
+_HARNESS = Path(__file__).with_name("_harness.py")
 
-for _name, _limit in (("RLIMIT_AS", {mem}), ("RLIMIT_CPU", {cpu})):
-    try:
-        resource.setrlimit(getattr(resource, _name), (_limit, _limit))
-    except (ValueError, OSError):
-        pass
-
-
-def _emit(obj):
-    sys.__stdout__.write(json.dumps(obj))
-    sys.exit(0)
-
-
-_sink = io.StringIO()
-_ns = {{}}
-sys.stdout = _sink
-try:
-    exec(base64.b64decode("{source_b64}").decode("utf-8"), _ns)
-except BaseException as exc:
-    sys.stdout = sys.__stdout__
-    _emit({{
-        "ok": False,
-        "error": f"source did not load: {{type(exc).__name__}}: {{exc}}"[:500],
-    }})
-finally:
-    sys.stdout = sys.__stdout__
-
-entry = _ns.get("{entry}")
-if not callable(entry):
-    _emit({{"ok": False, "error": "submission defines no callable {entry}"}})
-
-case = json.loads(sys.stdin.read())
-sys.stdout = _sink
-try:
-    _dns = {{"entry": entry, "case": case}}
-    exec(base64.b64decode("{driver_b64}").decode("utf-8"), _dns)
-    _payload = {{"ok": True, "result": _dns["payload"]}}
-except BaseException as exc:
-    _payload = {{
-        "ok": False,
-        "error": f"submission failed: {{type(exc).__name__}}: {{exc}}"[:500],
-    }}
-finally:
-    sys.stdout = sys.__stdout__
-_emit(_payload)
-"""
+# A trusted pack function run in the child as ``driver(entry, case)``: ``entry``
+# is the submission's callable, ``case`` is the JSON stdin, and it returns a
+# JSON-serializable mapping. The child loads its module by file, so it must be
+# module-level and live in an import-light module (no heavy pack __init__).
+Driver = Callable[[Callable[..., Any], Any], Mapping[str, Any]]
 
 
 @dataclass(frozen=True, slots=True)
 class SandboxResult:
     """Outcome of one sandbox run. ``ok`` ⇒ ``result`` holds the driver's
-    JSON ``payload``; otherwise ``error`` explains the failure."""
+    payload; otherwise ``error`` explains the failure."""
 
     ok: bool
     result: dict[str, object]
@@ -118,38 +67,42 @@ def run_submission(
     source: str,
     *,
     entry: str,
-    driver: str,
+    driver: Driver,
     stdin_obj: object,
     timeout: float = _DEFAULT_WALL_TIMEOUT,
     memory_bytes: int = _DEFAULT_MEMORY_BYTES,
     cpu_seconds: int = _DEFAULT_CPU_SECONDS,
 ) -> SandboxResult:
-    """Run untrusted ``source`` + trusted ``driver`` in an isolated subprocess.
+    """Run untrusted ``source`` plus the trusted ``driver`` in an isolated
+    subprocess, returning a structured result rather than raising — one bad
+    submission is a failed case, not a failed run.
 
-    ``driver`` is Python source that may reference ``entry`` (the submission's
-    callable of that name) and ``case`` (``stdin_obj``, JSON round-tripped),
-    and must assign a JSON-serializable mapping to ``payload``. Returns a
-    structured ``SandboxResult`` rather than raising, so one bad submission is
-    a failed case, not a failed run.
+    ``driver`` is a module-level function invoked as ``driver(entry, case)`` in
+    the child, where ``entry`` is the submission's callable of that name and
+    ``case`` is ``stdin_obj`` (JSON round-tripped); it returns a JSON object.
     """
     if not entry.isidentifier():
         raise ValueError(f"entry must be a Python identifier; got {entry!r}")
-    program = _HARNESS.format(
-        mem=memory_bytes,
-        cpu=cpu_seconds,
-        source_b64=base64.b64encode(source.encode("utf-8")).decode("ascii"),
-        driver_b64=base64.b64encode(driver.encode("utf-8")).decode("ascii"),
-        entry=entry,
-    )
     with tempfile.TemporaryDirectory(prefix="openrange-sandbox-") as tmp:
-        prog = Path(tmp) / "prog.py"
-        prog.write_text(program, encoding="utf-8")
+        result_path = Path(tmp) / "result.json"
+        envelope = json.dumps(
+            {
+                "source": source,
+                "entry": entry,
+                "driver_module": driver.__module__,
+                "driver_qualname": driver.__qualname__,
+                "driver_file": inspect.getfile(driver),
+                "case": stdin_obj,
+                "memory_bytes": memory_bytes,
+                "cpu_seconds": cpu_seconds,
+                "result_path": str(result_path),
+            }
+        )
         try:
             proc = subprocess.run(
-                [sys.executable, str(prog)],
-                input=json.dumps(stdin_obj),
+                [sys.executable, str(_HARNESS)],
+                input=envelope.encode("utf-8"),
                 capture_output=True,
-                text=True,
                 timeout=timeout,
                 env={"PYTHONDONTWRITEBYTECODE": "1"},
                 cwd=tmp,
@@ -157,21 +110,20 @@ def run_submission(
             )
         except subprocess.TimeoutExpired:
             return SandboxResult(False, {}, f"timed out after {timeout}s")
-
-    if proc.returncode != 0 and not proc.stdout:
-        return SandboxResult(
-            False,
-            {},
-            f"subprocess exited {proc.returncode}: {proc.stderr[:200].strip()}",
-        )
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return SandboxResult(
-            False, {}, f"non-JSON harness output: {proc.stdout[:200]!r}"
-        )
-    if not payload.get("ok"):
-        return SandboxResult(False, {}, str(payload.get("error", "unknown failure")))
+        if not result_path.exists():
+            detail = proc.stderr.decode("utf-8", "replace").strip()[:200]
+            return SandboxResult(
+                False,
+                {},
+                f"submission exited ({proc.returncode}) without a result: {detail}",
+            )
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return SandboxResult(False, {}, f"unreadable sandbox result: {exc}")
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        error = payload.get("error") if isinstance(payload, dict) else None
+        return SandboxResult(False, {}, str(error or "unknown failure"))
     result = payload.get("result")
     if not isinstance(result, dict):
         return SandboxResult(

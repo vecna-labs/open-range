@@ -1,6 +1,6 @@
 """Look-ahead-safe backtest grader for ``trade.pnl``.
 
-The agent's ``decide(history)`` runs in the SDK sandbox; the trusted ``_DRIVER``
+The agent's ``decide(history)`` runs in the SDK sandbox; the trusted ``_replay``
 replays it bar-by-bar, handing it only the bars up to and including each day —
 it can never see the future. The driver returns the equity curve; this module
 turns that into P&L + max-drawdown and checks them against the risk limits.
@@ -8,35 +8,33 @@ turns that into P&L + max-drawdown and checks them against the risk limits.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from openrange_pack_sdk import run_submission
 
 _WALL_TIMEOUT = 10.0
 
-# Trusted driver enforcing look-ahead safety: `decide` only ever sees
-# bars[: t + 1], so it cannot peek past the day it is trading.
-_DRIVER = """
-bars = case["bars"]
-cash = case["cash"]
-cost_rate = case["cost_rate"]
-units = 0.0
-curve = []
-for t in range(len(bars)):
-    price = float(bars[t]["close"])
-    equity = cash + units * price
-    target = float(entry(bars[: t + 1]))
-    if target < 0.0:
-        target = 0.0
-    elif target > 1.0:
-        target = 1.0
-    desired_units = (target * equity / price) if price else units
-    trade = desired_units - units
-    cash -= trade * price + abs(trade) * price * cost_rate
-    units = desired_units
-    curve.append(cash + units * price)
-payload = {"equity_curve": curve}
-"""
+
+def _replay(entry: Callable[..., Any], case: Mapping[str, Any]) -> dict[str, object]:
+    # Look-ahead safety lives here: `decide` only ever sees bars[: t + 1], so it
+    # cannot peek past the day it is trading.
+    bars = case["bars"]
+    cash = float(case["cash"])
+    cost_rate = float(case["cost_rate"])
+    units = 0.0
+    curve: list[float] = []
+    for t in range(len(bars)):
+        price = float(bars[t]["close"])
+        equity = cash + units * price
+        target = min(1.0, max(0.0, float(entry(bars[: t + 1]))))
+        desired_units = (target * equity / price) if price else units
+        trade = desired_units - units
+        cash -= trade * price + abs(trade) * price * cost_rate
+        units = desired_units
+        curve.append(cash + units * price)
+    return {"equity_curve": curve}
 
 
 @dataclass(frozen=True)
@@ -65,7 +63,7 @@ def run_backtest(
     run = run_submission(
         source,
         entry="decide",
-        driver=_DRIVER,
+        driver=_replay,
         stdin_obj={"bars": bars, "cash": initial_cash, "cost_rate": cost_rate},
         timeout=_WALL_TIMEOUT,
     )
