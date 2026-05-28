@@ -20,37 +20,81 @@ generator set (custom contracts, test fixtures), construct
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
-from graphschema import Node, WorldGraph
+from graphschema import GraphPatch, Node, WorldGraph
 from openrange_pack_sdk import (
+    EpisodeReportLike,
     EpisodeResult,
     FeasibilityVerdict,
     Manifest,
+    Mutation,
     PackPrior,
     TaskFamily,
     TaskSpec,
 )
 
-from cyber_webapp.families.build.contracts import ContractCase, api_list_contract
+from cyber_webapp.families.build.contracts import (
+    API_MAX_LEVEL,
+    ContractCase,
+    api_list_contract,
+)
 from cyber_webapp.families.build.grading import grade_source
 from cyber_webapp.families.build.mutations import api_wrong_field_name
 from cyber_webapp.families.build.reference import api_list_reference
 
-ContractFn = Callable[[], tuple[ContractCase, ...]]
-ReferenceFn = Callable[[], str]
+if TYPE_CHECKING:
+    from openrange_pack_sdk import Snapshot
+
+ContractFn = Callable[[int], tuple[ContractCase, ...]]
+ReferenceFn = Callable[[int], str]
 MutationFn = Callable[[str], str]
-KindGenerators = Mapping[str, tuple[ReferenceFn, ContractFn, tuple[MutationFn, ...]]]
+KindGenerators = Mapping[
+    str, tuple[ReferenceFn, ContractFn, tuple[MutationFn, ...], int]
+]
 
 
 _KIND_GENERATORS: KindGenerators = {
-    "api": (api_list_reference, api_list_contract, (api_wrong_field_name,)),
+    "api": (
+        api_list_reference,
+        api_list_contract,
+        (api_wrong_field_name,),
+        API_MAX_LEVEL,
+    ),
+}
+
+# Curriculum relevance for build level mutations. Harden gets the mid-value
+# (a passing agent is the signal to make the next level required); soften is
+# a low floor so dropping a level is always an option when the agent stalls.
+_HARDEN_RELEVANCE = 0.5
+_SOFTEN_RELEVANCE = 0.05
+
+_LEVEL_REQUIREMENTS = {
+    2: '- Include a top-level "count" equal to the number of items.',
+    3: '- Sort "items" by "id" in ascending order.',
 }
 
 
-_INSTRUCTION_TEMPLATE = """Implement the {method} {path} handler for the {service} \
-service.
+def _endpoint_level(endpoint: Node, max_level: int) -> int:
+    raw = endpoint.attrs.get("build_level", 1)
+    level = raw if isinstance(raw, int) and not isinstance(raw, bool) else 1
+    return max(1, min(level, max_level))
+
+
+def _instruction(method: str, path: str, service: str, level: int) -> str:
+    extra = "\n".join(_LEVEL_REQUIREMENTS[lvl] for lvl in range(2, level + 1))
+    spec = (
+        "- Respond with HTTP 200.\n"
+        "- Set Content-Type to application/json.\n"
+        '- Return a JSON object with a top-level field "items".\n'
+        '- "items" is a list; one entry per record in state["records"].\n'
+        "- Each entry includes the record's id (under \"id\") plus the record's "
+        "fields."
+    )
+    if extra:
+        spec = spec + "\n" + extra
+    return f"""Implement the {method} {path} handler for the {service} service.
 
 Handler signature:
 
@@ -62,11 +106,7 @@ Handler signature:
 The handler must return a 3-tuple (status, headers, body). body must be bytes.
 
 Behavioral spec:
-- Respond with HTTP 200.
-- Set Content-Type to application/json.
-- Return a JSON object with a top-level field "items".
-- "items" is a list; one entry per record in state["records"].
-- Each entry includes the record's id (under "id") plus the record's fields.
+{spec}
 
 The state shape your handler will be called with:
     state["records"]: dict[str, dict[str, Any]] mapping record id to a field dict.
@@ -102,20 +142,24 @@ class WebappBuild(TaskFamily):
         if target is None:
             return []
         endpoint, service, kind = target
-        instruction = _INSTRUCTION_TEMPLATE.format(
+        max_level = self._generators[kind][3]
+        level = _endpoint_level(endpoint, max_level)
+        instruction = _instruction(
             method=str(endpoint.attrs.get("method", "GET")),
             path=str(endpoint.attrs.get("path", "/")),
             service=str(service.attrs.get("name", service.id)),
+            level=level,
         )
         return [
             self.make_task(
                 instruction=instruction,
                 entrypoints=service.id,
                 goal_nodes=endpoint.id,
-                difficulty=0.4,
+                difficulty=0.3 + 0.2 * level,
                 meta={
                     "kind": kind,
                     "endpoint_path": str(endpoint.attrs.get("path", "/")),
+                    "build_level": level,
                 },
             ),
         ]
@@ -128,15 +172,16 @@ class WebappBuild(TaskFamily):
         target = self._resolve_target(graph, task)
         if isinstance(target, FeasibilityVerdict):
             return target
-        kind = target[2]
-        reference, contract, mutations = self._generators[kind]
-        cases = contract()
-        clean = grade_source(reference(), cases)
+        endpoint, _service, kind = target
+        reference, contract, mutations, max_level = self._generators[kind]
+        level = _endpoint_level(endpoint, max_level)
+        cases = contract(level)
+        clean = grade_source(reference(level), cases)
         if not clean.all_passed:
             return FeasibilityVerdict(
                 False,
-                f"reference impl for kind {kind!r} fails its own contract: "
-                f"{clean.passed}/{clean.total} pass",
+                f"reference impl for kind {kind!r} L{level} fails its own "
+                f"contract: {clean.passed}/{clean.total} pass",
             )
         if not mutations:
             return FeasibilityVerdict(
@@ -145,12 +190,12 @@ class WebappBuild(TaskFamily):
                 "cannot validate contract distinguishes good from broken",
             )
         for index, mutation in enumerate(mutations):
-            mutated = grade_source(mutation(reference()), cases)
+            mutated = grade_source(mutation(reference(level)), cases)
             if mutated.all_passed:
                 return FeasibilityVerdict(
                     False,
-                    f"mutation {index} for kind {kind!r} did not break the "
-                    "contract — task would be trivially passable",
+                    f"mutation {index} for kind {kind!r} L{level} did not break "
+                    "the contract — task would be trivially passable",
                 )
         return FeasibilityVerdict(True)
 
@@ -166,7 +211,7 @@ class WebappBuild(TaskFamily):
                 success=False,
                 reason=f"task target unresolvable: {target.reason}",
             )
-        kind = target[2]
+        endpoint, _service, kind = target
         result = final_state.get("result")
         if not isinstance(result, Mapping):
             return EpisodeResult(
@@ -179,8 +224,9 @@ class WebappBuild(TaskFamily):
                 success=False,
                 reason="result.json missing non-empty 'endpoint_impl' string",
             )
-        _, contract, _ = self._generators[kind]
-        report = grade_source(source, contract())
+        _reference, contract, _mutations, max_level = self._generators[kind]
+        level = _endpoint_level(endpoint, max_level)
+        report = grade_source(source, contract(level))
         subgoals = {case.description: case.passed for case in report.cases}
         return EpisodeResult(
             success=report.all_passed,
@@ -190,6 +236,58 @@ class WebappBuild(TaskFamily):
                 if report.all_passed
                 else f"{report.passed}/{report.total} contract cases pass"
             ),
+        )
+
+    def available_mutations(
+        self,
+        snapshot: Snapshot,
+        reports: Sequence[EpisodeReportLike],
+        *,
+        llm: object | None = None,
+    ) -> tuple[Mutation, ...]:
+        # Build difficulty is the contract level on the target endpoint;
+        # harden raises it, soften lowers it. Procedural only — the
+        # offense-flavored LLM enrichment the pentest family uses has no
+        # signal for build and would zero these out.
+        del reports, llm
+        target = self._pick_target(snapshot.graph)
+        if target is None:
+            return ()
+        endpoint, _service, kind = target
+        max_level = self._generators[kind][3]
+        level = _endpoint_level(endpoint, max_level)
+        options: list[Mutation] = []
+        if level < max_level:
+            options.append(
+                self._level_mutation(endpoint, level + 1, "harden", _HARDEN_RELEVANCE)
+            )
+        if level > 1:
+            options.append(
+                self._level_mutation(endpoint, level - 1, "soften", _SOFTEN_RELEVANCE)
+            )
+        return tuple(options)
+
+    def _level_mutation(
+        self,
+        endpoint: Node,
+        new_level: int,
+        direction: str,
+        relevance: float,
+    ) -> Mutation:
+        updated = Node(
+            id=endpoint.id,
+            kind=endpoint.kind,
+            attrs={**dict(endpoint.attrs), "build_level": new_level},
+            roles=set(endpoint.roles),
+            visibility=endpoint.visibility,
+            runtime=dict(endpoint.runtime),
+            meta=dict(endpoint.meta),
+        )
+        return self.make_mutation(
+            direction=direction,
+            relevance=relevance,
+            patch=GraphPatch(nodes_updated=[updated]),
+            note=f"build level {new_level} on {endpoint.id}",
         )
 
     def _pick_target(

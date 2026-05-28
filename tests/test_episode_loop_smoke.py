@@ -50,7 +50,7 @@ def test_build_episode_grades_submitted_handler(tmp_path: Path) -> None:
         handle = svc.start_episode(snap, task.id)
         agent_root = svc.agent_root(handle)
         (agent_root / "result.json").write_text(
-            json.dumps({"endpoint_impl": api_list_reference()}),
+            json.dumps({"endpoint_impl": api_list_reference(1)}),
             encoding="utf-8",
         )
         report = svc.stop_episode(handle)

@@ -63,19 +63,27 @@ def family() -> WebappBuild:
 
 
 class TestReferenceContractCoherence:
-    def test_reference_passes_full_contract(self) -> None:
-        report = grade_source(api_list_reference(), api_list_contract())
+    @pytest.mark.parametrize("level", [1, 2, 3])
+    def test_reference_passes_contract_at_level(self, level: int) -> None:
+        report = grade_source(api_list_reference(level), api_list_contract(level))
         failed = [(c.description, c.reason) for c in report.cases if not c.passed]
         assert report.all_passed, failed
 
-    def test_mutation_breaks_full_contract(self) -> None:
-        mutated = api_wrong_field_name(api_list_reference())
-        report = grade_source(mutated, api_list_contract())
+    @pytest.mark.parametrize("level", [1, 2, 3])
+    def test_mutation_breaks_contract_at_level(self, level: int) -> None:
+        mutated = api_wrong_field_name(api_list_reference(level))
+        report = grade_source(mutated, api_list_contract(level))
         assert report.passed == 0
         assert all(not c.passed for c in report.cases)
 
+    def test_lower_level_reference_fails_higher_contract(self) -> None:
+        # L1 omits "count" → fails L2; L2 omits sorting → fails L3. Proves
+        # each level is a real difficulty step, not cosmetic.
+        assert not grade_source(api_list_reference(1), api_list_contract(2)).all_passed
+        assert not grade_source(api_list_reference(2), api_list_contract(3)).all_passed
+
     def test_mutation_actually_changes_source(self) -> None:
-        ref = api_list_reference()
+        ref = api_list_reference(1)
         mut = api_wrong_field_name(ref)
         assert ref != mut
         assert '"items"' not in mut or '"results"' in mut
@@ -358,7 +366,7 @@ class TestFamilyAgainstRealWorld:
         webapp_snapshot: Snapshot,
         webapp_build_task: TaskSpec,
     ) -> None:
-        final_state = {"result": {"endpoint_impl": api_list_reference()}}
+        final_state = {"result": {"endpoint_impl": api_list_reference(1)}}
         result = family.check_success(
             webapp_snapshot.graph, webapp_build_task, final_state
         )
@@ -371,7 +379,7 @@ class TestFamilyAgainstRealWorld:
         webapp_snapshot: Snapshot,
         webapp_build_task: TaskSpec,
     ) -> None:
-        mutated = api_wrong_field_name(api_list_reference())
+        mutated = api_wrong_field_name(api_list_reference(1))
         final_state = {"result": {"endpoint_impl": mutated}}
         result = family.check_success(
             webapp_snapshot.graph, webapp_build_task, final_state
@@ -441,12 +449,17 @@ class TestFamilyAgainstRealWorld:
         assert not result.success
         assert "endpoint_impl" in result.reason
 
-    def test_inherited_available_mutations_is_empty(
+    def test_available_mutations_offers_harden_at_base_level(
         self,
         family: WebappBuild,
         webapp_snapshot: Snapshot,
     ) -> None:
-        assert family.available_mutations(webapp_snapshot, ()) == ()
+        # The admitted world's endpoint defaults to level 1, so the only
+        # move is harden (raise to level 2); soften has no room.
+        muts = family.available_mutations(webapp_snapshot, ())
+        directions = {m.direction for m in muts}
+        assert directions == {"harden"}
+        assert all(m.family == "webapp.build" for m in muts)
 
 
 def _empty_graph() -> WorldGraph:
@@ -488,6 +501,68 @@ def _api_task() -> TaskSpec:
         feasibility_check="webapp.build",
         success_check="webapp.build",
     )
+
+
+def _api_world_at_level(level: int) -> WorldGraph:
+    graph = _empty_graph()
+    graph.nodes["svc_api"] = _node("svc_api", "service", kind="api", name="api")
+    graph.nodes["ep_a"] = _node(
+        "ep_a", "endpoint", path="/x", method="GET", build_level=level
+    )
+    graph.edges["e1"] = _edge("e1", "exposes", "svc_api", "ep_a")
+    return graph
+
+
+def _snapshot(graph: WorldGraph) -> Snapshot:
+    return Snapshot(
+        snapshot_id="",
+        ontology_id=graph.ontology,
+        graph=graph,
+        tasks=(),
+        lineage={},
+    )
+
+
+class TestBuildCurriculum:
+    def test_available_mutations_ignores_llm(self, family: WebappBuild) -> None:
+        # Build curriculum is procedural; the offense-flavored LLM the pentest
+        # family enriches with has no build signal and must not gate these.
+        snap = _snapshot(_api_world_at_level(1))
+        without = family.available_mutations(snap, ())
+        with_llm = family.available_mutations(snap, (), llm=object())
+        assert [m.direction for m in without] == [m.direction for m in with_llm]
+        assert without and all(m.relevance > 0 for m in without)
+
+    def test_level_ladder_directions(self, family: WebappBuild) -> None:
+        def dirs(level: int) -> set[str]:
+            snap = _snapshot(_api_world_at_level(level))
+            return {m.direction for m in family.available_mutations(snap, ())}
+
+        assert dirs(1) == {"harden"}  # floor: only up
+        assert dirs(2) == {"harden", "soften"}
+        assert dirs(3) == {"soften"}  # cap: only down
+
+    def test_harden_patch_raises_build_level(self, family: WebappBuild) -> None:
+        from graphschema import apply_patch
+
+        snap = _snapshot(_api_world_at_level(1))
+        harden = next(
+            m for m in family.available_mutations(snap, ()) if m.direction == "harden"
+        )
+        graph = _api_world_at_level(1)
+        apply_patch(graph, harden.patch)
+        assert graph.nodes["ep_a"].attrs["build_level"] == 2
+
+    def test_available_mutations_empty_when_no_target(
+        self, family: WebappBuild
+    ) -> None:
+        assert family.available_mutations(_snapshot(_empty_graph()), ()) == ()
+
+    def test_generate_instruction_reflects_level(self, family: WebappBuild) -> None:
+        tasks = family.generate(_api_world_at_level(2), manifest={}, prior=None)
+        assert tasks
+        assert tasks[0].meta["build_level"] == 2
+        assert '"count"' in tasks[0].instruction
 
 
 class TestPickTarget:
@@ -634,18 +709,19 @@ class TestAdmissionValidityViaInjection:
     ``WebappBuild(generators=...)`` with deliberately ill-posed generators —
     no module-level monkey patching needed."""
 
-    def _api_reference(self) -> str:
-        return api_list_reference()
+    def _api_reference(self, level: int) -> str:
+        return api_list_reference(level)
 
-    def _api_contract(self) -> tuple[ContractCase, ...]:
-        return api_list_contract()
+    def _api_contract(self, level: int) -> tuple[ContractCase, ...]:
+        return api_list_contract(level)
 
     def test_feasibility_rejects_when_reference_fails_contract(self) -> None:
-        def broken_reference() -> str:
+        def broken_reference(level: int) -> str:
+            del level
             return "def handle(q, s): return 500, {}, b''"
 
         generators: KindGenerators = {
-            "api": (broken_reference, self._api_contract, (api_wrong_field_name,)),
+            "api": (broken_reference, self._api_contract, (api_wrong_field_name,), 1),
         }
         family = WebappBuild(generators=generators)
         verdict = family.check_feasibility(_api_world(), _api_task())
@@ -654,7 +730,7 @@ class TestAdmissionValidityViaInjection:
 
     def test_feasibility_rejects_when_no_mutations_registered(self) -> None:
         generators: KindGenerators = {
-            "api": (self._api_reference, self._api_contract, ()),
+            "api": (self._api_reference, self._api_contract, (), 1),
         }
         family = WebappBuild(generators=generators)
         verdict = family.check_feasibility(_api_world(), _api_task())
@@ -670,6 +746,7 @@ class TestAdmissionValidityViaInjection:
                 self._api_reference,
                 self._api_contract,
                 (api_wrong_field_name, identity_mutation),
+                1,
             ),
         }
         family = WebappBuild(generators=generators)

@@ -632,6 +632,28 @@ def test_auto_evolve_e2e_on_webapp_pack() -> None:
     assert evolve_meta["direction"] == "harden"
 
 
+def test_auto_evolve_hardens_a_build_episode() -> None:
+    """Regression: a passing build episode used to stall the curriculum —
+    build had no mutations, so auto_evolve returned None. It now hardens the
+    build task to the next contract level."""
+    webapp_pack_cls = pytest.importorskip("cyber_webapp").WebappPack
+    snap = admit(
+        webapp_pack_cls(),
+        manifest={
+            "world": {"goal": "build curriculum"},
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+        },
+    )
+    assert isinstance(snap, Snapshot), snap
+
+    out = auto_evolve(snap, _Report(True), pack=webapp_pack_cls(), llm=None)
+    assert isinstance(out, Snapshot)
+    build = [t for t in out.tasks if t.meta.get("family") == "webapp.build"]
+    assert build and build[0].meta["build_level"] == 2
+
+
 # Lint shim — keep imported types from being flagged as unused. They
 # appear in type annotations on the stub classes but ruff sometimes
 # misses cross-class refs.

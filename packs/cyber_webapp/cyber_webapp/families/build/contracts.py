@@ -3,11 +3,14 @@
 A contract is a tuple of ``TestCase``s. Each case pins down a ``(query, state)``
 input and a predicate over the handler's ``(status, headers, body)`` return.
 
-Contracts are keyed by service kind: an ``api`` endpoint has a different
-behavioral spec than an ``auth`` or ``web`` endpoint. The family uses the
-contract both at admission time (to validate the task is well-posed: clean
-reference passes, mutation breaks) and at success time (to grade the agent's
-submitted handler source).
+Contracts are keyed by service kind AND difficulty level. The level is the
+curriculum knob the build family hardens/softens: an ``api`` endpoint at
+level 1 only has to list records; level 2 also requires a top-level
+``count``; level 3 also requires the items sorted by id. Each level is a
+strict superset of the one below, so the same reference handler that passes
+level N passes every level below it. The family uses the contract both at
+admission time (clean reference passes, bug-injecting mutation breaks) and
+at success time (grade the agent's submitted handler).
 """
 
 from __future__ import annotations
@@ -75,34 +78,56 @@ def _check_items_list(
     return True, ""
 
 
-def api_list_contract() -> tuple[ContractCase, ...]:
-    """Spec for an api-kind list endpoint: GET → 200 JSON with every record
-    surfaced under top-level field ``items``."""
+API_MAX_LEVEL = 3
+
+
+def _check_api(
+    status: int,
+    headers: Mapping[str, str],
+    body: bytes,
+    expected_ids: frozenset[str],
+    level: int,
+) -> tuple[bool, str]:
+    ok, why = _check_items_list(status, headers, body, expected_ids)
+    if not ok:
+        return ok, why
+    parsed = _parse_json_body(body)
+    assert isinstance(parsed, dict)  # _check_items_list already proved this
+    items = parsed["items"]
+    if level >= 2:
+        count = parsed.get("count")
+        if count != len(items):
+            return False, f"'count' is {count!r}, expected {len(items)}"
+    if level >= 3:
+        ids = [item["id"] for item in items]
+        if ids != sorted(ids):
+            return False, f"items not sorted by id ascending: {ids}"
+    return True, ""
+
+
+def api_list_contract(level: int) -> tuple[ContractCase, ...]:
+    """Spec for an api-kind list endpoint at ``level``.
+
+    L1: GET → 200 JSON, every record under top-level ``items``.
+    L2: also a top-level ``count`` equal to the number of items.
+    L3: also ``items`` sorted by ``id`` ascending. The multi-record case
+    inserts ids out of order so a handler that skips sorting fails L3.
+    """
+
+    def case(description: str, records: dict[str, dict[str, str]]) -> ContractCase:
+        expected = frozenset(records)
+        return ContractCase(
+            description=description,
+            query={},
+            state={"records": records},
+            predicate=lambda s, h, b: _check_api(s, h, b, expected, level),
+        )
+
     return (
-        ContractCase(
-            description="empty records returns empty items list",
-            query={},
-            state={"records": {}},
-            predicate=lambda s, h, b: _check_items_list(s, h, b, frozenset()),
-        ),
-        ContractCase(
-            description="single record appears under its id",
-            query={},
-            state={"records": {"alpha": {"name": "Alpha"}}},
-            predicate=lambda s, h, b: _check_items_list(s, h, b, frozenset({"alpha"})),
-        ),
-        ContractCase(
-            description="multiple records all appear",
-            query={},
-            state={
-                "records": {
-                    "a": {"v": "1"},
-                    "b": {"v": "2"},
-                    "c": {"v": "3"},
-                },
-            },
-            predicate=lambda s, h, b: _check_items_list(
-                s, h, b, frozenset({"a", "b", "c"})
-            ),
+        case("empty records returns empty items list", {}),
+        case("single record appears under its id", {"alpha": {"name": "Alpha"}}),
+        case(
+            "multiple records all appear",
+            {"c": {"v": "3"}, "a": {"v": "1"}, "b": {"v": "2"}},
         ),
     )
