@@ -27,7 +27,10 @@ jobs:
         with:
           path-to-signatures: signatures/version1/cla.json
           path-to-document: https://github.com/vecna-labs/open-range/blob/main/CLA.md
-          branch: main
+          # Signatures are stored on a dedicated orphan branch so signing never
+          # commits to main (no history clutter, no push-triggered CI). This
+          # branch must exist and must NOT be protected — the bot pushes to it.
+          branch: cla-signatures
           allowlist: dependabot[bot],renovate[bot]
           custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
           custom-notsigned-prcomment: >
