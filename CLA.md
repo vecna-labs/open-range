@@ -1,7 +1,7 @@
 # OpenRange Individual Contributor License Agreement
 
 Thank you for your interest in contributing to OpenRange (the "Project"),
-maintained by the OpenRange Authors ("We" or "Us").
+maintained by Vecna AI, Inc. ("We" or "Us").
 
 This Contributor License Agreement ("Agreement") documents the rights granted
 by contributors to Us. To make this document effective, please sign it
