@@ -24,10 +24,9 @@ What is NOT enforced
 
 So this is safe for *trusted* submissions in a research loop on a disposable
 host where the model is yours and exfiltration is not the threat. It is NOT
-safe for adversarial code on a host you care about. Production sandboxing
-(firejail / bwrap / seccomp / container) is the follow-up before public-facing
-eval traffic — and because every pack runs submissions through here, that
-hardening lands in one place instead of drifting across copies.
+safe for adversarial code on a host you care about: hardening it for that
+(firejail / bwrap / seccomp / container) is a prerequisite for public-facing
+eval traffic.
 
 The driver runs *after* the submission loads; it sees the entry callable as
 ``entry`` and the decoded stdin as ``case``, and must assign a
@@ -108,9 +107,7 @@ _emit(_payload)
 @dataclass(frozen=True, slots=True)
 class SandboxResult:
     """Outcome of one sandbox run. ``ok`` ⇒ ``result`` holds the driver's
-    JSON ``payload``; otherwise ``error`` explains the failure (load error,
-    missing entry, driver/submission exception, timeout, crash, or non-JSON
-    output)."""
+    JSON ``payload``; otherwise ``error`` explains the failure."""
 
     ok: bool
     result: dict[str, object]

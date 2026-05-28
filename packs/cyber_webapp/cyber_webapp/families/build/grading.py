@@ -19,8 +19,7 @@ from cyber_webapp.families.build.contracts import ContractCase
 
 _DEFAULT_WALL_TIMEOUT = 5.0
 
-# Trusted driver: exercise the untrusted `handle` and hand the response back as
-# JSON (body base64'd, since it may be non-UTF-8 bytes).
+# Body is base64'd because it may be non-UTF-8 bytes that can't go into JSON.
 _DRIVER = """
 import base64
 
@@ -84,7 +83,7 @@ def _run_case(source: str, case: ContractCase, *, timeout: float) -> CaseResult:
     status = run.result["status"]
     headers = run.result["headers"]
     body_b64 = run.result["body_b64"]
-    # The trusted driver fixes these shapes; narrow for the type checker.
+    # Narrowing for the type checker; the driver guarantees these shapes.
     assert isinstance(status, int)
     assert isinstance(headers, dict)
     assert isinstance(body_b64, str)

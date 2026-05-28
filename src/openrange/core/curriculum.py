@@ -70,13 +70,12 @@ def auto_evolve(
     llm: LLMBackend | None = None,
     max_repairs: int = 2,
 ) -> Snapshot | None:
-    """Evolve the world toward the agent's frontier and re-admit.
+    """Pick an evolution for ``direction`` and re-admit it.
 
-    Tries the families' patch mutations first — the fast path, a graph patch
-    (e.g. a tougher success target). If none land, falls through to a builder
-    *grow*: re-running the pack's builder with a difficulty-stepped prior so the
-    curriculum can advance the *data regime* itself, which a patch can't.
-    Returns the next Snapshot, or ``None`` if nothing admits.
+    Tries the families' patch mutations first; if none admit to a distinct
+    world, falls back to a builder *grow* (re-running the builder with a
+    difficulty-stepped prior). Returns the next Snapshot, or ``None`` if nothing
+    admits.
     """
     if not reports:
         return None
@@ -135,14 +134,6 @@ def _grow_snapshot(
     *,
     max_repairs: int,
 ) -> Snapshot | None:
-    """Re-run the pack's builder with a difficulty-stepped prior and re-admit.
-
-    This is the seam the patch path can't reach: a *new* world built from
-    signal (a harder market window), not a tweak of the current graph. ``None``
-    when the pack opts out of priors (``default_prior`` is ``None``), the
-    difficulty can't move further, or the rebuild lands on the same world (e.g.
-    the builder ignored the bump — the chain stays a chain, never a loop).
-    """
     from openrange.core.admit import AdmissionFailure, admit
 
     baseline = pack.default_prior()
@@ -174,6 +165,8 @@ def _grow_snapshot(
         return None
     grown = _with_grow_lineage(result, snapshot, direction, stepped)
     if grown.snapshot_id == snapshot.snapshot_id:
+        # Builder ignored the bump and rebuilt the same world; refuse it so the
+        # lineage stays a chain rather than looping back on itself.
         return None
     return grown
 
@@ -267,8 +260,8 @@ def _evolve_snapshot(
         ),
         refs=(snapshot.snapshot_id,),
     )
-    # Carry the chain's accumulated regime difficulty through patch steps so a
-    # later grow continues from where the chain left off, not from baseline.
+    # Carry accumulated grow difficulty across patch steps so a later grow
+    # resumes from it rather than from baseline.
     carried = snapshot.lineage.get("curriculum_difficulty")
     lineage = dict(result.lineage)
     if isinstance(carried, dict):

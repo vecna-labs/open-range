@@ -14,9 +14,8 @@ from openrange_pack_sdk import run_submission
 
 _WALL_TIMEOUT = 10.0
 
-# Trusted driver: replay `decide` over the series, look-ahead-safe (it only ever
-# sees bars[: t + 1]). Rebalances to the clamped target exposure each day at
-# that day's close, charging cost_rate on the traded notional.
+# Trusted driver enforcing look-ahead safety: `decide` only ever sees
+# bars[: t + 1], so it cannot peek past the day it is trading.
 _DRIVER = """
 bars = case["bars"]
 cash = case["cash"]

@@ -66,10 +66,8 @@ def _select_window(
     cache_dir: Path,
     fixture: Path,
 ) -> data.Window:
-    """Draw ``candidates`` windows and pick the one at the ``intensity``
-    quantile of realized volatility (calm at 0, most volatile at 1). One
-    candidate is the cheap default; >1 turns volatility into a curriculum axis
-    the grow path can advance."""
+    # >1 candidate turns volatility into a curriculum axis: pick the window at
+    # the intensity quantile of realized vol (calm at 0, most volatile at 1).
     windows: list[data.Window] = []
     for _ in range(candidates):
         start, end = data.select_window(rng.getrandbits(32), window_days)
@@ -84,8 +82,7 @@ def _select_window(
 
 
 def _realized_vol(bars: list[data.Bar]) -> float:
-    """Stdev of daily simple returns — a volatility proxy for ranking only
-    (never enters the graph hash, so float math is fine here)."""
+    # Ranking proxy only — never enters the graph hash, so float math is fine.
     closes = [float(b.close) for b in bars]
     returns = [
         closes[i] / closes[i - 1] - 1.0 for i in range(1, len(closes)) if closes[i - 1]

@@ -132,8 +132,8 @@ def load_window(
 
 
 def _validate(bars: list[Bar], start: date, end: date) -> None:
-    """Reject an empty, out-of-order, or out-of-window series so a truncated or
-    malformed response degrades to the fixture instead of poisoning the hash."""
+    # A truncated or malformed series must degrade to the fixture, not poison
+    # the graph hash with partial data.
     if not bars:
         raise ValueError("empty bar series")
     days = [b.day for b in bars]
@@ -147,8 +147,7 @@ def _validate(bars: list[Bar], start: date, end: date) -> None:
 
 
 def _safe(product: str) -> str:
-    """Keep cache filenames on a safe charset — product ids are exchange-issued,
-    but the value still lands on the filesystem."""
+    # product ids are exchange-issued but still land on the filesystem.
     return "".join(c if c.isalnum() or c in "-." else "_" for c in product)
 
 
