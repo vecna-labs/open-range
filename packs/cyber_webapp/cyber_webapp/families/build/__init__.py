@@ -11,10 +11,10 @@ own with ``WebappBuild(generators=...)``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from graphschema import GraphPatch, Node, WorldGraph
+from graphschema import Node, WorldGraph
 from openrange_pack_sdk import (
     EpisodeReportLike,
     EpisodeResult,
@@ -245,11 +245,12 @@ class WebappBuild(TaskFamily):
         direction: str,
         relevance: float,
     ) -> Mutation:
-        updated = replace(endpoint, attrs={**endpoint.attrs, "build_level": new_level})
-        return self.make_mutation(
+        return self.bump_scalar_attr(
+            endpoint,
+            "build_level",
+            new_level,
             direction=direction,
             relevance=relevance,
-            patch=GraphPatch(nodes_updated=[updated]),
             note=f"build level {new_level} on {endpoint.id}",
         )
 

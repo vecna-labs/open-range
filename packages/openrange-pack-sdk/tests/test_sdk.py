@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from graphschema import Ontology, WorldGraph
+from graphschema import Node, Ontology, WorldGraph
 from openrange_pack_sdk import (
     NPC,
     AgentBackend,
@@ -648,6 +648,47 @@ class TestMakeTaskHelper:
     def test_default_goal_nodes_empty_tuple(self) -> None:
         task = _NoopFamily().make_task(instruction="x", entrypoints="a")
         assert task.goal_nodes == ()
+
+
+class TestBumpScalarAttrHelper:
+    def _node(self) -> Node:
+        return Node(id="ep1", kind="endpoint", attrs={"build_level": 1, "path": "/x"})
+
+    def test_rewrites_target_attr_preserving_everything_else(self) -> None:
+        mut = _NoopFamily().bump_scalar_attr(
+            self._node(), "build_level", 2, direction="harden", relevance=0.5
+        )
+        assert mut.direction == "harden"
+        assert mut.relevance == 0.5
+        assert mut.family == "test.noop"
+        (updated,) = mut.patch.nodes_updated
+        assert updated.attrs == {"build_level": 2, "path": "/x"}
+        assert updated.kind == "endpoint"
+        assert updated.id == "ep1"
+
+    def test_does_not_mutate_the_original_node(self) -> None:
+        node = self._node()
+        _NoopFamily().bump_scalar_attr(
+            node, "build_level", 9, direction="harden", relevance=1.0
+        )
+        assert node.attrs["build_level"] == 1
+
+    def test_default_note_describes_the_change(self) -> None:
+        mut = _NoopFamily().bump_scalar_attr(
+            self._node(), "build_level", 3, direction="harden", relevance=0.5
+        )
+        assert mut.note == "build_level=3 on ep1"
+
+    def test_explicit_note_passes_through(self) -> None:
+        mut = _NoopFamily().bump_scalar_attr(
+            self._node(),
+            "build_level",
+            3,
+            direction="soften",
+            relevance=0.1,
+            note="custom",
+        )
+        assert mut.note == "custom"
 
 
 class TestGraphHelpers:
