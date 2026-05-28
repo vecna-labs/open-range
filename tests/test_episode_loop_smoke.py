@@ -77,7 +77,7 @@ def test_pentest_episode_then_evolve(tmp_path: Path) -> None:
         svc.close()
     assert report.passed, report.episode_result.reason
 
-    # A real passing report (pass-rate 1.0 → harden) drives the next world.
+    # One pass → "harden" direction; pentest has harden mutations to apply.
     evolved = auto_evolve(snap, report, pack=WebappPack())
     assert evolved is not None
     assert evolved.snapshot_id != snap.snapshot_id
