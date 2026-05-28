@@ -1,21 +1,11 @@
-"""``webapp.build`` TaskFamily — agent implements a service handler from spec.
+"""``webapp.build`` — the agent writes a ``handle(query, state)`` into
+``result.json``; a sandboxed grader scores it against a held-out contract.
 
-The agent reads the task instruction (handler signature + behavioral spec +
-sample state shape) and writes a Python source string for ``def handle(query,
-state)`` into ``result.json`` under key ``endpoint_impl``. ``check_success``
-runs the submitted source against a held-out behavioral contract in a
-sandboxed subprocess and grades per-case.
-
-At admission, ``check_feasibility`` also runs the contract against the kind's
-reference impl (must pass) and against each registered mutation of the
-reference (each must break at least one case), so an ill-posed task —
-too-weak or contradictory contract — is rejected before an agent is asked
-to solve it.
-
-Only the ``api`` service kind is wired today. Adding a kind is a contract +
-reference + mutations entry in ``_KIND_GENERATORS``. To use a different
-generator set (custom contracts, test fixtures), construct
-``WebappBuild(generators={...})``.
+Difficulty is a level on the target endpoint — for the ``api`` kind: L1 lists
+records, L2 also returns their count, L3 also sorts them. ``available_mutations``
+raises or lowers the level, which is how the curriculum hardens or softens the
+task. Only ``api`` is wired; add kinds to ``_KIND_GENERATORS`` or inject your
+own with ``WebappBuild(generators=...)``.
 """
 
 from __future__ import annotations
@@ -48,58 +38,29 @@ from cyber_webapp.families.build.reference import api_list_reference
 if TYPE_CHECKING:
     from openrange_pack_sdk import Snapshot
 
-ContractFn = Callable[[int], tuple[ContractCase, ...]]
-ReferenceFn = Callable[[int], str]
-MutationFn = Callable[[str], str]
-
 
 @dataclass(frozen=True)
 class KindSpec:
-    """How to generate, grade, and harden the build task for one service kind.
+    """Per-kind hooks: build the reference handler and contract for a level,
+    plus bug-injectors that prove the contract rejects a broken handler."""
 
-    ``reference(level)`` / ``contract(level)`` produce the clean handler and
-    the behavioral cases for a difficulty level in ``1..max_level``;
-    ``admission_mutations`` are bug-injectors used only to prove the contract
-    distinguishes a correct handler from a broken one.
-    """
-
-    reference: ReferenceFn
-    contract: ContractFn
-    admission_mutations: tuple[MutationFn, ...]
+    reference: Callable[[int], str]
+    contract: Callable[[int], tuple[ContractCase, ...]]
+    admission_mutations: tuple[Callable[[str], str], ...]
     max_level: int
 
 
 KindGenerators = Mapping[str, KindSpec]
 
-
 _KIND_GENERATORS: KindGenerators = {
     "api": KindSpec(
-        reference=api_list_reference,
-        contract=api_list_contract,
-        admission_mutations=(api_wrong_field_name,),
-        max_level=API_MAX_LEVEL,
+        api_list_reference, api_list_contract, (api_wrong_field_name,), API_MAX_LEVEL
     ),
-}
-
-# Curriculum relevance for build level mutations. Harden gets the mid-value
-# (a passing agent is the signal to make the next level required); soften is
-# a low floor so dropping a level is always an option when the agent stalls.
-_HARDEN_RELEVANCE = 0.5
-_SOFTEN_RELEVANCE = 0.05
-
-_LEVEL_REQUIREMENTS = {
-    2: '- Include a top-level "count" equal to the number of items.',
-    3: '- Sort "items" by "id" in ascending order.',
 }
 
 
 @dataclass(frozen=True)
 class _Target:
-    """A resolved build target: the endpoint to implement, its service, the
-    kind's spec, and the current difficulty level — resolved once so the
-    generate / feasibility / success / mutation paths don't each re-derive it.
-    """
-
     endpoint: Node
     service: Node
     kind: str
@@ -114,39 +75,31 @@ def _endpoint_level(endpoint: Node, max_level: int) -> int:
 
 
 def _instruction(method: str, path: str, service: str, level: int) -> str:
-    extra = "\n".join(_LEVEL_REQUIREMENTS[lvl] for lvl in range(2, level + 1))
-    spec = (
-        "- Respond with HTTP 200.\n"
-        "- Set Content-Type to application/json.\n"
-        '- Return a JSON object with a top-level field "items".\n'
-        '- "items" is a list; one entry per record in state["records"].\n'
-        "- Each entry includes the record's id (under \"id\") plus the record's "
-        "fields."
-    )
-    if extra:
-        spec = spec + "\n" + extra
+    requirements = [
+        "Respond with HTTP 200 and Content-Type application/json.",
+        'Return a JSON object with an "items" list — one entry per record in '
+        'state["records"], each carrying the record\'s id (as "id") and its fields.',
+    ]
+    if level >= 2:
+        requirements.append('Include a top-level "count" of the number of items.')
+    if level >= 3:
+        requirements.append('Sort "items" by "id" ascending.')
+    spec = "\n".join(f"- {line}" for line in requirements)
     return f"""Implement the {method} {path} handler for the {service} service.
-
-Handler signature:
 
     def handle(
         query: dict[str, str],
         state: dict[str, Any],
     ) -> tuple[int, dict[str, str], bytes]
 
-The handler must return a 3-tuple (status, headers, body). body must be bytes.
+state["records"] maps each record id to its field dict. Return (status,
+headers, body) with body as bytes.
 
-Behavioral spec:
 {spec}
 
-The state shape your handler will be called with:
-    state["records"]: dict[str, dict[str, Any]] mapping record id to a field dict.
-
-Submit your implementation by writing to result.json in your workspace:
-    {{"endpoint_impl": "def handle(query, state):\\n    ..."}}
-
-The episode terminates when result.json appears. Your submission is graded
-against a held-out behavioral test contract in a sandboxed subprocess.
+Write your handler to result.json as
+{{"endpoint_impl": "def handle(query, state): ..."}}. The episode ends when
+result.json appears; it is graded against a held-out contract in a sandbox.
 """
 
 
@@ -267,10 +220,9 @@ class WebappBuild(TaskFamily):
         *,
         llm: object | None = None,
     ) -> tuple[Mutation, ...]:
-        # Build difficulty is the contract level on the target endpoint;
-        # harden raises it, soften lowers it. Procedural only — the
-        # offense-flavored LLM the pentest family enriches with has no
-        # signal for build and would zero these out.
+        # Procedural, not LLM-scored: the pentest family's offense-flavored
+        # enrichment has no signal for build and would zero these out. Harden
+        # is the strong move when the agent passes; soften is a weak floor.
         del reports, llm
         target = self._pick_target(snapshot.graph)
         if target is None:
@@ -278,15 +230,11 @@ class WebappBuild(TaskFamily):
         options: list[Mutation] = []
         if target.level < target.spec.max_level:
             options.append(
-                self._level_mutation(
-                    target.endpoint, target.level + 1, "harden", _HARDEN_RELEVANCE
-                )
+                self._level_mutation(target.endpoint, target.level + 1, "harden", 0.5)
             )
         if target.level > 1:
             options.append(
-                self._level_mutation(
-                    target.endpoint, target.level - 1, "soften", _SOFTEN_RELEVANCE
-                )
+                self._level_mutation(target.endpoint, target.level - 1, "soften", 0.05)
             )
         return tuple(options)
 

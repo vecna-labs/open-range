@@ -560,10 +560,14 @@ class TestBuildCurriculum:
         assert family.available_mutations(_snapshot(_empty_graph()), ()) == ()
 
     def test_generate_instruction_reflects_level(self, family: WebappBuild) -> None:
-        tasks = family.generate(_api_world_at_level(2), manifest={}, prior=None)
-        assert tasks
-        assert tasks[0].meta["build_level"] == 2
-        assert '"count"' in tasks[0].instruction
+        l2 = family.generate(_api_world_at_level(2), manifest={}, prior=None)[0]
+        assert l2.meta["build_level"] == 2
+        assert '"count"' in l2.instruction
+        assert "ascending" not in l2.instruction
+
+        l3 = family.generate(_api_world_at_level(3), manifest={}, prior=None)[0]
+        assert l3.meta["build_level"] == 3
+        assert "ascending" in l3.instruction
 
 
 class TestPickTarget:
