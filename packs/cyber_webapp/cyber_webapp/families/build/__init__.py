@@ -11,7 +11,7 @@ own with ``WebappBuild(generators=...)``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from graphschema import GraphPatch, Node, WorldGraph
@@ -245,15 +245,7 @@ class WebappBuild(TaskFamily):
         direction: str,
         relevance: float,
     ) -> Mutation:
-        updated = Node(
-            id=endpoint.id,
-            kind=endpoint.kind,
-            attrs={**dict(endpoint.attrs), "build_level": new_level},
-            roles=set(endpoint.roles),
-            visibility=endpoint.visibility,
-            runtime=dict(endpoint.runtime),
-            meta=dict(endpoint.meta),
-        )
+        updated = replace(endpoint, attrs={**endpoint.attrs, "build_level": new_level})
         return self.make_mutation(
             direction=direction,
             relevance=relevance,
