@@ -41,6 +41,10 @@ from openrange_pack_sdk._runtime import (
     OnDemandRuntime,
     SubprocessRuntime,
 )
+from openrange_pack_sdk._sandbox import (
+    SandboxResult,
+    run_submission,
+)
 from openrange_pack_sdk._types import (
     Backing,
     BuildEvent,
@@ -87,6 +91,7 @@ __all__ = [
     "PackPrior",
     "ProceduralBuilder",
     "RuntimeHandle",
+    "SandboxResult",
     "Snapshot",
     "SubprocessRuntime",
     "TaskFamily",
@@ -100,5 +105,6 @@ __all__ = [
     "manifest_int",
     "manifest_list",
     "manifest_str",
+    "run_submission",
     "write_tree",
 ]
