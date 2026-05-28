@@ -62,7 +62,7 @@ class CodexBackend:
                 "--skip-git-repo-check",
             ]
             if self.model is not None:
-                command[2:2] = ["--model", self.model]
+                command += ["--model", self.model]
             for override in self.config_overrides:
                 command.extend(("-c", override))
             if request.json_schema is not None:
