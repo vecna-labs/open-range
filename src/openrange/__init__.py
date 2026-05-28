@@ -50,10 +50,7 @@ from openrange.core.episode import (
     TickRequest,
     TickResult,
 )
-from openrange.llm import (
-    CODEX_DEFAULT_MODEL,
-    CodexBackend,
-)
+from openrange.llm import CodexBackend
 from openrange.npc import (
     NPCS,
     NPCRegistry,
@@ -73,7 +70,6 @@ __all__ = [
     "AgentTurn",
     "AttrSpec",
     "AttrType",
-    "CODEX_DEFAULT_MODEL",
     "CodexAgentBackend",
     "CodexBackend",
     "CurriculumPolicy",

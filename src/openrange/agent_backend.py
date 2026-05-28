@@ -17,10 +17,7 @@ from openrange_pack_sdk import (
     LLMRequest,
 )
 
-from openrange.llm import (
-    CODEX_DEFAULT_MODEL,
-    CodexBackend,
-)
+from openrange.llm import CodexBackend
 
 
 class StrandsAgentBackend:
@@ -90,11 +87,7 @@ class CodexAgentBackend:
                 "CodexAgentBackend: pass either 'backend' or 'model', not both",
             )
         self._backend: LLMBackend = (
-            backend
-            if backend is not None
-            else CodexBackend(
-                model=model if model is not None else CODEX_DEFAULT_MODEL,
-            )
+            backend if backend is not None else CodexBackend(model=model)
         )
 
     def preflight(self) -> None:

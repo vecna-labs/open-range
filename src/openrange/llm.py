@@ -17,13 +17,15 @@ from typing import cast
 
 from openrange_pack_sdk import LLMBackendError, LLMRequest, LLMResult
 
-CODEX_DEFAULT_MODEL = "gpt-5.3-codex-spark"
-
 
 @dataclass(frozen=True, slots=True)
 class CodexBackend:
     command: str | Path = "codex"
-    model: str = CODEX_DEFAULT_MODEL
+    # None → don't pass --model; the codex CLI uses its own configured
+    # default (~/.codex/config.toml). Hardcoding a model here overrides
+    # that and breaks when the pinned model isn't available to the
+    # caller's account.
+    model: str | None = None
     cwd: Path | None = None
     timeout: float = 120.0
     sandbox: str = "read-only"
@@ -52,8 +54,6 @@ class CodexBackend:
             command = [
                 str(self.command),
                 "exec",
-                "--model",
-                self.model,
                 "--color",
                 "never",
                 "--ephemeral",
@@ -61,6 +61,8 @@ class CodexBackend:
                 self.sandbox,
                 "--skip-git-repo-check",
             ]
+            if self.model is not None:
+                command[2:2] = ["--model", self.model]
             for override in self.config_overrides:
                 command.extend(("-c", override))
             if request.json_schema is not None:

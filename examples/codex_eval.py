@@ -16,12 +16,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from openrange_pack_sdk import LLMRequest, LLMResult, Snapshot, TaskSpec
+from openrange_pack_sdk import (
+    LLMBackendError,
+    LLMRequest,
+    LLMResult,
+    Snapshot,
+    TaskSpec,
+)
 
 from openrange.agent_backend import CodexAgentBackend
 from openrange.core import PACKS, auto_evolve
 from openrange.core.episode import AgentTurn, EpisodeReport
-from openrange.llm import CODEX_DEFAULT_MODEL, CodexBackend
+from openrange.llm import CodexBackend
 from openrange.runtime import EpisodeRuntimeError, OpenRangeRun, RunConfig
 
 MANIFEST: dict[str, object] = {
@@ -163,8 +169,16 @@ def _run_task(
     svc = run.episode_service(snapshot)
     handle = svc.start_episode(snapshot, task.id)
     try:
-        result = harness.run(task.instruction, svc.agent_root(handle))
-        svc.record_turn(handle, AgentTurn(message=result.text))
+        try:
+            result = harness.run(task.instruction, svc.agent_root(handle))
+            svc.record_turn(handle, AgentTurn(message=result.text))
+        except LLMBackendError as exc:
+            # A backend failure (timeout, unavailable model, rate limit) is
+            # a failed episode, not a reason to abort a multi-step run. The
+            # agent wrote no result.json, so stop_episode grades it a fail;
+            # surface the cause so it can't be mistaken for an agent miss.
+            print(f"agent backend failed on {task.id}: {exc}", flush=True)
+            svc.record_turn(handle, AgentTurn(message=f"backend error: {exc}"))
         return svc.stop_episode(handle)
     finally:
         svc.close()
@@ -180,7 +194,7 @@ class CodexHarness:
     """
 
     command: str | Path = "codex"
-    model: str = CODEX_DEFAULT_MODEL
+    model: str | None = None
     sandbox: str = "workspace-write"
     timeout: float = 300.0
 
@@ -209,7 +223,11 @@ def _parse_args() -> argparse.Namespace:
         help="Number of episodes; auto_evolve runs between each (default 2).",
     )
     parser.add_argument("--codex-command", type=Path, default=Path("codex"))
-    parser.add_argument("--model", default=CODEX_DEFAULT_MODEL)
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Codex model; default None lets the codex CLI use its config.",
+    )
     parser.add_argument(
         "--agent-sandbox",
         "--codex-sandbox",

@@ -180,6 +180,31 @@ def test_codex_backend_runs_local_command_without_schema(tmp_path: Path) -> None
     assert result == LLMResult("SYSTEM\n\nHELLO")
 
 
+_ARGV_DUMPER = """
+import json
+import sys
+from pathlib import Path
+
+(Path(__file__).parent / "argv.json").write_text(json.dumps(sys.argv))
+print(sys.stdin.read())
+"""
+
+
+def test_codex_backend_omits_model_flag_when_none(tmp_path: Path) -> None:
+    command = executable(tmp_path, "argv_dumper.py", _ARGV_DUMPER)
+    CodexBackend(command=command, model=None, timeout=5).complete(LLMRequest("hi"))
+    argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
+    assert "--model" not in argv
+
+
+def test_codex_backend_passes_model_flag_when_set(tmp_path: Path) -> None:
+    command = executable(tmp_path, "argv_dumper.py", _ARGV_DUMPER)
+    CodexBackend(command=command, model="gpt-x", timeout=5).complete(LLMRequest("hi"))
+    argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "gpt-x"
+
+
 def test_codex_backend_reads_schema_output_from_local_command(
     tmp_path: Path,
 ) -> None:
