@@ -2,7 +2,7 @@
 
 The NPCs receive an ``interface`` mapping matching the shape produced
 by ``WebappRuntime.surface()``:
-``{base_url, http_get, http_get_json, agent_root}``. Tests use a fake
+``{base_url, http_get, http_get_json, solver_root}``. Tests use a fake
 interface that records GET calls so we can assert on cadence,
 rotation, and graceful error handling — no real subprocess needed.
 """
@@ -42,7 +42,7 @@ class _RuntimeSurface(dict[str, Any]):
         self["base_url"] = "http://test.local"
         self["http_get"] = http_get
         self["http_get_json"] = http_get_json
-        self["agent_root"] = "/tmp/fake-agent-root"
+        self["solver_root"] = "/tmp/fake-agent-root"
 
 
 def test_browsing_user_acts_on_first_step_then_obeys_cadence() -> None:

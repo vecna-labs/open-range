@@ -37,8 +37,8 @@ class TradingRuntime(OnDemandRuntime):
 
     def reset(self) -> None:
         super().reset()
-        assert self.agent_root is not None
-        (self.agent_root / "bars.json").write_text(
+        assert self.solver_root is not None
+        (self.solver_root / "bars.json").write_text(
             _bars_json(self._graph), encoding="utf-8"
         )
 

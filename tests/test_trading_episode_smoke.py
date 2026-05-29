@@ -72,13 +72,13 @@ def test_trading_episode_grades_strategy_and_evolves(tmp_path: Path) -> None:
     svc = EpisodeService(TradingPack(), tmp_path / "runs")
     try:
         handle = svc.start_episode(snap, task.id)
-        agent_root = svc.agent_root(handle)
+        solver_root = svc.solver_root(handle)
         # the realizer handed the agent the price window to study
-        bars = json.loads((agent_root / "bars.json").read_text(encoding="utf-8"))
+        bars = json.loads((solver_root / "bars.json").read_text(encoding="utf-8"))
         assert len(bars) >= 2
         assert "close" in bars[0]
         # scripted "agent": a buy-and-hold strategy
-        (agent_root / "result.json").write_text(
+        (solver_root / "result.json").write_text(
             json.dumps({"strategy": "def decide(history):\n    return 1.0\n"}),
             encoding="utf-8",
         )

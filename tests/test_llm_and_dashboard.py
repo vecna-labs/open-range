@@ -768,10 +768,10 @@ def test_openrange_run_can_disable_dashboard_artifacts(tmp_path: Path) -> None:
 
     try:
         handle = svc.start_episode(snapshot, task.id)
-        agent_root = svc.agent_root(handle)
+        solver_root = svc.solver_root(handle)
         # Captured while the episode is live; ``svc.close()`` cleans
         # the runtime tempdir, so this check has to happen pre-close.
-        assert agent_root.exists()
+        assert solver_root.exists()
     finally:
         svc.close()
 
@@ -818,12 +818,12 @@ def test_episode_each_start_gives_fresh_roots(tmp_path: Path) -> None:
     # never realize a snapshot built by a different pack.
     svc = EpisodeService(WebappPack(), run_root, dashboard=dashboard)
     first = svc.start_episode(snapshot, task.id)
-    first_root = svc.agent_root(first)
+    first_root = svc.solver_root(first)
     marker = first_root / "old.txt"
     marker.write_text("old", encoding="utf-8")
     try:
         second = svc.start_episode(snapshot, task.id)
-        second_root = svc.agent_root(second)
+        second_root = svc.solver_root(second)
         # Both runtimes are live; assert while still active because
         # ``svc.close()`` now cleans up each runtime's tempdir.
         assert second_root.exists()
@@ -885,7 +885,7 @@ def test_restore_failure_does_not_leak_handle(tmp_path: Path) -> None:
             episode_id=ckpt.episode_id,
             snapshot_id=ckpt.snapshot_id,
             task_id=ckpt.task_id,
-            state={"agent_root_snapshot": 42},
+            state={"solver_root_snapshot": 42},
         )
         before = set(svc._episodes)
         with pytest.raises(OpenRangeError):

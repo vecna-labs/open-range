@@ -60,9 +60,9 @@ class WebappRuntime(SubprocessRuntime):
     def subprocess_command(
         self,
         env_root: Path,
-        agent_root: Path,
+        solver_root: Path,
     ) -> list[str]:
-        del agent_root
+        del solver_root
         app_path = env_root / "pack" / APP_FILE_NAME
         if not app_path.exists():
             raise WebappRuntimeError(

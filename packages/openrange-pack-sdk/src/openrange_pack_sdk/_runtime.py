@@ -4,11 +4,11 @@ These are optional. Packs can implement the ``RuntimeHandle`` Protocol
 directly. Use one of these when your runtime fits the pattern.
 
 Two siblings share a filesystem-lifecycle base (``env_root`` /
-``agent_root`` / ``pack_root``, file-snapshot checkpoint/restore,
+``solver_root`` / ``pack_root``, file-snapshot checkpoint/restore,
 ``result.json`` terminal signal):
 
 * :class:`SubprocessRuntime` — spawns and supervises a
-  long-running child the agent interacts with (e.g. a webapp, a
+  long-running child the solver interacts with (e.g. a webapp, a
   simulator). Owns the SIGTERM→SIGKILL grace period and the startup
   handshake.
 
@@ -41,9 +41,9 @@ from openrange_pack_sdk._helpers import write_tree
 class _FilesystemRuntime(ABC):
     """Shared lifecycle base for filesystem-backed RuntimeHandles.
 
-    Owns the tempdir trio (``env_root``, ``agent_root``, ``pack_root``;
+    Owns the tempdir trio (``env_root``, ``solver_root``, ``pack_root``;
     each ``None`` before the first ``reset()`` and after ``stop()``),
-    file-snapshot ``checkpoint`` / ``restore`` of the agent's workspace,
+    file-snapshot ``checkpoint`` / ``restore`` of the solver's workspace,
     ``terminal()`` via ``result.json``, and the default ``collect()``
     shape. Packs subclass one of the public siblings, not this directly.
     """
@@ -53,7 +53,7 @@ class _FilesystemRuntime(ABC):
     def __init__(self, graph: WorldGraph) -> None:
         self._graph = graph
         self._env_root: Path | None = None
-        self._agent_root: Path | None = None
+        self._solver_root: Path | None = None
         self._pack_root: Path | None = None
         self._checkpoint_dirs: list[Path] = []
 
@@ -62,8 +62,8 @@ class _FilesystemRuntime(ABC):
         return self._env_root
 
     @property
-    def agent_root(self) -> Path | None:
-        return self._agent_root
+    def solver_root(self) -> Path | None:
+        return self._solver_root
 
     @property
     def pack_root(self) -> Path | None:
@@ -96,68 +96,68 @@ class _FilesystemRuntime(ABC):
         and drop ``_checkpoint_dirs``."""
 
     def surface(self) -> Mapping[str, Any]:
-        if self._agent_root is None:
+        if self._solver_root is None:
             raise OpenRangeError("surface() called before reset()")
         return {
-            "agent_root": str(self._agent_root),
+            "solver_root": str(self._solver_root),
             **self.surface_extras(),
         }
 
     def terminal(self) -> tuple[bool, str | None]:
-        if self._agent_root is None:
+        if self._solver_root is None:
             return False, None
-        if (self._agent_root / self.RESULT_FILE).exists():
-            return True, "agent wrote result"
+        if (self._solver_root / self.RESULT_FILE).exists():
+            return True, "solver wrote result"
         return False, None
 
     def checkpoint(self) -> Any:
-        if self._agent_root is None:
+        if self._solver_root is None:
             raise OpenRangeError("checkpoint() called before reset()")
         snap = Path(tempfile.mkdtemp(prefix=f"{self._tempdir_prefix()}-ckpt-"))
-        shutil.copytree(self._agent_root, snap / "agent", dirs_exist_ok=True)
+        shutil.copytree(self._solver_root, snap / "solver", dirs_exist_ok=True)
         self._checkpoint_dirs.append(snap)
-        return {"agent_root_snapshot": str(snap)}
+        return {"solver_root_snapshot": str(snap)}
 
     def restore(self, state: Any) -> None:
         if not isinstance(state, Mapping):
             raise OpenRangeError(
                 f"restore() expects a mapping, got {type(state).__name__}"
             )
-        snap_path = state.get("agent_root_snapshot")
+        snap_path = state.get("solver_root_snapshot")
         if not isinstance(snap_path, str):
             raise OpenRangeError(
-                "restore() payload missing 'agent_root_snapshot' (str)"
+                "restore() payload missing 'solver_root_snapshot' (str)"
             )
-        agent_snap = Path(snap_path) / "agent"
-        if not agent_snap.exists():
-            raise OpenRangeError(f"restore() snapshot missing: {agent_snap}")
-        if self._agent_root is None:
+        solver_snap = Path(snap_path) / "solver"
+        if not solver_snap.exists():
+            raise OpenRangeError(f"restore() snapshot missing: {solver_snap}")
+        if self._solver_root is None:
             raise OpenRangeError("restore() called before reset()")
-        for child in self._agent_root.iterdir():
+        for child in self._solver_root.iterdir():
             if child.is_dir():
                 shutil.rmtree(child)
             else:
                 child.unlink()
-        shutil.copytree(agent_snap, self._agent_root, dirs_exist_ok=True)
+        shutil.copytree(solver_snap, self._solver_root, dirs_exist_ok=True)
 
     def collect(self) -> Mapping[str, Any]:
-        if self._agent_root is None:
+        if self._solver_root is None:
             return {}
         result = self._read_result()
         return {
-            "agent_root": str(self._agent_root),
+            "solver_root": str(self._solver_root),
             "result": dict(result),
             **self.collect_extras(),
         }
 
     def _init_env(self) -> None:
         env_root = Path(tempfile.mkdtemp(prefix=f"{self._tempdir_prefix()}-"))
-        agent_root = env_root / "agent"
-        agent_root.mkdir(parents=True, exist_ok=True)
+        solver_root = env_root / "solver"
+        solver_root.mkdir(parents=True, exist_ok=True)
         pack_root = env_root / "pack"
         pack_root.mkdir(parents=True, exist_ok=True)
         self._env_root = env_root
-        self._agent_root = agent_root
+        self._solver_root = solver_root
         self._pack_root = pack_root
         write_tree(pack_root, self.prepare_env_files(self._graph))
 
@@ -165,7 +165,7 @@ class _FilesystemRuntime(ABC):
         if self._env_root is not None and self._env_root.exists():
             shutil.rmtree(self._env_root, ignore_errors=True)
         self._env_root = None
-        self._agent_root = None
+        self._solver_root = None
         self._pack_root = None
 
     def _drop_checkpoints(self) -> None:
@@ -174,8 +174,8 @@ class _FilesystemRuntime(ABC):
         self._checkpoint_dirs.clear()
 
     def _read_result(self) -> Mapping[str, Any]:
-        assert self._agent_root is not None
-        result_path = self._agent_root / self.RESULT_FILE
+        assert self._solver_root is not None
+        result_path = self._solver_root / self.RESULT_FILE
         if not result_path.exists():
             return {}
         try:
@@ -191,7 +191,7 @@ class _FilesystemRuntime(ABC):
 class OnDemandRuntime(_FilesystemRuntime):
     """RuntimeHandle for packs with no persistent subprocess.
 
-    Pattern: the agent acts on files under ``agent_root``; the pack
+    Pattern: the solver acts on files under ``solver_root``; the pack
     exposes on-demand callables (e.g. ``run_tests(name)``,
     ``run_cmd(argv)``) via ``surface_extras`` that shell out per call.
 
@@ -205,7 +205,7 @@ class OnDemandRuntime(_FilesystemRuntime):
 
     Packs override (as needed):
 
-    * ``surface_extras()`` — add callables the agent can invoke.
+    * ``surface_extras()`` — add callables the solver can invoke.
     * ``collect_extras()`` — add computed-from-workspace keys to
       ``collect()``.
     * ``poll_events()`` — per-tick events (default = no events).
@@ -227,17 +227,17 @@ class OnDemandRuntime(_FilesystemRuntime):
 
 class SubprocessRuntime(_FilesystemRuntime):
     """RuntimeHandle scaffold for packs whose realized world is a child
-    subprocess the agent interacts with.
+    subprocess the solver interacts with.
 
     Domains this fits naturally: a webapp serving HTTP, a simulator
     exposing a broker API, an in-pack mock service. Common structure:
     spawn a process, optionally exchange a small startup descriptor
-    (URL, port, fd), let the agent act, capture results from the
-    agent's filesystem at the end.
+    (URL, port, fd), let the solver act, capture results from the
+    solver's filesystem at the end.
 
     The class owns:
 
-    * The shared filesystem lifecycle (``env_root`` / ``agent_root`` /
+    * The shared filesystem lifecycle (``env_root`` / ``solver_root`` /
       ``pack_root``, ``checkpoint`` / ``restore``, terminal-via-result.json).
     * Subprocess spawn with ``start_new_session=True`` so process-group
       signals reach the child without affecting the harness.
@@ -249,7 +249,7 @@ class SubprocessRuntime(_FilesystemRuntime):
 
     * ``prepare_env_files(graph)`` → ``{relative_path: contents}`` for
       ``pack_root`` (e.g., the codegen-rendered app source).
-    * ``subprocess_command(env_root, agent_root)`` → the command to spawn.
+    * ``subprocess_command(env_root, solver_root)`` → the command to spawn.
 
     Packs override (as needed):
 
@@ -260,7 +260,7 @@ class SubprocessRuntime(_FilesystemRuntime):
       ``stdin=subprocess.PIPE`` for two-way comms). Additive; don't
       override ``stdout``/``stderr``/``start_new_session`` — the SDK
       relies on those.
-    * ``surface_extras()`` — extra keys the agent reads (callables, URLs).
+    * ``surface_extras()`` — extra keys the solver reads (callables, URLs).
     * ``poll_events()`` — per-tick event drain (default = no events).
     * ``collect_extras()`` — per-pack final-state keys.
 
@@ -270,7 +270,7 @@ class SubprocessRuntime(_FilesystemRuntime):
     ``poll_events`` / ``collect_extras``.
 
     Contract: the spawned subprocess MUST emit at least one newline on
-    stdout before the agent acts. ``reset()`` blocks on ``readline()``
+    stdout before the solver acts. ``reset()`` blocks on ``readline()``
     (bounded by ``STARTUP_TIMEOUT_SECONDS``) to capture optional startup
     info. Packs with no startup info to advertise should print a single
     ``\\n`` immediately.
@@ -293,7 +293,7 @@ class SubprocessRuntime(_FilesystemRuntime):
     def subprocess_command(
         self,
         env_root: Path,
-        agent_root: Path,
+        solver_root: Path,
     ) -> Sequence[str]:
         """The argv to ``subprocess.Popen``."""
 
@@ -326,8 +326,8 @@ class SubprocessRuntime(_FilesystemRuntime):
         self._teardown_subprocess()
         self._teardown_env()
         self._init_env()
-        assert self._env_root is not None and self._agent_root is not None
-        self._process = self._spawn(self._env_root, self._agent_root)
+        assert self._env_root is not None and self._solver_root is not None
+        self._process = self._spawn(self._env_root, self._solver_root)
         assert self._process.stdout is not None
         first_line = _readline_with_timeout(self._process, self.STARTUP_TIMEOUT_SECONDS)
         if first_line:
@@ -356,9 +356,9 @@ class SubprocessRuntime(_FilesystemRuntime):
     def _spawn(
         self,
         env_root: Path,
-        agent_root: Path,
+        solver_root: Path,
     ) -> subprocess.Popen[str]:
-        cmd = list(self.subprocess_command(env_root, agent_root))
+        cmd = list(self.subprocess_command(env_root, solver_root))
         kwargs: dict[str, Any] = {
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,

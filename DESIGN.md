@@ -13,6 +13,36 @@ No marketing. The interesting content is the alternatives that lost.
 
 ---
 
+## Vocabulary
+
+Three roles, named by what they do — never "agent" (that word is reserved for a
+*mechanism*, below):
+
+- **builder** — makes and evolves the world graph (procedural, or LLM-backed: a
+  "builder LLM"). `Pack.make_builder`, `Builder`, `auto_evolve`.
+- **solver** — the model under evaluation. It plays an *episode* against a
+  realized world and emits a *submission*; its workspace is `solver_root`.
+- **NPC** — an LLM-backed inhabitant of the world (a browsing user, an office
+  persona). It populates the world the solver acts in; it is never graded.
+
+The mechanical parts are not agents and don't borrow the word:
+
+- **submission** — the artifact the solver emits (e.g. a `decide` / `handle`
+  function written to `result.json`).
+- **grader** — runs the submission against a held-out contract / replay and
+  scores it (`run_submission`, `TaskFamily.check_success`).
+- **admission** — the five-layer gate that proves a built world is valid and
+  solvable (`admit`).
+- **curriculum** — moves difficulty toward the solver's frontier (`auto_evolve`).
+
+"agent" names a *mechanism*, not a role: an **agent loop** is a tool-using LLM
+loop (`AgentBackend`, `AgentNPC`), as opposed to a raw `LLMBackend` transport.
+NPCs are built on agent loops; a solver could be too. So builder / solver / NPC
+are roles, `LLMBackend` / `AgentBackend` are mechanisms, and "agent" alone is
+never a role.
+
+---
+
 ## 1. The bet
 
 OpenRange exists to test a falsifiable claim:
@@ -479,10 +509,10 @@ substrate:
   rendering source) without paying the I/O cost of starting a
   subprocess. The episode loop calls `reset()` when it actually
   wants the world running.
-- `surface()` — the agent-facing IO bundle. Critically, this is not
+- `surface()` — the solver-facing IO bundle. Critically, this is not
   just `base_url`. The cyber pack returns
-  `{base_url, http_get, http_get_json, agent_root}`. NPCs need the
-  callables; the agent needs the URL and the working dir; the
+  `{base_url, http_get, http_get_json, solver_root}`. NPCs need the
+  callables; the solver needs the URL and the working dir; the
   dashboard wants the strings. One method returns the whole bundle;
   the caller picks what it needs.
 - `poll_events()` — drain side-effect events. The episode loop
