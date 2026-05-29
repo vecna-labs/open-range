@@ -11,12 +11,25 @@ across many domains, (b) a clean way to plug a training loop into
 them, and (c) a core that scales from "single process" to "production
 training fleet."
 
+> [!IMPORTANT]
+> **Current focus.** Deepen the cyber pack and push toward **enterprise
+> scale** via graph-driven lazy realization
+> ([#212](https://github.com/vecna-labs/open-range/issues/212) /
+> [#235](https://github.com/vecna-labs/open-range/issues/235)). With a
+> second pack now shipped (trading), the next big lift is closing the
+> eval → training loop
+> ([#198](https://github.com/vecna-labs/open-range/issues/198)).
+> Physical-space simulation
+> ([#219](https://github.com/vecna-labs/open-range/issues/219)) is
+> explicitly far-future.
+
 Status tags on each item:
 
 - 🚧 **in progress** — actively being worked on
 - 🟢 **help wanted** — well-scoped, contributor-friendly
 - 🟡 **design needed** — design doc PR before code
 - 🔮 **research** — exploratory, no near-term plan
+- ✅ **shipped** — landed; kept here for context
 
 Browse all roadmap issues: [`label:roadmap`](https://github.com/vecna-labs/open-range/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap).
 
@@ -45,9 +58,10 @@ parallel.
   held-out behavioral contract. Admission validates the contract is
   well-posed (clean reference passes; bug-injecting mutation breaks).
   Only the `api` service kind is wired; other kinds emit no build task.
-  Stages 2–4 expand the mutation/contract library, add curriculum
-  mutations on build, and plumb live realizer reload + an agent
-  test-runner tool so the loop is multi-turn instead of single-shot.
+  Stages 2–4 ([#237](https://github.com/vecna-labs/open-range/issues/237))
+  expand the mutation/contract library, add curriculum mutations on
+  build, and plumb live realizer reload + an agent test-runner tool so
+  the loop is multi-turn instead of single-shot.
 - 🟢 **Kind / Kubernetes runtime backing**
   ([#189](https://github.com/vecna-labs/open-range/issues/189)) —
   unblocks real cross-service exploit chains.
@@ -64,15 +78,33 @@ parallel.
 - 🔮 **MCTS-based world generator**
   ([#193](https://github.com/vecna-labs/open-range/issues/193)) —
   search over graph mutations instead of rejection sampling.
+- 🟡 **Enterprise-scale worlds**
+  ([#212](https://github.com/vecna-labs/open-range/issues/212)) —
+  100–1000× today's scale: org chart, AD-shaped identity, multi-site
+  networks, population NPCs. Umbrella; map the shape before building.
+- 🟡 **Graph-driven lazy realization**
+  ([#235](https://github.com/vecna-labs/open-range/issues/235)) — the
+  mechanism that makes enterprise scale tractable: use the world graph's
+  reachability to spin up only what the agent can reach (hot / warm /
+  cold tiers) instead of realizing the whole estate at once.
+- 🔮 **Phishing / mail channel**
+  ([#87](https://github.com/vecna-labs/open-range/issues/87)) —
+  non-HTTP `mail` entrypoint + an email-handling NPC. Longer-term;
+  the multi-channel direction overlaps the physical-space vision below.
 
 ### Other domains
 
-We want at least one non-cyber pack so the Pack ABC isn't accidentally
-cyber-shaped.
+A non-cyber pack proves the Pack ABC isn't accidentally cyber-shaped.
+**Trading** is the first; more domains welcome.
 
-- 🟢 **Trading starter pack**
-  ([#194](https://github.com/vecna-labs/open-range/issues/194)) —
-  order book + P&L success check. First non-HTTP runtime backing.
+- ✅ **Trading pack** — shipped
+  ([#194](https://github.com/vecna-labs/open-range/issues/194)). Order-book
+  backtest + P&L success check; the first non-HTTP backing and the
+  load-bearing proof that the pack contract is domain-agnostic.
+- 🟡 **SWE pack**
+  ([#238](https://github.com/vecna-labs/open-range/issues/238)) — generated
+  code repos + test-suite grading; generalizes the `webapp.build` grader
+  from one handler to a real repo + test runner.
 - 🔮 **Social / negotiation pack**
   ([#195](https://github.com/vecna-labs/open-range/issues/195)) —
   multi-turn dialogue with NPC counterparties.
@@ -105,7 +137,9 @@ Today the examples are *eval* loops. Closing them into actual
 
 Primitives every pack and harness depends on.
 
-- 🚧 **Per-NPC LLM backend selection** — extracting
+- 🚧 **Per-NPC LLM backend selection**
+  ([#236](https://github.com/vecna-labs/open-range/issues/236)) —
+  extracting
   `openrange-pack-sdk` removed the `model:` config key from the cyber
   webapp NPC factories (it used to construct a concrete
   `StrandsAgentBackend` and so couldn't survive the strict
@@ -115,14 +149,21 @@ Primitives every pack and harness depends on.
   + a `RunConfig.npc_backend_factory: Callable[[str], AgentBackend] | None`
   the runtime resolves at NPC start. Mirror of the entry-point pattern;
   no openrange import in pack code.
+- 🟢 **API-key LLM backends**
+  ([#188](https://github.com/vecna-labs/open-range/issues/188)) — a
+  `LiteLLMBackend` + a zero-dep `OpenAICompatibleBackend` so anyone can
+  build worlds with their own provider, not just the local Codex CLI.
+  PR [#220](https://github.com/vecna-labs/open-range/issues/220) in flight.
 - 🟢 **Restore 100% test coverage**
   ([#201](https://github.com/vecna-labs/open-range/issues/201)) —
   coverage dropped to 80% during the typed-property-graph + pack /
   admission refactor; bring it back.
-- 🟢 **Second non-cyber pack to validate domain-agnostic shape** —
-  today only `webapp` ships, so the design's domain-agnosticism is
-  unverified end-to-end. A second pack against a non-HTTP backing is
-  the load-bearing proof.
+- 🟡 **Mature the pack SDK**
+  ([#239](https://github.com/vecna-labs/open-range/issues/239)) —
+  stabilize, version, document, and decide on publishing
+  `openrange-pack-sdk` + `graphschema`. The whole architecture hinges on
+  this contract; every new pack is another consumer, so churn gets more
+  expensive over time.
 - 🟡 **TaskFamily check sandboxing**
   ([#202](https://github.com/vecna-labs/open-range/issues/202)) —
   the pack/admission refactor replaced exec'd verifier source with
@@ -164,6 +205,18 @@ See [docs/dashboard.md](docs/dashboard.md).
 - 🟢 **Architecture decisions log**
   ([#210](https://github.com/vecna-labs/open-range/issues/210)) —
   short notes on the *why* of big shape choices.
+
+## Far-future / research
+
+Big directional bets with no near-term plan. Here to capture the vision,
+not to schedule it.
+
+- 🔮 **Physical-space simulation substrate**
+  ([#219](https://github.com/vecna-labs/open-range/issues/219)) —
+  OpenRange as a grounded multi-agent environment (rooms, bodies,
+  objects, conversations) with the cyber pack as one scenario rendered
+  on top. Below enterprise-scale in priority; the cyber-relevant slices
+  surface nearer-term via [#87](https://github.com/vecna-labs/open-range/issues/87).
 
 ## How to help
 
