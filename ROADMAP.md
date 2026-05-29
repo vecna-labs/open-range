@@ -11,18 +11,6 @@ across many domains, (b) a clean way to plug a training loop into
 them, and (c) a core that scales from "single process" to "production
 training fleet."
 
-> [!IMPORTANT]
-> **Current focus.** Deepen the cyber pack and push toward **enterprise
-> scale** via graph-driven lazy realization
-> ([#212](https://github.com/vecna-labs/open-range/issues/212) /
-> [#235](https://github.com/vecna-labs/open-range/issues/235)). With a
-> second pack now shipped (trading), the next big lift is closing the
-> eval → training loop
-> ([#198](https://github.com/vecna-labs/open-range/issues/198)).
-> Physical-space simulation
-> ([#219](https://github.com/vecna-labs/open-range/issues/219)) is
-> explicitly far-future.
-
 Status tags on each item:
 
 - 🚧 **in progress** — actively being worked on
@@ -32,6 +20,19 @@ Status tags on each item:
 - ✅ **shipped** — landed; kept here for context
 
 Browse all roadmap issues: [`label:roadmap`](https://github.com/vecna-labs/open-range/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap).
+
+## Current focus
+
+Deepen the cyber pack and push toward **enterprise scale** via
+graph-driven lazy realization
+([#212](https://github.com/vecna-labs/open-range/issues/212) /
+[#235](https://github.com/vecna-labs/open-range/issues/235)). With a
+second pack now shipped (trading), the next big lift is closing the
+eval → training loop
+([#198](https://github.com/vecna-labs/open-range/issues/198)).
+Physical-space simulation
+([#219](https://github.com/vecna-labs/open-range/issues/219)) is
+explicitly far-future.
 
 ## Packs
 
