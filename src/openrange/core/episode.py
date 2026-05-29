@@ -1,4 +1,4 @@
-"""EpisodeService — the agent harness's seam into running worlds."""
+"""EpisodeService — the solver harness's seam into running worlds."""
 
 from __future__ import annotations
 
@@ -279,7 +279,7 @@ class EpisodeService:
         try:
             running.runtime.stop()
         except Exception as exc:  # noqa: BLE001
-            # A failed stop must not mask the agent's result.
+            # A failed stop must not mask the solver's result.
             self._record_system(
                 running,
                 {"stop_error": type(exc).__name__},
@@ -311,7 +311,7 @@ class EpisodeService:
         return self._require(episode).surface_cache
 
     def base_url(self, episode: EpisodeHandle) -> str:
-        """The base URL of the agent-facing IO surface, when one is declared."""
+        """The base URL of the solver-facing IO surface, when one is declared."""
         surface = self._require(episode).surface_cache
         value = surface.get("base_url")
         if not isinstance(value, str):
@@ -320,13 +320,13 @@ class EpisodeService:
             )
         return value
 
-    def agent_root(self, episode: EpisodeHandle) -> Path:
-        """The agent's working directory, when the surface declares one."""
+    def solver_root(self, episode: EpisodeHandle) -> Path:
+        """The solver's working directory, when the surface declares one."""
         surface = self._require(episode).surface_cache
-        value = surface.get("agent_root")
+        value = surface.get("solver_root")
         if not isinstance(value, (str, Path)):
             raise EpisodeError(
-                f"episode {episode.id!r} surface does not expose 'agent_root'",
+                f"episode {episode.id!r} surface does not expose 'solver_root'",
             )
         return Path(value)
 
@@ -676,7 +676,7 @@ def _resolve_task(snapshot: Snapshot, task_id: str | None) -> TaskSpec:
 def _observation_metadata(surface: Mapping[str, Any]) -> Mapping[str, Any]:
     # Surface may carry callables the dashboard JSON serializer can't handle.
     out: dict[str, Any] = {}
-    for key in ("base_url", "agent_root"):
+    for key in ("base_url", "solver_root"):
         value = surface.get(key)
         if isinstance(value, str):
             out[key] = value
