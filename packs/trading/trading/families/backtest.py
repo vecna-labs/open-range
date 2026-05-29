@@ -1,9 +1,9 @@
 """Look-ahead-safe backtest grader for ``trade.pnl``.
 
-The agent's ``decide(history)`` runs in the SDK sandbox; the trusted ``_replay``
-replays it bar-by-bar, handing it only the bars up to and including each day —
-it can never see the future. The driver returns the equity curve; this module
-turns that into P&L + max-drawdown and checks them against the risk limits.
+The agent's ``decide`` strategy runs in the SDK sandbox (see
+``openrange_pack_sdk.run_submission`` for the trust model). This module turns the
+resulting equity curve into P&L and max-drawdown and checks them against the
+task's risk limits.
 """
 
 from __future__ import annotations

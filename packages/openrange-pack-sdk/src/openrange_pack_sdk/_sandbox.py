@@ -46,10 +46,8 @@ _DEFAULT_CPU_SECONDS = 5
 
 _HARNESS = Path(__file__).with_name("_harness.py")
 
-# A trusted pack function run in the child as ``driver(entry, case)``: ``entry``
-# is the submission's callable, ``case`` is the JSON stdin, and it returns a
-# JSON-serializable mapping. The child loads its module by file, so it must be
-# module-level and live in an import-light module (no heavy pack __init__).
+# The child file-loads the driver's module, so it must be a module-level
+# function in an import-light module (no heavy pack __init__).
 Driver = Callable[[Callable[..., Any], Any], Mapping[str, Any]]
 
 
