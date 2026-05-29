@@ -69,9 +69,8 @@ def _apply_limits(memory_bytes: int, cpu_seconds: int) -> None:
 
 
 def _load_driver(module_name: str, file: str, qualname: str) -> Any:
-    # Load by file, not import, so the child runs only the driver's module and
-    # not its whole pack — sidestepping the circular import a pack __init__
-    # would cause, and keeping the child light.
+    # Load by file, not import: import_module would pull the driver's whole
+    # pack into every child subprocess; file-loading runs just this module.
     spec = importlib.util.spec_from_file_location(module_name, file)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load driver {module_name!r} from {file!r}")
