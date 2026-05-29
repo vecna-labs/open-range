@@ -134,15 +134,15 @@ def test_handle_reset_materializes_files_and_starts_process() -> None:
         surface = handle.surface()
         base_url = cast(str, surface["base_url"])
         assert base_url.startswith("http://127.0.0.1:")
-        # The agent_root the surface reports must be a real directory.
-        agent_root = cast(str, surface["agent_root"])
+        # The solver_root the surface reports must be a real directory.
+        solver_root = cast(str, surface["solver_root"])
         from pathlib import Path  # noqa: PLC0415
 
-        assert Path(agent_root).is_dir()
+        assert Path(solver_root).is_dir()
         # The pack root sits next to the agent root with app.py + seed.
         # We don't assert the seed.json still exists on disk (the
         # generated app unlinks it after loading), but app.py must.
-        env_root = Path(agent_root).parent
+        env_root = Path(solver_root).parent
         assert (env_root / "pack" / APP_FILE_NAME).exists()
         # The request log is pre-touched so poll_events() before any HTTP
         # traffic returns () instead of erroring. SubprocessRuntimeHandle
@@ -203,7 +203,7 @@ def test_handle_collect_reports_smoke_test_signal() -> None:
 def test_handle_collect_returns_empty_before_reset() -> None:
     """Before reset(), collect() returns an empty mapping rather than crashing."""
     handle = WebappPack().realize(_sample_graph(), Backing.PROCESS)
-    # No reset(); no process; no agent_root.
+    # No reset(); no process; no solver_root.
     collected = handle.collect()
     assert dict(collected) == {}
 
@@ -221,14 +221,14 @@ def test_handle_terminal_flips_when_result_file_appears() -> None:
         # Simulate the agent finishing: drop a result.json next to where
         # the handle expects it.
         surface = handle.surface()
-        agent_root = Path(cast(str, surface["agent_root"]))
-        (agent_root / RESULT_FILE_NAME).write_text(
+        solver_root = Path(cast(str, surface["solver_root"]))
+        (solver_root / RESULT_FILE_NAME).write_text(
             json.dumps({"flag": "x"}),
             encoding="utf-8",
         )
         done, reason = handle.terminal()
         assert done is True
-        assert reason == "agent wrote result"
+        assert reason == "solver wrote result"
     finally:
         handle.stop()
 
@@ -253,14 +253,14 @@ def test_handle_stop_cleans_up_tempdirs() -> None:
     assert env_root is not None and env_root.exists()
     state = handle.checkpoint()
     checkpoint_dir = Path(
-        cast(str, cast(Mapping[str, object], state)["agent_root_snapshot"]),
+        cast(str, cast(Mapping[str, object], state)["solver_root_snapshot"]),
     )
     assert checkpoint_dir.exists()
     handle.stop()
     assert not env_root.exists()
     assert not checkpoint_dir.exists()
     assert handle._env_root is None
-    assert handle._agent_root is None
+    assert handle._solver_root is None
     assert handle._pack_root is None
 
 

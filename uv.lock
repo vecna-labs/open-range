@@ -12,6 +12,7 @@ members = [
     "openrange",
     "openrange-cyber-webapp",
     "openrange-pack-sdk",
+    "openrange-trading",
 ]
 
 [[package]]
@@ -806,6 +807,7 @@ dev = [
     { name = "coverage" },
     { name = "mypy" },
     { name = "openrange-cyber-webapp" },
+    { name = "openrange-trading" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -826,6 +828,7 @@ dev = [
     { name = "coverage", extras = ["toml"], specifier = ">=7.13" },
     { name = "mypy", specifier = ">=1.19" },
     { name = "openrange-cyber-webapp", editable = "packs/cyber_webapp" },
+    { name = "openrange-trading", editable = "packs/trading" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.15.6" },
 ]
@@ -859,6 +862,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "graphschema", editable = "packages/graphschema" }]
+
+[[package]]
+name = "openrange-trading"
+version = "0.1.0"
+source = { editable = "packs/trading" }
+dependencies = [
+    { name = "graphschema" },
+    { name = "openrange-pack-sdk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "graphschema", editable = "packages/graphschema" },
+    { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
+]
 
 [[package]]
 name = "opentelemetry-api"

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openrange-trading"
+version = "0.1.0"
+description = "Trading pack for OpenRange — backtest allocation strategies over real historical OHLC windows."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+    "openrange-pack-sdk",
+    "graphschema",
+]
+
+[project.entry-points."openrange.packs"]
+"trading" = "trading:TradingPack"
+
+[tool.hatch.build.targets.wheel]
+packages = ["trading"]
+
+[tool.uv.sources]
+graphschema = { workspace = true }
+openrange-pack-sdk = { workspace = true }

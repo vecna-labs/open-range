@@ -256,25 +256,25 @@ class TestGrading:
     def test_missing_handle_definition(self) -> None:
         report = grade_source("x = 1\n", (self._trivial_case(),))
         assert report.passed == 0
-        assert "no callable 'handle'" in report.cases[0].reason
+        assert "no callable" in report.cases[0].reason
 
     def test_handle_not_callable(self) -> None:
         report = grade_source("handle = 42\n", (self._trivial_case(),))
         assert report.passed == 0
-        assert "no callable 'handle'" in report.cases[0].reason
+        assert "no callable" in report.cases[0].reason
 
     def test_handler_raises(self) -> None:
         src = "def handle(query, state):\n    raise RuntimeError('boom')\n"
         report = grade_source(src, (self._trivial_case(),))
         assert report.passed == 0
-        assert "handler raised" in report.cases[0].reason
+        assert "submission failed" in report.cases[0].reason
         assert "RuntimeError" in report.cases[0].reason
 
     def test_handler_wrong_return_shape(self) -> None:
         src = "def handle(query, state):\n    return 200\n"
         report = grade_source(src, (self._trivial_case(),))
         assert report.passed == 0
-        assert "handler raised" in report.cases[0].reason
+        assert "submission failed" in report.cases[0].reason
 
     def test_handler_returns_none_body(self) -> None:
         src = (
@@ -303,7 +303,7 @@ class TestGrading:
         src = "import os\nos._exit(7)\ndef handle(q, s): pass\n"
         report = grade_source(src, (self._trivial_case(),))
         assert report.passed == 0
-        assert "subprocess exited 7" in report.cases[0].reason
+        assert "exited (7)" in report.cases[0].reason
 
     def test_subprocess_writes_non_json_then_exits_zero(self) -> None:
         src = (
@@ -315,7 +315,7 @@ class TestGrading:
         )
         report = grade_source(src, (self._trivial_case(),))
         assert report.passed == 0
-        assert "non-JSON" in report.cases[0].reason
+        assert "without a result" in report.cases[0].reason
 
 
 class TestContractReport:

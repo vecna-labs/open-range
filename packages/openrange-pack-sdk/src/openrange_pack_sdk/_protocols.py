@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from graphschema import Issue, Ontology, WorldGraph
+from graphschema import GraphPatch, Issue, Node, Ontology, WorldGraph
 
 from openrange_pack_sdk._errors import AgentBackendError
 from openrange_pack_sdk._types import (
@@ -197,6 +198,31 @@ class TaskFamily(ABC):
             note=note,
         )
 
+    def bump_scalar_attr(
+        self,
+        node: Node,
+        key: str,
+        new_value: Any,
+        *,
+        direction: str,
+        relevance: float,
+        note: str = "",
+    ) -> Mutation:
+        """Curriculum move that rewrites one scalar attr on ``node``.
+
+        The common difficulty knob (cyber's build level, trading's return
+        target / risk limit): a single ``GraphPatch`` replacing ``node`` with a
+        copy whose ``attrs[key]`` is ``new_value``, every other field preserved.
+        ``direction`` ∈ {"harden", "soften", "diversify"}.
+        """
+        updated = replace(node, attrs={**node.attrs, key: new_value})
+        return self.make_mutation(
+            direction=direction,
+            relevance=relevance,
+            patch=GraphPatch(nodes_updated=[updated]),
+            note=note or f"{key}={new_value} on {node.id}",
+        )
+
 
 class Builder(ABC):
     """Produces a `BuildResult`. Deterministic in `(manifest, prior)`."""
@@ -256,6 +282,13 @@ class Pack(ABC):
         for fam in self.task_families():
             if fam.id == family_id:
                 return fam
+        return None
+
+    def default_prior(self) -> PackPrior | None:
+        """Baseline prior for curriculum *grow* moves; ``None`` (default) opts
+        out, so ``auto_evolve`` only patches. A pack whose builder reads the
+        prior's ``difficulty`` returns its default prior here, letting core step
+        that difficulty up/down and re-admit a freshly-built world."""
         return None
 
 

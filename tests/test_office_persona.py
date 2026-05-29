@@ -121,7 +121,7 @@ def _interface(http_calls: list[str]) -> dict[str, Any]:
         "base_url": "http://test.local",
         "http_get": http_get,
         "http_get_json": http_get_json,
-        "agent_root": "/tmp/fake-agent-root",
+        "solver_root": "/tmp/fake-agent-root",
     }
 
 

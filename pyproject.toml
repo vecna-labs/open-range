@@ -36,14 +36,21 @@ dev = [
     "pytest>=9.0",
     "ruff>=0.15.6",
     "openrange-cyber-webapp",
+    "openrange-trading",
 ]
 
 [tool.uv.workspace]
-members = ["packs/cyber_webapp", "packages/graphschema", "packages/openrange-pack-sdk"]
+members = [
+    "packs/cyber_webapp",
+    "packs/trading",
+    "packages/graphschema",
+    "packages/openrange-pack-sdk",
+]
 
 [tool.uv.sources]
 graphschema = { workspace = true }
 openrange-cyber-webapp = { workspace = true }
+openrange-trading = { workspace = true }
 openrange-pack-sdk = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
@@ -61,6 +68,7 @@ python_version = "3.14"
 mypy_path = [
     "src",
     "packs/cyber_webapp",
+    "packs/trading",
     "packages/graphschema/src",
     "packages/openrange-pack-sdk/src",
 ]

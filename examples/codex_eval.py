@@ -170,7 +170,7 @@ def _run_task(
     handle = svc.start_episode(snapshot, task.id)
     try:
         try:
-            result = harness.run(task.instruction, svc.agent_root(handle))
+            result = harness.run(task.instruction, svc.solver_root(handle))
             svc.record_turn(handle, AgentTurn(message=result.text))
         except LLMBackendError as exc:
             # A failed call is a failed episode, not a reason to abort the

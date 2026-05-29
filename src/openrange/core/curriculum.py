@@ -70,41 +70,48 @@ def auto_evolve(
     llm: LLMBackend | None = None,
     max_repairs: int = 2,
 ) -> Snapshot | None:
-    """Pick a Mutation by `policy`, apply it, re-admit. Returns the next
-    Snapshot, or `None` if no candidate survives admission."""
-    if not reports:
-        return None
+    """Pick an evolution for ``direction`` and re-admit it.
 
-    options = _enumerate_options(pack, snapshot, reports, llm=llm)
-    if not options:
+    Tries the families' patch mutations first; if none admit to a distinct
+    world, falls back to a builder *grow* (re-running the builder with a
+    difficulty-stepped prior). Returns the next Snapshot, or ``None`` if nothing
+    admits.
+    """
+    if not reports:
         return None
 
     direction = policy(reports)
     if direction is None:
         return None
 
-    candidates = sorted(
+    for chosen in _patch_candidates(pack, snapshot, reports, direction, llm=llm):
+        try:
+            evolved = _evolve_snapshot(snapshot, pack, chosen, max_repairs=max_repairs)
+        except Exception:  # noqa: BLE001 — pack-supplied code is untrusted
+            continue
+        if evolved is not None and evolved.snapshot_id != snapshot.snapshot_id:
+            return evolved
+
+    try:
+        return _grow_snapshot(snapshot, pack, direction, max_repairs=max_repairs)
+    except Exception:  # noqa: BLE001 — pack-supplied code is untrusted
+        return None
+
+
+def _patch_candidates(
+    pack: Pack,
+    snapshot: Snapshot,
+    reports: Sequence[EpisodeReportLike],
+    direction: Direction,
+    *,
+    llm: LLMBackend | None,
+) -> list[Mutation]:
+    options = _enumerate_options(pack, snapshot, reports, llm=llm)
+    return sorted(
         (o for o in options if o.direction == direction and o.relevance > 0.0),
         key=lambda o: o.relevance,
         reverse=True,
     )
-    if not candidates:
-        return None
-
-    for chosen in candidates:
-        try:
-            evolved = _evolve_snapshot(
-                snapshot,
-                pack,
-                chosen,
-                max_repairs=max_repairs,
-            )
-        except Exception:  # noqa: BLE001 — pack-supplied code is untrusted
-            continue
-        if evolved is None:
-            continue
-        return evolved
-    return None
 
 
 def _enumerate_options(
@@ -118,6 +125,83 @@ def _enumerate_options(
     for family in pack.task_families():
         options.extend(family.available_mutations(snapshot, reports, llm=llm))
     return options
+
+
+def _grow_snapshot(
+    snapshot: Snapshot,
+    pack: Pack,
+    direction: Direction,
+    *,
+    max_repairs: int,
+) -> Snapshot | None:
+    from openrange.core.admit import AdmissionFailure, admit
+
+    baseline = pack.default_prior()
+    if baseline is None:
+        return None
+    step = {"harden": 0.2, "soften": -0.2}.get(direction)
+    if step is None:
+        return None
+    carried = snapshot.lineage.get("curriculum_difficulty")
+    difficulty = (
+        dict(carried) if isinstance(carried, dict) else dict(baseline.difficulty)
+    )
+    stepped = {k: min(1.0, max(0.0, float(v) + step)) for k, v in difficulty.items()}
+    if not stepped or stepped == difficulty:
+        return None
+
+    grown_prior = PackPrior(
+        source="curriculum.grow",
+        ontology=baseline.ontology,
+        topology=baseline.topology,
+        task_seeds=baseline.task_seeds,
+        difficulty=stepped,
+        coverage=baseline.coverage,
+    )
+    manifest_in = snapshot.lineage.get("manifest", {})
+    manifest = dict(manifest_in) if isinstance(manifest_in, dict) else {}
+    result = admit(pack, manifest, prior=grown_prior, max_repairs=max_repairs)
+    if isinstance(result, AdmissionFailure):
+        return None
+    grown = _with_grow_lineage(result, snapshot, direction, stepped)
+    if grown.snapshot_id == snapshot.snapshot_id:
+        # Builder ignored the bump and rebuilt the same world; refuse it so the
+        # lineage stays a chain rather than looping back on itself.
+        return None
+    return grown
+
+
+def _with_grow_lineage(
+    result: Snapshot,
+    parent: Snapshot,
+    direction: Direction,
+    difficulty: dict[str, float],
+) -> Snapshot:
+    from openrange_pack_sdk import BuildEvent
+    from openrange_pack_sdk import Snapshot as _Snapshot
+
+    event = BuildEvent(
+        seq=len(result.history),
+        phase="evolve",
+        detail=f"grew from {parent.snapshot_id} via {direction} (regime)",
+        refs=(parent.snapshot_id,),
+    )
+    return _Snapshot(
+        snapshot_id=result.snapshot_id,
+        ontology_id=result.ontology_id,
+        graph=result.graph,
+        tasks=result.tasks,
+        lineage={
+            **dict(result.lineage),
+            "curriculum_difficulty": difficulty,
+            "_evolve": {
+                "parent_snapshot_id": parent.snapshot_id,
+                "direction": direction,
+                "kind": "grow",
+            },
+        },
+        history=(*result.history, event),
+    )
 
 
 def _evolve_snapshot(
@@ -176,12 +260,18 @@ def _evolve_snapshot(
         ),
         refs=(snapshot.snapshot_id,),
     )
+    # Carry accumulated grow difficulty across patch steps so a later grow
+    # resumes from it rather than from baseline.
+    carried = snapshot.lineage.get("curriculum_difficulty")
+    lineage = dict(result.lineage)
+    if isinstance(carried, dict):
+        lineage.setdefault("curriculum_difficulty", carried)
     return _Snapshot(
         snapshot_id=result.snapshot_id,
         ontology_id=result.ontology_id,
         graph=result.graph,
         tasks=result.tasks,
-        lineage=result.lineage,
+        lineage=lineage,
         history=(*result.history, evolve_event),
     )
 

@@ -813,20 +813,20 @@ the episode lifecycle.
 | `reset()`         | None                          | At episode start, after `realize()` | Boot the world — start subprocesses, materialize artifact files, seed databases. |
 | `surface()`       | `Mapping[str, Any]`           | After `reset()`, cached for the episode | The agent-facing IO bundle. Pack-defined keys: HTTP base URL, file roots, MCP endpoints, NPC adapter dicts. The harness binds against the keys it expects. |
 | `poll_events()`   | `tuple[Mapping[str, Any], ...]` | Each tick | Drain side-effect events (HTTP requests, file writes, log entries) the world produced since the last poll. Forwarded to the dashboard. |
-| `terminal()`      | `(bool, str \| None)`         | Each tick | Has the agent finished? `(True, reason)` ends the episode; `(False, None)` continues. |
+| `terminal()`      | `(bool, str \| None)`         | Each tick | Has the solver finished? `(True, reason)` ends the episode; `(False, None)` continues. |
 | `checkpoint()`    | `Any` (opaque)                | On `EpisodeService.checkpoint` / `fork` | Capture an opaque pack-defined state snapshot for counterfactual replay. |
 | `restore(state)`  | None                          | On `EpisodeService.restore` / `fork` | Replay an opaque payload. Process-state semantics are the pack's call. |
 | `collect()`       | `Mapping[str, Any]`           | At episode stop, before `stop()` | Structured final state. The family's `check_success` reads this. |
 | `stop()`          | None                          | At episode stop | Tear down running processes / services. Must be idempotent. |
 
 `surface()` is **not** just `base_url` — it is the full IO bundle.
-Some keys are stringly-typed (`base_url`, `agent_root`); others may be
+Some keys are stringly-typed (`base_url`, `solver_root`); others may be
 callables (`http_get`, `http_get_json`). The episode layer's
 `_observation_metadata` is what selects the stringly-typed slice for
 the dashboard's JSON serializer.
 
 Per-pack contract: the cyber pack's `WebappRuntimeHandle.surface()`
-returns `{base_url, http_get, http_get_json, agent_root}`. The
+returns `{base_url, http_get, http_get_json, solver_root}`. The
 harness and NPCs that expect those keys are written against that
 shape.
 

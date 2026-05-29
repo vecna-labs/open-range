@@ -48,8 +48,8 @@ def test_build_episode_grades_submitted_handler(tmp_path: Path) -> None:
     svc = EpisodeService(WebappPack(), tmp_path)
     try:
         handle = svc.start_episode(snap, task.id)
-        agent_root = svc.agent_root(handle)
-        (agent_root / "result.json").write_text(
+        solver_root = svc.solver_root(handle)
+        (solver_root / "result.json").write_text(
             json.dumps({"endpoint_impl": api_list_reference(1)}),
             encoding="utf-8",
         )
@@ -67,8 +67,8 @@ def test_pentest_episode_then_evolve(tmp_path: Path) -> None:
     svc = EpisodeService(WebappPack(), tmp_path)
     try:
         handle = svc.start_episode(snap, task.id)
-        agent_root = svc.agent_root(handle)
-        (agent_root / "result.json").write_text(
+        solver_root = svc.solver_root(handle)
+        (solver_root / "result.json").write_text(
             json.dumps({"flag": flag_value}),
             encoding="utf-8",
         )

@@ -74,7 +74,7 @@ def run_task(
     svc = run.episode_service(snapshot)
     handle = svc.start_episode(snapshot, task.id)
     try:
-        agent_result = harness.run(task.instruction, svc.agent_root(handle))
+        agent_result = harness.run(task.instruction, svc.solver_root(handle))
         svc.record_turn(handle, AgentTurn(message=agent_result.text))
         episode_report = svc.stop_episode(handle)
     finally:

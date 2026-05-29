@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from graphschema import Ontology, WorldGraph
+from graphschema import Node, Ontology, WorldGraph
 from openrange_pack_sdk import (
     NPC,
     AgentBackend,
@@ -650,6 +650,47 @@ class TestMakeTaskHelper:
         assert task.goal_nodes == ()
 
 
+class TestBumpScalarAttrHelper:
+    def _node(self) -> Node:
+        return Node(id="ep1", kind="endpoint", attrs={"build_level": 1, "path": "/x"})
+
+    def test_rewrites_target_attr_preserving_everything_else(self) -> None:
+        mut = _NoopFamily().bump_scalar_attr(
+            self._node(), "build_level", 2, direction="harden", relevance=0.5
+        )
+        assert mut.direction == "harden"
+        assert mut.relevance == 0.5
+        assert mut.family == "test.noop"
+        (updated,) = mut.patch.nodes_updated
+        assert updated.attrs == {"build_level": 2, "path": "/x"}
+        assert updated.kind == "endpoint"
+        assert updated.id == "ep1"
+
+    def test_does_not_mutate_the_original_node(self) -> None:
+        node = self._node()
+        _NoopFamily().bump_scalar_attr(
+            node, "build_level", 9, direction="harden", relevance=1.0
+        )
+        assert node.attrs["build_level"] == 1
+
+    def test_default_note_describes_the_change(self) -> None:
+        mut = _NoopFamily().bump_scalar_attr(
+            self._node(), "build_level", 3, direction="harden", relevance=0.5
+        )
+        assert mut.note == "build_level=3 on ep1"
+
+    def test_explicit_note_passes_through(self) -> None:
+        mut = _NoopFamily().bump_scalar_attr(
+            self._node(),
+            "build_level",
+            3,
+            direction="soften",
+            relevance=0.1,
+            note="custom",
+        )
+        assert mut.note == "custom"
+
+
 class TestGraphHelpers:
     def test_edge_id_format(self) -> None:
         from openrange_pack_sdk import edge_id
@@ -889,10 +930,10 @@ def _make_simple_subprocess_runtime() -> Any:
             del graph
             return {"ready.txt": "ok"}
 
-        def subprocess_command(self, env_root: Any, agent_root: Any) -> Sequence[str]:
+        def subprocess_command(self, env_root: Any, solver_root: Any) -> Sequence[str]:
             import sys
 
-            del env_root, agent_root
+            del env_root, solver_root
             return [sys.executable, "-c", _SUBPROCESS_SCRIPT]
 
         def parse_startup(self, stdout_line: str) -> Mapping[str, Any]:
@@ -919,10 +960,10 @@ def _make_silent_subprocess_runtime() -> Any:
             del graph
             return {}
 
-        def subprocess_command(self, env_root: Any, agent_root: Any) -> Sequence[str]:
+        def subprocess_command(self, env_root: Any, solver_root: Any) -> Sequence[str]:
             import sys
 
-            del env_root, agent_root
+            del env_root, solver_root
             return [
                 sys.executable,
                 "-c",
@@ -944,9 +985,9 @@ class TestSubprocessRuntime:
             runtime.reset()
             surface = runtime.surface()
             assert surface["ready"] is True
-            assert "agent_root" in surface
+            assert "solver_root" in surface
             assert surface["hello"] == "from pack"
-            assert Path(surface["agent_root"]).is_dir()
+            assert Path(surface["solver_root"]).is_dir()
         finally:
             runtime.stop()
 
@@ -972,10 +1013,10 @@ class TestSubprocessRuntime:
         try:
             runtime.reset()
             surface = runtime.surface()
-            (Path(surface["agent_root"]) / "result.json").write_text("{}")
+            (Path(surface["solver_root"]) / "result.json").write_text("{}")
             ok, reason = runtime.terminal()
             assert ok is True
-            assert reason == "agent wrote result"
+            assert reason == "solver wrote result"
         finally:
             runtime.stop()
 
@@ -989,12 +1030,12 @@ class TestSubprocessRuntime:
         runtime = _make_simple_subprocess_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "result.json").write_text('{"x": 1}')
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "result.json").write_text('{"x": 1}')
             collected = runtime.collect()
             assert collected["result"] == {"x": 1}
             assert collected["finalized_by"] == "test"
-            assert "agent_root" in collected
+            assert "solver_root" in collected
         finally:
             runtime.stop()
 
@@ -1004,8 +1045,8 @@ class TestSubprocessRuntime:
         runtime = _make_simple_subprocess_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "result.json").write_text("{not valid")
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "result.json").write_text("{not valid")
             collected = runtime.collect()
             assert collected["result"] == {}
         finally:
@@ -1017,25 +1058,25 @@ class TestSubprocessRuntime:
         runtime = _make_simple_subprocess_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "result.json").write_text("[1, 2]")
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "result.json").write_text("[1, 2]")
             collected = runtime.collect()
             assert collected["result"] == {}
         finally:
             runtime.stop()
 
-    def test_checkpoint_then_restore_round_trips_agent_root(self) -> None:
+    def test_checkpoint_then_restore_round_trips_solver_root(self) -> None:
         from pathlib import Path
 
         runtime = _make_simple_subprocess_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "scratch.txt").write_text("hello")
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "scratch.txt").write_text("hello")
             ckpt = runtime.checkpoint()
-            (agent_root / "scratch.txt").write_text("modified")
+            (solver_root / "scratch.txt").write_text("modified")
             runtime.restore(ckpt)
-            assert (agent_root / "scratch.txt").read_text() == "hello"
+            assert (solver_root / "scratch.txt").read_text() == "hello"
         finally:
             runtime.stop()
 
@@ -1052,7 +1093,7 @@ class TestSubprocessRuntime:
         runtime = _make_simple_subprocess_runtime()
         try:
             runtime.reset()
-            with pytest.raises(Exception, match="agent_root_snapshot"):
+            with pytest.raises(Exception, match="solver_root_snapshot"):
                 runtime.restore({"wrong_key": "x"})
         finally:
             runtime.stop()
@@ -1062,7 +1103,7 @@ class TestSubprocessRuntime:
         try:
             runtime.reset()
             with pytest.raises(Exception, match="snapshot missing"):
-                runtime.restore({"agent_root_snapshot": "/nonexistent/path"})
+                runtime.restore({"solver_root_snapshot": "/nonexistent/path"})
         finally:
             runtime.stop()
 
@@ -1070,10 +1111,10 @@ class TestSubprocessRuntime:
         runtime = _make_simple_subprocess_runtime()
         try:
             runtime.reset()
-            first_agent_root = runtime.surface()["agent_root"]
+            first_solver_root = runtime.surface()["solver_root"]
             runtime.reset()
-            second_agent_root = runtime.surface()["agent_root"]
-            assert first_agent_root != second_agent_root
+            second_solver_root = runtime.surface()["solver_root"]
+            assert first_solver_root != second_solver_root
         finally:
             runtime.stop()
 
@@ -1089,7 +1130,7 @@ class TestSubprocessRuntime:
         try:
             runtime.reset()
             surface = runtime.surface()
-            assert "agent_root" in surface
+            assert "solver_root" in surface
             assert "ready" not in surface
         finally:
             runtime.stop()
@@ -1111,11 +1152,11 @@ class TestSubprocessRuntime:
                 return {}
 
             def subprocess_command(
-                self, env_root: Any, agent_root: Any
+                self, env_root: Any, solver_root: Any
             ) -> Sequence[str]:
                 import sys
 
-                del env_root, agent_root
+                del env_root, solver_root
                 # Closes stdout without writing → reset's readline returns "".
                 return [sys.executable, "-c", "import sys; sys.stdout.close()"]
 
@@ -1123,23 +1164,23 @@ class TestSubprocessRuntime:
         try:
             runtime.reset()
             surface = runtime.surface()
-            assert "agent_root" in surface
+            assert "solver_root" in surface
         finally:
             runtime.stop()
 
-    def test_restore_replaces_directory_under_agent_root(self) -> None:
+    def test_restore_replaces_directory_under_solver_root(self) -> None:
         from pathlib import Path
 
         runtime = _make_simple_subprocess_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "sub").mkdir()
-            (agent_root / "sub" / "f.txt").write_text("snapshot")
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "sub").mkdir()
+            (solver_root / "sub" / "f.txt").write_text("snapshot")
             ckpt = runtime.checkpoint()
-            (agent_root / "sub" / "f.txt").write_text("modified")
+            (solver_root / "sub" / "f.txt").write_text("modified")
             runtime.restore(ckpt)
-            assert (agent_root / "sub" / "f.txt").read_text() == "snapshot"
+            assert (solver_root / "sub" / "f.txt").read_text() == "snapshot"
         finally:
             runtime.stop()
 
@@ -1150,10 +1191,10 @@ class TestSubprocessRuntime:
         runtime = _make_simple_subprocess_runtime()
         # Build a valid-looking snapshot on disk without ever calling reset.
         snap = Path(tempfile.mkdtemp(prefix="ckpt-fake-"))
-        (snap / "agent").mkdir()
+        (snap / "solver").mkdir()
         try:
             with pytest.raises(Exception, match="before reset"):
-                runtime.restore({"agent_root_snapshot": str(snap)})
+                runtime.restore({"solver_root_snapshot": str(snap)})
         finally:
             import shutil
 
@@ -1168,11 +1209,11 @@ class TestSubprocessRuntime:
                 return {}
 
             def subprocess_command(
-                self, env_root: Any, agent_root: Any
+                self, env_root: Any, solver_root: Any
             ) -> Sequence[str]:
                 import sys
 
-                del env_root, agent_root
+                del env_root, solver_root
                 return [
                     sys.executable,
                     "-c",
@@ -1184,10 +1225,10 @@ class TestSubprocessRuntime:
         try:
             runtime.reset()
             collected = runtime.collect()
-            assert "agent_root" in collected
+            assert "solver_root" in collected
             assert collected["result"] == {}
-            # collect_extras default → no extra keys beyond agent_root + result.
-            assert set(collected.keys()) == {"agent_root", "result"}
+            # collect_extras default → no extra keys beyond solver_root + result.
+            assert set(collected.keys()) == {"solver_root", "result"}
         finally:
             runtime.stop()
 
@@ -1202,11 +1243,11 @@ class TestSubprocessRuntime:
                 return {}
 
             def subprocess_command(
-                self, env_root: Any, agent_root: Any
+                self, env_root: Any, solver_root: Any
             ) -> Sequence[str]:
                 import sys
 
-                del env_root, agent_root
+                del env_root, solver_root
                 return [
                     sys.executable,
                     "-c",
@@ -1250,18 +1291,18 @@ class TestSubprocessRuntime:
         runtime = _make_simple_subprocess_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "scratch.txt").write_text("before-restart")
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "scratch.txt").write_text("before-restart")
             ckpt = runtime.checkpoint()
-            snap_path = Path(ckpt["agent_root_snapshot"])
+            snap_path = Path(ckpt["solver_root_snapshot"])
             assert snap_path.exists()
             # reset() must NOT wipe the snapshot dir — restore() flows
             # like the webapp pack's call reset() before super().restore().
             runtime.reset()
             assert snap_path.exists()
             runtime.restore(ckpt)
-            new_agent_root = Path(runtime.surface()["agent_root"])
-            assert (new_agent_root / "scratch.txt").read_text() == "before-restart"
+            new_solver_root = Path(runtime.surface()["solver_root"])
+            assert (new_solver_root / "scratch.txt").read_text() == "before-restart"
         finally:
             runtime.stop()
 
@@ -1287,7 +1328,7 @@ class TestSubprocessRuntime:
     def test_public_properties_are_none_before_reset(self) -> None:
         runtime = _make_simple_subprocess_runtime()
         assert runtime.env_root is None
-        assert runtime.agent_root is None
+        assert runtime.solver_root is None
         assert runtime.pack_root is None
         assert runtime.process is None
 
@@ -1298,7 +1339,7 @@ class TestSubprocessRuntime:
         try:
             runtime.reset()
             assert isinstance(runtime.env_root, Path)
-            assert isinstance(runtime.agent_root, Path)
+            assert isinstance(runtime.solver_root, Path)
             assert isinstance(runtime.pack_root, Path)
             assert runtime.process is not None
             assert runtime.process.pid > 0
@@ -1316,11 +1357,11 @@ class TestSubprocessRuntime:
                 return {}
 
             def subprocess_command(
-                self, env_root: Any, agent_root: Any
+                self, env_root: Any, solver_root: Any
             ) -> Sequence[str]:
                 import sys
 
-                del env_root, agent_root
+                del env_root, solver_root
                 # Sleeps without writing → readline must time out.
                 return [sys.executable, "-c", "import time; time.sleep(5)"]
 
@@ -1342,11 +1383,11 @@ class TestSubprocessRuntime:
                 return {}
 
             def subprocess_command(
-                self, env_root: Any, agent_root: Any
+                self, env_root: Any, solver_root: Any
             ) -> Sequence[str]:
                 import sys
 
-                del env_root, agent_root
+                del env_root, solver_root
                 return [
                     sys.executable,
                     "-c",
@@ -1378,11 +1419,11 @@ class TestSubprocessRuntime:
                 return {}
 
             def subprocess_command(
-                self, env_root: Any, agent_root: Any
+                self, env_root: Any, solver_root: Any
             ) -> Sequence[str]:
                 import sys
 
-                del env_root, agent_root
+                del env_root, solver_root
                 # Reads one JSON line from stdin, echoes it on stdout
                 # with an "echoed" marker; prints startup line first.
                 return [
@@ -1439,10 +1480,10 @@ class TestOnDemandRuntime:
         try:
             runtime.reset()
             surface = runtime.surface()
-            assert "agent_root" in surface
+            assert "solver_root" in surface
             assert surface["hello"] == "from on-demand pack"
-            agent_root = Path(surface["agent_root"])
-            assert agent_root.is_dir()
+            solver_root = Path(surface["solver_root"])
+            assert solver_root.is_dir()
             pack_root = runtime.pack_root
             assert pack_root is not None
             assert (pack_root / "README.md").read_text() == "# project"
@@ -1464,11 +1505,11 @@ class TestOnDemandRuntime:
         runtime = _make_simple_ondemand_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "result.json").write_text('{"status": "ok"}')
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "result.json").write_text('{"status": "ok"}')
             ok, reason = runtime.terminal()
             assert ok is True
-            assert reason == "agent wrote result"
+            assert reason == "solver wrote result"
         finally:
             runtime.stop()
 
@@ -1476,8 +1517,8 @@ class TestOnDemandRuntime:
         runtime = _make_simple_ondemand_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "result.json").write_text('{"passed": 3, "failed": 1}')
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "result.json").write_text('{"passed": 3, "failed": 1}')
             collected = runtime.collect()
             assert collected["result"] == {"passed": 3, "failed": 1}
             assert collected["finalized_by"] == "ondemand"
@@ -1488,12 +1529,12 @@ class TestOnDemandRuntime:
         runtime = _make_simple_ondemand_runtime()
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "scratch.txt").write_text("v1")
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "scratch.txt").write_text("v1")
             ckpt = runtime.checkpoint()
-            (agent_root / "scratch.txt").write_text("v2")
+            (solver_root / "scratch.txt").write_text("v2")
             runtime.restore(ckpt)
-            assert (agent_root / "scratch.txt").read_text() == "v1"
+            assert (solver_root / "scratch.txt").read_text() == "v1"
         finally:
             runtime.stop()
 
@@ -1501,7 +1542,7 @@ class TestOnDemandRuntime:
         runtime = _make_simple_ondemand_runtime()
         runtime.reset()
         ckpt = runtime.checkpoint()
-        snap_path = Path(ckpt["agent_root_snapshot"])
+        snap_path = Path(ckpt["solver_root_snapshot"])
         assert snap_path.exists()
         runtime.stop()
         assert not snap_path.exists()
@@ -1511,7 +1552,7 @@ class TestOnDemandRuntime:
         try:
             runtime.reset()
             ckpt = runtime.checkpoint()
-            snap_path = Path(ckpt["agent_root_snapshot"])
+            snap_path = Path(ckpt["solver_root_snapshot"])
             assert snap_path.exists()
             runtime.reset()
             assert snap_path.exists()
@@ -1528,7 +1569,7 @@ class TestOnDemandRuntime:
 
     def test_swe_style_run_cmd_callable(self, tmp_path: Path) -> None:
         """End-to-end exercise of the SWE-pack pattern: harness exposes
-        a run_cmd callable that shells out against the agent_root."""
+        a run_cmd callable that shells out against the solver_root."""
         import subprocess as _subprocess
 
         from openrange_pack_sdk import OnDemandRuntime
@@ -1539,12 +1580,12 @@ class TestOnDemandRuntime:
                 return {}
 
             def surface_extras(self) -> Mapping[str, Any]:
-                agent_root = self.agent_root
+                solver_root = self.solver_root
 
                 def run_cmd(argv: Sequence[str]) -> Mapping[str, Any]:
                     completed = _subprocess.run(
                         list(argv),
-                        cwd=agent_root,
+                        cwd=solver_root,
                         capture_output=True,
                         text=True,
                         timeout=5,
@@ -1560,8 +1601,8 @@ class TestOnDemandRuntime:
         runtime = _SWEPack(_empty_graph())
         try:
             runtime.reset()
-            agent_root = Path(runtime.surface()["agent_root"])
-            (agent_root / "hello.py").write_text("print('hello')")
+            solver_root = Path(runtime.surface()["solver_root"])
+            (solver_root / "hello.py").write_text("print('hello')")
             run_cmd = runtime.surface()["run_cmd"]
             result = run_cmd(["python3", "hello.py"])
             assert result["rc"] == 0
