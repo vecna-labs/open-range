@@ -21,15 +21,20 @@ Status tags on each item:
 
 Browse all roadmap issues: [`label:roadmap`](https://github.com/vecna-labs/open-range/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap).
 
-## Current focus
+Two near-term priorities:
 
-Deepen the cyber pack and push toward **enterprise scale** via
-graph-driven lazy realization
-([#212](https://github.com/vecna-labs/open-range/issues/212) /
-[#235](https://github.com/vecna-labs/open-range/issues/235)). With a
-second pack now shipped (trading), the next big lift is closing the
-eval → training loop
-([#198](https://github.com/vecna-labs/open-range/issues/198)).
+1. **From eval to training.** Today OpenRange only runs *eval* loops —
+   closing them into *training* is the highest-leverage next step. That
+   means a training-integration standard for our dynamic, evolving
+   worlds ([#243](https://github.com/vecna-labs/open-range/issues/243)),
+   with open-trajectory-gym
+   ([#198](https://github.com/vecna-labs/open-range/issues/198)) as the
+   reference consumer.
+2. **Cyber depth → enterprise scale.** Deepen the cyber pack and push
+   toward enterprise scale via graph-driven lazy realization
+   ([#212](https://github.com/vecna-labs/open-range/issues/212) /
+   [#235](https://github.com/vecna-labs/open-range/issues/235)).
+
 Physical-space simulation
 ([#219](https://github.com/vecna-labs/open-range/issues/219)) is
 explicitly far-future.
