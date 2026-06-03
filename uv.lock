@@ -12,6 +12,7 @@ members = [
     "openrange",
     "openrange-cyber-webapp",
     "openrange-pack-sdk",
+    "openrange-swe",
     "openrange-trading",
 ]
 
@@ -807,6 +808,7 @@ dev = [
     { name = "coverage" },
     { name = "mypy" },
     { name = "openrange-cyber-webapp" },
+    { name = "openrange-swe" },
     { name = "openrange-trading" },
     { name = "pytest" },
     { name = "ruff" },
@@ -828,6 +830,7 @@ dev = [
     { name = "coverage", extras = ["toml"], specifier = ">=7.13" },
     { name = "mypy", specifier = ">=1.19" },
     { name = "openrange-cyber-webapp", editable = "packs/cyber_webapp" },
+    { name = "openrange-swe", editable = "packs/swe" },
     { name = "openrange-trading", editable = "packs/trading" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.15.6" },
@@ -862,6 +865,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "graphschema", editable = "packages/graphschema" }]
+
+[[package]]
+name = "openrange-swe"
+version = "0.1.0"
+source = { editable = "packs/swe" }
+dependencies = [
+    { name = "graphschema" },
+    { name = "openrange-pack-sdk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "graphschema", editable = "packages/graphschema" },
+    { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
+]
 
 [[package]]
 name = "openrange-trading"

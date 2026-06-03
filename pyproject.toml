@@ -37,12 +37,14 @@ dev = [
     "ruff>=0.15.6",
     "openrange-cyber-webapp",
     "openrange-trading",
+    "openrange-swe",
 ]
 
 [tool.uv.workspace]
 members = [
     "packs/cyber_webapp",
     "packs/trading",
+    "packs/swe",
     "packages/graphschema",
     "packages/openrange-pack-sdk",
 ]
@@ -51,6 +53,7 @@ members = [
 graphschema = { workspace = true }
 openrange-cyber-webapp = { workspace = true }
 openrange-trading = { workspace = true }
+openrange-swe = { workspace = true }
 openrange-pack-sdk = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
@@ -69,6 +72,7 @@ mypy_path = [
     "src",
     "packs/cyber_webapp",
     "packs/trading",
+    "packs/swe",
     "packages/graphschema/src",
     "packages/openrange-pack-sdk/src",
 ]
@@ -87,6 +91,9 @@ module = ["strands", "strands.*", "strands_tools", "strands_tools.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+# Repo root on the path so tests can import the example eval scripts (the
+# `examples` package) — they double as executable specs worth pinning.
+pythonpath = ["."]
 testpaths = [
     "tests",
     "packages/graphschema/tests",

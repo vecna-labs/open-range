@@ -1,0 +1,18 @@
+{
+  "instance_id": "calc-sum-001",
+  "name": "calc",
+  "language": "python",
+  "problem_statement": "calc.core.add returns the difference of its arguments instead of their sum: add(2, 3) yields -1 but should be 5. Fix add so it returns a + b. Leave subtract unchanged.",
+  "base_files": {
+    "calc/__init__.py": "",
+    "calc/core.py": "def add(a, b):\n    return a - b\n\n\ndef subtract(a, b):\n    return a - b\n"
+  },
+  "gold_files": {
+    "calc/core.py": "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n"
+  },
+  "test_files": {
+    "test_calc.py": "from calc.core import add, subtract\n\n\ndef test_add():\n    assert add(2, 3) == 5\n\n\ndef test_subtract():\n    assert subtract(5, 3) == 2\n"
+  },
+  "fail_to_pass": ["test_calc.py::test_add"],
+  "pass_to_pass": ["test_calc.py::test_subtract"]
+}

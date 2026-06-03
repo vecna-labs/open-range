@@ -1,0 +1,27 @@
+{
+  "instance_id": "shapes-area-001",
+  "name": "shapes",
+  "language": "python",
+  "problem_statement": "shapes.geometry.rectangle_area returns the sum of its sides instead of their product: rectangle_area(2, 3) yields 5 but should be 6. Fix rectangle_area to return width * height. Leave circle_area and the non_negative validation unchanged.",
+  "base_files": {
+    "shapes/__init__.py": "from shapes.geometry import circle_area, rectangle_area\nfrom shapes.validate import non_negative\n\n__all__ = [\"circle_area\", \"non_negative\", \"rectangle_area\"]\n",
+    "shapes/validate.py": "def non_negative(x):\n    if x < 0:\n        raise ValueError(f\"expected non-negative, got {x}\")\n    return x\n",
+    "shapes/geometry.py": "import math\n\nfrom shapes.validate import non_negative\n\n\ndef rectangle_area(width, height):\n    non_negative(width)\n    non_negative(height)\n    return width + height\n\n\ndef circle_area(radius):\n    non_negative(radius)\n    return math.pi * radius * radius\n"
+  },
+  "gold_files": {
+    "shapes/geometry.py": "import math\n\nfrom shapes.validate import non_negative\n\n\ndef rectangle_area(width, height):\n    non_negative(width)\n    non_negative(height)\n    return width * height\n\n\ndef circle_area(radius):\n    non_negative(radius)\n    return math.pi * radius * radius\n"
+  },
+  "test_files": {
+    "conftest.py": "import pytest\n\n\n@pytest.fixture\ndef unit_square():\n    return (1, 1)\n",
+    "tests/test_geometry.py": "import math\n\nimport pytest\n\nfrom shapes import circle_area, non_negative, rectangle_area\n\n\ndef test_rectangle_area():\n    assert rectangle_area(2, 3) == 6\n\n\ndef test_rectangle_area_unit(unit_square):\n    width, height = unit_square\n    assert rectangle_area(width, height) == 1\n\n\ndef test_circle_area():\n    assert circle_area(1) == math.pi\n\n\ndef test_rejects_negative():\n    with pytest.raises(ValueError):\n        non_negative(-1)\n\n\nclass TestRectangle:\n    def test_large(self):\n        assert rectangle_area(10, 10) == 100\n"
+  },
+  "fail_to_pass": [
+    "tests/test_geometry.py::test_rectangle_area",
+    "tests/test_geometry.py::test_rectangle_area_unit",
+    "tests/test_geometry.py::TestRectangle::test_large"
+  ],
+  "pass_to_pass": [
+    "tests/test_geometry.py::test_circle_area",
+    "tests/test_geometry.py::test_rejects_negative"
+  ]
+}

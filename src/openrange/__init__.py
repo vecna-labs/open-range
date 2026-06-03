@@ -61,6 +61,14 @@ from openrange.runtime import (
     OpenRangeRun,
     RunConfig,
 )
+from openrange.training import (
+    Reward,
+    Trajectory,
+    TrajectoryStep,
+    episode_reward,
+    episode_trajectory,
+    to_jsonl,
+)
 
 __all__ = [
     "ActorTurn",
@@ -95,6 +103,7 @@ __all__ = [
     "OpenRangeRun",
     "PACKS",
     "PackRegistry",
+    "Reward",
     "Role",
     "RunConfig",
     "SnapshotStore",
@@ -102,13 +111,18 @@ __all__ = [
     "StrandsAgentBackend",
     "TickRequest",
     "TickResult",
+    "Trajectory",
+    "TrajectoryStep",
     "Visibility",
     "WorldGraph",
     "admit",
     "apply_patch",
     "auto_evolve",
     "direction_from_reports",
+    "episode_reward",
+    "episode_trajectory",
     "snapshot_to_dict",
+    "to_jsonl",
     "validate",
     "validate_task_bindings",
 ]

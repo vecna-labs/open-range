@@ -1,0 +1,30 @@
+{
+  "instance_id": "notes-app-001",
+  "name": "notes",
+  "language": "python",
+  "problem_statement": "Build a tiny notes service from a skeleton. notes.store.Store is a key-value store: put(key, value) saves and get(key) returns it. notes.service.NoteService wraps a Store: render(title, body) returns the string 'title: body'; add(title, body) must render the note, persist it through the Store under a string id counting up from '0', and return that id; get(note_id) returns the stored note for that id. Implement Store and NoteService so each piece works on its own and the pieces compose end-to-end.",
+  "base_files": {
+    "notes/__init__.py": "from notes.service import NoteService\nfrom notes.store import Store\n\n__all__ = [\"NoteService\", \"Store\"]\n",
+    "notes/store.py": "class Store:\n    \"\"\"In-memory key-value store for rendered notes.\"\"\"\n\n    def __init__(self):\n        self._data = {}\n\n    def put(self, key, value):\n        raise NotImplementedError\n\n    def get(self, key):\n        raise NotImplementedError\n",
+    "notes/service.py": "class NoteService:\n    \"\"\"Adds and retrieves notes, persisting each through a Store.\"\"\"\n\n    def __init__(self, store):\n        self.store = store\n        self._next = 0\n\n    def render(self, title, body):\n        raise NotImplementedError\n\n    def add(self, title, body):\n        raise NotImplementedError\n\n    def get(self, note_id):\n        raise NotImplementedError\n"
+  },
+  "gold_files": {
+    "notes/store.py": "class Store:\n    \"\"\"In-memory key-value store for rendered notes.\"\"\"\n\n    def __init__(self):\n        self._data = {}\n\n    def put(self, key, value):\n        self._data[key] = value\n\n    def get(self, key):\n        return self._data[key]\n",
+    "notes/service.py": "class NoteService:\n    \"\"\"Adds and retrieves notes, persisting each through a Store.\"\"\"\n\n    def __init__(self, store):\n        self.store = store\n        self._next = 0\n\n    def render(self, title, body):\n        return f\"{title}: {body}\"\n\n    def add(self, title, body):\n        note_id = str(self._next)\n        self._next += 1\n        self.store.put(note_id, self.render(title, body))\n        return note_id\n\n    def get(self, note_id):\n        return self.store.get(note_id)\n"
+  },
+  "test_files": {
+    "tests/test_unit.py": "from notes.service import NoteService\nfrom notes.store import Store\n\n\ndef test_store_put_get():\n    store = Store()\n    store.put(\"k\", \"v\")\n    assert store.get(\"k\") == \"v\"\n\n\ndef test_store_overwrite():\n    store = Store()\n    store.put(\"k\", \"v1\")\n    store.put(\"k\", \"v2\")\n    assert store.get(\"k\") == \"v2\"\n\n\ndef test_service_render():\n    svc = NoteService(Store())\n    assert svc.render(\"Hi\", \"there\") == \"Hi: there\"\n",
+    "tests/test_integration.py": "from notes.service import NoteService\nfrom notes.store import Store\n\n\ndef test_add_then_get_roundtrip():\n    svc = NoteService(Store())\n    note_id = svc.add(\"Hi\", \"there\")\n    assert note_id == \"0\"\n    assert svc.get(note_id) == \"Hi: there\"\n\n\ndef test_persists_via_store():\n    store = Store()\n    svc = NoteService(store)\n    note_id = svc.add(\"A\", \"b\")\n    assert store.get(note_id) == \"A: b\"\n"
+  },
+  "fail_to_pass": [],
+  "pass_to_pass": [],
+  "unit_tests": [
+    "tests/test_unit.py::test_store_put_get",
+    "tests/test_unit.py::test_store_overwrite",
+    "tests/test_unit.py::test_service_render"
+  ],
+  "integration_tests": [
+    "tests/test_integration.py::test_add_then_get_roundtrip",
+    "tests/test_integration.py::test_persists_via_store"
+  ]
+}

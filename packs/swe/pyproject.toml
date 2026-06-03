@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openrange-swe"
+version = "0.1.0"
+description = "SWE pack for OpenRange — repair real repos graded by their own held-out test suites."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+    "openrange-pack-sdk",
+    "graphschema",
+]
+
+[project.entry-points."openrange.packs"]
+"swe" = "swe:SwePack"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swe"]
+
+[tool.uv.sources]
+graphschema = { workspace = true }
+openrange-pack-sdk = { workspace = true }
