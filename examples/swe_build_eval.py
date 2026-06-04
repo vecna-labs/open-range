@@ -34,22 +34,20 @@ from __future__ import annotations
 
 import argparse
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 
-from openrange_pack_sdk import Snapshot, TaskSpec
+from openrange_pack_sdk import Snapshot
 
-from openrange.core.episode import AgentTurn, EpisodeReport, EpisodeService
-from openrange.runtime import OpenRangeRun, RunConfig
-from openrange.training import Trajectory, episode_trajectory, to_jsonl
+from openrange.core.episode import AgentTurn
+from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig, Solver
+from openrange.training import EpisodeRun, Trajectory, to_jsonl
 
 MANIFEST: dict[str, object] = {
     "world": {"goal": "build the notes service so the pieces compose"},
     "pack": {"id": "swe"},
     "instance": "notes_app",
 }
-
-Solver = Callable[[Path], None]
 
 # A half-built notes service: each piece passes its unit test (render works, the
 # store works), but the pieces don't compose — add() returns the rendered note
@@ -85,65 +83,83 @@ def main() -> None:
     gold = _gold_files(snapshot)
     tiers = _suite_tiers(snapshot)
     units_only = {**gold, "notes/service.py": _UNITS_ONLY_SERVICE}
+    realized = ", ".join(sorted(_base_files(snapshot)))
     print(
         f"       suite: {len(tiers[0])} unit test(s) shape, "
         f"{len(tiers[1])} integration test(s) gate"
     )
 
+    # Each episode is one ``run.run_episode`` call; the units-shape /
+    # integration-gate split shows up in the graded result, not in a hand-rolled
+    # harness loop.
     trajectories: list[Trajectory] = []
-    svc = run.episode_service(snapshot)
-    try:
-        _, gold_traj = _run_episode(
-            svc, snapshot, task, _apply(gold), "gold: full reference overlay", tiers
-        )
-        trajectories.append(gold_traj)
-        _, units_traj = _run_episode(
-            svc,
-            snapshot,
-            task,
-            _apply(units_only),
-            "units-only: pieces pass alone, don't compose",
-            tiers,
-        )
-        trajectories.append(units_traj)
-        _, noop_traj = _run_episode(
-            svc, snapshot, task, _noop, "skeleton: leave the stubs in place", tiers
-        )
-        trajectories.append(noop_traj)
-    finally:
-        svc.close()
+    gold_run = _run_and_print(
+        run,
+        snapshot,
+        _overlay_solver(gold, "gold: full reference overlay"),
+        realized,
+        tiers,
+    )
+    trajectories.append(gold_run.trajectory)
+    units_run = _run_and_print(
+        run,
+        snapshot,
+        _overlay_solver(units_only, "units-only: pieces pass alone, don't compose"),
+        realized,
+        tiers,
+    )
+    trajectories.append(units_run.trajectory)
+    skeleton_run = _run_and_print(
+        run,
+        snapshot,
+        _noop_solver("skeleton: leave the stubs in place"),
+        realized,
+        tiers,
+    )
+    trajectories.append(skeleton_run.trajectory)
 
     _emit_trajectories(trajectories, run_root_dir)
     print("\neval complete: reward discriminated compose (1.00) vs partial vs none")
 
 
-def _run_episode(
-    svc: EpisodeService,
+def _run_and_print(
+    run: OpenRangeRun,
     snapshot: Snapshot,
-    task: TaskSpec,
     solver: Solver,
-    label: str,
+    realized: str,
     tiers: tuple[list[str], list[str]],
-) -> tuple[EpisodeReport, Trajectory]:
-    handle = svc.start_episode(snapshot, task.id)
-    root = svc.solver_root(handle)
-    realized = ", ".join(
-        sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
-    )
-    solver(root)
-    turn = AgentTurn(message=label)
-    svc.record_turn(handle, turn)
-    report = svc.stop_episode(handle)
-
-    result = report.episode_result
+) -> EpisodeRun:
+    ep = run.run_episode(snapshot, solver)
+    result = ep.report.episode_result
     status = "RESOLVED" if result.success else "UNRESOLVED"
-    print(f"\nepisode — {label}")
+    print(f"\nepisode — {ep.report.agent_summary}")
     print(f"  realized tree: {realized}  (held-out tests stay in the graph)")
     print(f"  result: {status} — {result.reason}")
     _print_breakdown(result.subgoals, tiers)
-    trajectory = episode_trajectory(report, [turn])
-    _print_reward(trajectory)
-    return report, trajectory
+    _print_reward(ep.trajectory)
+    return ep
+
+
+def _overlay_solver(overlay: Mapping[str, str], label: str) -> Solver:
+    """Scripted oracle: write an overlay over the skeleton, then end the
+    episode. The returned turn carries ``label`` as its message."""
+
+    def solve(ctx: EpisodeContext) -> AgentTurn:
+        _write_tree(ctx.root, overlay)
+        _finish(ctx.root)
+        return AgentTurn(message=label)
+
+    return solve
+
+
+def _noop_solver(label: str) -> Solver:
+    """Scripted no-op: leave the skeleton stubs in place, then end the episode."""
+
+    def solve(ctx: EpisodeContext) -> AgentTurn:
+        _finish(ctx.root)
+        return AgentTurn(message=label)
+
+    return solve
 
 
 def _print_breakdown(
@@ -175,19 +191,11 @@ def _emit_trajectories(trajectories: list[Trajectory], out_dir: Path) -> None:
     print(f"  wrote {len(trajectories)} JSONL trajectory record(s) -> {path}")
 
 
-def _apply(overlay: Mapping[str, str]) -> Solver:
-    def solver(root: Path) -> None:
-        for rel, contents in overlay.items():
-            dest = root / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(contents, encoding="utf-8")
-        _finish(root)
-
-    return solver
-
-
-def _noop(root: Path) -> None:
-    _finish(root)
+def _write_tree(root: Path, overlay: Mapping[str, str]) -> None:
+    for rel, contents in overlay.items():
+        dest = root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(contents, encoding="utf-8")
 
 
 def _finish(root: Path) -> None:
@@ -197,6 +205,16 @@ def _finish(root: Path) -> None:
 def _gold_files(snapshot: Snapshot) -> dict[str, str]:
     solution = snapshot.graph.by_kind("solution")[0]
     raw = solution.attrs.get("gold_files", {})
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _base_files(snapshot: Snapshot) -> dict[str, str]:
+    repos = snapshot.graph.by_kind("repo")
+    if not repos:
+        return {}
+    raw = repos[0].attrs.get("base_files", {})
     if not isinstance(raw, Mapping):
         return {}
     return {str(k): str(v) for k, v in raw.items()}

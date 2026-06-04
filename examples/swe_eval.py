@@ -28,15 +28,15 @@ from __future__ import annotations
 
 import argparse
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from openrange_pack_sdk import Snapshot, TaskSpec
+from openrange_pack_sdk import Snapshot
 
 from openrange.core import PACKS, auto_evolve
-from openrange.core.episode import AgentTurn, EpisodeReport, EpisodeService
-from openrange.runtime import OpenRangeRun, RunConfig
-from openrange.training import Trajectory, episode_trajectory, to_jsonl
+from openrange.core.episode import AgentTurn
+from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig, Solver
+from openrange.training import EpisodeRun, Trajectory, to_jsonl
 
 MANIFEST: dict[str, object] = {
     "world": {"goal": "fix the bug so the held-out suite goes green"},
@@ -44,11 +44,10 @@ MANIFEST: dict[str, object] = {
     "instance": "calc_sum",
 }
 
-Solver = Callable[[Path], None]
-
-# Per-fixture reproduction a scripted agent writes, then runs via the surfaced
-# ``run_tests`` tool: red on the buggy base tree, green once the fix lands. Used
-# only to demonstrate the multi-turn loop; the hidden grader is unaffected.
+# Per-fixture reproduction the iterative solver writes, then runs via the
+# surfaced ``run_tests`` tool: red on the buggy base tree, green once the fix
+# lands. Used only to demonstrate the multi-turn loop; the hidden grader is
+# unaffected.
 _REPROS: dict[str, str] = {
     "calc_sum": (
         "from calc.core import add\n\n\ndef test_repro():\n    assert add(2, 3) == 5\n"
@@ -74,26 +73,25 @@ def main() -> None:
     print(f"       task {task.id} — {_first_line(task.instruction)}")
 
     gold = _gold_files(snapshot)
+    realized = ", ".join(sorted(_base_files(snapshot)))
 
+    # Each episode is one ``run.run_episode`` call; the eval supplies a solver
+    # and reads the graded result. No start/record/stop/close loop in sight.
     trajectories: list[Trajectory] = []
-    svc = run.episode_service(snapshot)
-    try:
-        oracle, oracle_traj = _run_episode(
-            svc, snapshot, task, _apply(gold), "oracle: apply gold fix"
-        )
-        trajectories.append(oracle_traj)
-        repro = _REPROS.get(args.instance)
-        if repro is not None:
-            _, iter_traj = _run_iterative_episode(svc, snapshot, task, gold, repro)
-            trajectories.append(iter_traj)
-        _, noop_traj = _run_episode(
-            svc, snapshot, task, _noop, "no-op: leave the bug in place"
-        )
-        trajectories.append(noop_traj)
-    finally:
-        svc.close()
+    oracle = _run_and_print(
+        run, snapshot, _overlay_solver(gold, "oracle: apply gold fix"), realized
+    )
+    trajectories.append(oracle.trajectory)
+    repro = _REPROS.get(args.instance)
+    if repro is not None:
+        iterative = _run_iterative(run, snapshot, gold, repro)
+        trajectories.append(iterative.trajectory)
+    noop = _run_and_print(
+        run, snapshot, _noop_solver("no-op: leave the bug in place"), realized
+    )
+    trajectories.append(noop.trajectory)
 
-    evolved = auto_evolve(snapshot, oracle, pack=pack)
+    evolved = auto_evolve(snapshot, oracle.report, pack=pack)
     summary = (
         f"a harder world ({evolved.snapshot_id})"
         if evolved is not None
@@ -101,91 +99,92 @@ def main() -> None:
     )
     print(f"\ncurriculum: auto_evolve -> {summary}")
     _emit_trajectories(trajectories, run_root_dir)
-    verdict = "RESOLVED" if oracle.passed else "FAILED"
+    verdict = "RESOLVED" if oracle.success else "FAILED"
     print(f"\neval complete: oracle {verdict} the world")
 
 
-def _run_episode(
-    svc: EpisodeService,
-    snapshot: Snapshot,
-    task: TaskSpec,
-    solver: Solver,
-    label: str,
-) -> tuple[EpisodeReport, Trajectory]:
-    handle = svc.start_episode(snapshot, task.id)
-    root = svc.solver_root(handle)
-    realized = ", ".join(
-        sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
-    )
-    solver(root)
-    turn = AgentTurn(message=label)
-    svc.record_turn(handle, turn)
-    report = svc.stop_episode(handle)
-
-    result = report.episode_result
+def _run_and_print(
+    run: OpenRangeRun, snapshot: Snapshot, solver: Solver, realized: str
+) -> EpisodeRun:
+    ep = run.run_episode(snapshot, solver)
+    result = ep.report.episode_result
     status = "RESOLVED" if result.success else "UNRESOLVED"
-    print(f"\nepisode — {label}")
+    print(f"\nepisode — {ep.report.agent_summary}")
     print(f"  realized tree: {realized}  (held-out tests + gold stay in the graph)")
     print(f"  result: {status} — {result.reason}")
     for test_id, ok in result.subgoals.items():
         print(f"    {test_id}: {'pass' if ok else 'FAIL'}")
-    trajectory = episode_trajectory(report, [turn])
-    _print_reward(trajectory)
-    return report, trajectory
+    _print_reward(ep.trajectory)
+    return ep
 
 
-def _run_iterative_episode(
-    svc: EpisodeService,
-    snapshot: Snapshot,
-    task: TaskSpec,
-    gold: Mapping[str, str],
-    repro: str,
-) -> tuple[EpisodeReport, Trajectory]:
+def _run_iterative(
+    run: OpenRangeRun, snapshot: Snapshot, gold: Mapping[str, str], repro: str
+) -> EpisodeRun:
     """Multi-turn loop over the surfaced ``run_tests`` tool: write a repro, run
     it (red), apply the fix, run it (green), then end the episode. The grader
     still runs the held-out suite at stop — the tool never exposes it."""
-    handle = svc.start_episode(snapshot, task.id)
-    root = svc.solver_root(handle)
-    run_tests = svc.surface(handle)["run_tests"]
     print("\nepisode — iterative: run_tests tool loop (repro red -> fix -> green)")
-    turns: list[AgentTurn] = []
-
-    (root / "repro_test.py").write_text(repro, encoding="utf-8")
-    red = run_tests(["repro_test.py"])
-    turn_red = AgentTurn(
-        message="run_tests(repro) before fix",
-        tool_calls=({"tool": "run_tests", "args": {"node_ids": ["repro_test.py"]}},),
-        tool_results=({"ok": red["ok"], "returncode": red["returncode"]},),
-    )
-    turns.append(turn_red)
-    svc.record_turn(handle, turn_red)
-    print(
-        f"  turn 1 run_tests(repro): ok={red['ok']} rc={red['returncode']} "
-        f"(sandbox isolation={red['isolation']})"
-    )
-
-    for rel, contents in gold.items():
-        dest = root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(contents, encoding="utf-8")
-    green = run_tests(["repro_test.py"])
-    turn_green = AgentTurn(
-        message="run_tests(repro) after fix",
-        tool_calls=({"tool": "run_tests", "args": {"node_ids": ["repro_test.py"]}},),
-        tool_results=({"ok": green["ok"], "returncode": green["returncode"]},),
-    )
-    turns.append(turn_green)
-    svc.record_turn(handle, turn_green)
-    print(f"  turn 2 run_tests(repro): ok={green['ok']} rc={green['returncode']}")
-
-    _finish(root)
-    report = svc.stop_episode(handle)
-    result = report.episode_result
+    ep = run.run_episode(snapshot, _iterative_solver(gold, repro))
+    result = ep.report.episode_result
     status = "RESOLVED" if result.success else "UNRESOLVED"
     print(f"  result: {status} — {result.reason}  (held-out grader, not the tool)")
-    trajectory = episode_trajectory(report, turns)
-    _print_reward(trajectory)
-    return report, trajectory
+    _print_reward(ep.trajectory)
+    return ep
+
+
+def _overlay_solver(overlay: Mapping[str, str], label: str) -> Solver:
+    """Scripted oracle: write an overlay over the base tree, then end the
+    episode. The returned turn carries ``label`` as its message."""
+
+    def solve(ctx: EpisodeContext) -> AgentTurn:
+        _write_tree(ctx.root, overlay)
+        _finish(ctx.root)
+        return AgentTurn(message=label)
+
+    return solve
+
+
+def _noop_solver(label: str) -> Solver:
+    """Scripted no-op: leave the base tree untouched, then end the episode."""
+
+    def solve(ctx: EpisodeContext) -> AgentTurn:
+        _finish(ctx.root)
+        return AgentTurn(message=label)
+
+    return solve
+
+
+def _iterative_solver(gold: Mapping[str, str], repro: str) -> Solver:
+    def solve(ctx: EpisodeContext) -> Sequence[AgentTurn]:
+        run_tests = ctx.surface["run_tests"]
+        (ctx.root / "repro_test.py").write_text(repro, encoding="utf-8")
+        red = run_tests(["repro_test.py"])
+        print(
+            f"  turn 1 run_tests(repro): ok={red['ok']} rc={red['returncode']} "
+            f"(sandbox isolation={red['isolation']})"
+        )
+        turn_red = AgentTurn(
+            message="run_tests(repro) before fix",
+            tool_calls=(
+                {"tool": "run_tests", "args": {"node_ids": ["repro_test.py"]}},
+            ),
+            tool_results=({"ok": red["ok"], "returncode": red["returncode"]},),
+        )
+        _write_tree(ctx.root, gold)
+        green = run_tests(["repro_test.py"])
+        print(f"  turn 2 run_tests(repro): ok={green['ok']} rc={green['returncode']}")
+        turn_green = AgentTurn(
+            message="run_tests(repro) after fix",
+            tool_calls=(
+                {"tool": "run_tests", "args": {"node_ids": ["repro_test.py"]}},
+            ),
+            tool_results=({"ok": green["ok"], "returncode": green["returncode"]},),
+        )
+        _finish(ctx.root)
+        return [turn_red, turn_green]
+
+    return solve
 
 
 def _print_reward(traj: Trajectory) -> None:
@@ -206,19 +205,11 @@ def _emit_trajectories(trajectories: list[Trajectory], out_dir: Path) -> None:
     print(f"  wrote {len(trajectories)} JSONL trajectory record(s) -> {path}")
 
 
-def _apply(gold: Mapping[str, str]) -> Solver:
-    def solver(root: Path) -> None:
-        for rel, contents in gold.items():
-            dest = root / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(contents, encoding="utf-8")
-        _finish(root)
-
-    return solver
-
-
-def _noop(root: Path) -> None:
-    _finish(root)
+def _write_tree(root: Path, overlay: Mapping[str, str]) -> None:
+    for rel, contents in overlay.items():
+        dest = root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(contents, encoding="utf-8")
 
 
 def _finish(root: Path) -> None:
@@ -228,6 +219,16 @@ def _finish(root: Path) -> None:
 def _gold_files(snapshot: Snapshot) -> dict[str, str]:
     solution = snapshot.graph.by_kind("solution")[0]
     raw = solution.attrs.get("gold_files", {})
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _base_files(snapshot: Snapshot) -> dict[str, str]:
+    repos = snapshot.graph.by_kind("repo")
+    if not repos:
+        return {}
+    raw = repos[0].attrs.get("base_files", {})
     if not isinstance(raw, Mapping):
         return {}
     return {str(k): str(v) for k, v in raw.items()}

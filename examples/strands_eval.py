@@ -15,7 +15,7 @@ from typing import Protocol, cast
 from openrange_pack_sdk import LLMResult, OpenRangeError, Snapshot, TaskSpec
 
 from openrange.core.episode import AgentTurn
-from openrange.runtime import OpenRangeRun, RunConfig
+from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig
 
 MANIFEST: dict[str, object] = {
     "world": {"goal": "find the admin flag in a vulnerable webapp"},
@@ -71,15 +71,12 @@ def run_task(
     harness: EpisodeHarness,
     run: OpenRangeRun,
 ) -> dict[str, object]:
-    svc = run.episode_service(snapshot)
-    handle = svc.start_episode(snapshot, task.id)
-    try:
-        agent_result = harness.run(task.instruction, svc.solver_root(handle))
-        svc.record_turn(handle, AgentTurn(message=agent_result.text))
-        episode_report = svc.stop_episode(handle)
-    finally:
-        svc.close()
-    return {**episode_report.as_dict(), "passed": episode_report.passed}
+    def solve(ctx: EpisodeContext) -> AgentTurn:
+        result = harness.run(ctx.task.instruction, ctx.root)
+        return AgentTurn(message=result.text)
+
+    ep = run.run_episode(snapshot, solve, task_id=task.id)
+    return {**ep.report.as_dict(), "passed": ep.success}
 
 
 def main() -> None:

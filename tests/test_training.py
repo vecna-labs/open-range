@@ -14,6 +14,7 @@ from openrange_pack_sdk import EpisodeResult
 
 from openrange.core.episode import AgentTurn, EpisodeReport
 from openrange.training import (
+    EpisodeRun,
     episode_reward,
     episode_trajectory,
     to_jsonl,
@@ -120,6 +121,21 @@ class TestTrajectory:
         assert back["steps"][0]["tool_calls"] == [{"tool": "x"}]
         assert back["steps"][0]["metadata"] == {"k": "v"}
         assert back["success"] is False
+
+
+class TestEpisodeRun:
+    def test_bundles_report_turns_and_shapes_trajectory(self) -> None:
+        report = _report(success=True, subgoals={"t1": True}, reason="green")
+        run = EpisodeRun(report=report, turns=(AgentTurn(message="done"),))
+        assert run.success is True
+        assert run.reward.scalar == 1.0
+        assert [s.message for s in run.trajectory.steps] == ["done"]
+
+    def test_defaults_to_zero_step_trajectory(self) -> None:
+        run = EpisodeRun(report=_report(success=False, subgoals={"t1": False}))
+        assert run.success is False
+        assert run.reward.scalar == 0.0
+        assert run.trajectory.steps == ()
 
 
 def test_to_jsonl_one_line_per_trajectory() -> None:

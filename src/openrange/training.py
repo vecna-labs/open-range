@@ -37,6 +37,7 @@ from typing import Any
 from openrange.core.episode import AgentTurn, EpisodeReport
 
 __all__ = [
+    "EpisodeRun",
     "Reward",
     "Trajectory",
     "TrajectoryStep",
@@ -151,6 +152,30 @@ def episode_trajectory(
         success=report.passed,
         reason=report.episode_result.reason,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeRun:
+    """One completed episode as a caller gets it back from
+    ``OpenRangeRun.run_episode``: the terminal ``report`` and the ``turns`` the
+    solver took. ``trajectory`` shapes the pair through the seam above;
+    ``reward`` and ``success`` are the shortcuts most callers actually read.
+    """
+
+    report: EpisodeReport
+    turns: tuple[AgentTurn, ...] = ()
+
+    @property
+    def trajectory(self) -> Trajectory:
+        return episode_trajectory(self.report, self.turns)
+
+    @property
+    def reward(self) -> Reward:
+        return self.trajectory.reward
+
+    @property
+    def success(self) -> bool:
+        return self.report.passed
 
 
 def to_jsonl(trajectories: Iterable[Trajectory]) -> str:

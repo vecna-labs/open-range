@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openrange_pack_sdk import AgentBackend, Pack, Snapshot
+from openrange_pack_sdk import AgentBackend, Pack, Snapshot, TaskSpec
 
 from openrange.core.admit import AdmissionFailure, admit
-from openrange.core.episode import EpisodeService
+from openrange.core.episode import AgentTurn, EpisodeError, EpisodeService
 from openrange.core.errors import EpisodeRuntimeError as EpisodeRuntimeError
 from openrange.core.pack import PACKS
 from openrange.dashboard import (
@@ -19,6 +19,7 @@ from openrange.dashboard import (
     DashboardHTTPServer,
     DashboardView,
 )
+from openrange.training import EpisodeRun
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,38 @@ class DashboardServerHandle:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeContext:
+    """What a :data:`Solver` sees for one running episode: the resolved ``task``
+    (whose ``instruction`` is the problem statement) and the pack-defined IO
+    ``surface``, plus accessors for the two surface keys a solver usually wants —
+    the editable working directory and the server URL. Both raise if the world
+    doesn't declare them, so a solver asks only for what its world provides.
+    """
+
+    task: TaskSpec
+    surface: Mapping[str, Any]
+
+    @property
+    def root(self) -> Path:
+        value = self.surface.get("solver_root")
+        if not isinstance(value, (str, Path)):
+            raise EpisodeError("episode surface does not expose 'solver_root'")
+        return Path(value)
+
+    @property
+    def base_url(self) -> str:
+        value = self.surface.get("base_url")
+        if not isinstance(value, str):
+            raise EpisodeError("episode surface does not expose 'base_url'")
+        return value
+
+
+# Return-based, not handed the service: a solver returning its turn(s) is what
+# lets ``run_episode`` own the start/record/stop/close lifecycle.
+Solver = Callable[[EpisodeContext], "AgentTurn | Sequence[AgentTurn] | None"]
 
 
 class OpenRangeRun:
@@ -135,6 +168,40 @@ class OpenRangeRun:
             npc_llm_model=self.config.npc_llm_model,
         )
 
+    def run_episode(
+        self,
+        snapshot: Snapshot,
+        solver: Solver,
+        *,
+        task_id: str | None = None,
+    ) -> EpisodeRun:
+        """Run one episode end to end and return the graded result.
+
+        Realizes the world, hands ``solver`` an :class:`EpisodeContext`, records
+        the turn(s) it returns, grades at stop, and bundles the report with the
+        turns as an :class:`~openrange.training.EpisodeRun` (``.trajectory`` /
+        ``.reward`` / ``.success``). This is the
+        ``episode_service → start_episode → record_turn → stop_episode → close``
+        loop every harness would otherwise hand-roll.
+
+        ``solver`` raising propagates (after the runtime is torn down); a solver
+        that wants a failed backend *graded* — against whatever it left in the
+        workspace — catches its own error and returns a turn instead of raising.
+        """
+        svc = self.episode_service(snapshot)
+        try:
+            handle = svc.start_episode(snapshot, task_id)
+            task = next(t for t in snapshot.tasks if t.id == handle.task_id)
+            turns = _normalize_turns(
+                solver(EpisodeContext(task=task, surface=svc.surface(handle))),
+            )
+            for turn in turns:
+                svc.record_turn(handle, turn)
+            report = svc.stop_episode(handle)
+        finally:
+            svc.close()
+        return EpisodeRun(report=report, turns=tuple(turns))
+
     def serve_dashboard(
         self,
         snapshot: Snapshot,
@@ -146,6 +213,16 @@ class OpenRangeRun:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return DashboardServerHandle(server, thread)
+
+
+def _normalize_turns(
+    raw: AgentTurn | Sequence[AgentTurn] | None,
+) -> list[AgentTurn]:
+    if raw is None:
+        return []
+    if isinstance(raw, AgentTurn):
+        return [raw]
+    return list(raw)
 
 
 def _resolve_pack(manifest: Mapping[str, Any]) -> Pack:

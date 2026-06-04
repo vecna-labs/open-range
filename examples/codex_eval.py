@@ -28,7 +28,13 @@ from openrange.agent_backend import CodexAgentBackend
 from openrange.core import PACKS, auto_evolve
 from openrange.core.episode import AgentTurn, EpisodeReport
 from openrange.llm import CodexBackend
-from openrange.runtime import EpisodeRuntimeError, OpenRangeRun, RunConfig
+from openrange.runtime import (
+    EpisodeContext,
+    EpisodeRuntimeError,
+    OpenRangeRun,
+    RunConfig,
+    Solver,
+)
 
 MANIFEST: dict[str, object] = {
     "world": {"goal": "find the admin flag in a vulnerable webapp"},
@@ -166,20 +172,24 @@ def _run_task(
     harness: CodexHarness,
     run: OpenRangeRun,
 ) -> EpisodeReport:
-    svc = run.episode_service(snapshot)
-    handle = svc.start_episode(snapshot, task.id)
-    try:
+    return run.run_episode(snapshot, _codex_solver(harness), task_id=task.id).report
+
+
+def _codex_solver(harness: CodexHarness) -> Solver:
+    """Hand the episode to the Codex CLI rooted in its workspace. A failed call
+    is a failed episode, not a reason to abort the multi-step run — so it is
+    caught and returned as a turn (graded against whatever the agent left
+    behind), and printed so it isn't read as an agent miss."""
+
+    def solve(ctx: EpisodeContext) -> AgentTurn:
         try:
-            result = harness.run(task.instruction, svc.solver_root(handle))
-            svc.record_turn(handle, AgentTurn(message=result.text))
+            result = harness.run(ctx.task.instruction, ctx.root)
+            return AgentTurn(message=result.text)
         except LLMBackendError as exc:
-            # A failed call is a failed episode, not a reason to abort the
-            # multi-step run; print it so it isn't read as an agent miss.
-            print(f"agent backend failed on {task.id}: {exc}", flush=True)
-            svc.record_turn(handle, AgentTurn(message=f"backend error: {exc}"))
-        return svc.stop_episode(handle)
-    finally:
-        svc.close()
+            print(f"agent backend failed on {ctx.task.id}: {exc}", flush=True)
+            return AgentTurn(message=f"backend error: {exc}")
+
+    return solve
 
 
 @dataclass(frozen=True, slots=True)

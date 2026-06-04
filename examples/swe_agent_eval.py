@@ -30,12 +30,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from openrange_pack_sdk import LLMBackendError, LLMRequest, LLMResult, TaskSpec
+from openrange_pack_sdk import LLMBackendError, LLMRequest, LLMResult, Snapshot
 
 from openrange.core.episode import AgentTurn, EpisodeReport
 from openrange.llm import CodexBackend
-from openrange.runtime import OpenRangeRun, RunConfig
-from openrange.training import Trajectory, episode_trajectory, to_jsonl
+from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig, Solver
+from openrange.training import EpisodeRun, Trajectory, to_jsonl
 
 # calc_sum is a one-line fix (swe.fix); notes_app is a build-from-skeleton
 # (swe.build). One of each so the eval spans both task shapes.
@@ -54,16 +54,16 @@ def main() -> None:
 
     print("=== OpenRange SWE agent eval (real Codex LLM, solves blind) ===")
     print(f"run root: {run_root}")
-    trajectories: list[Trajectory] = []
+    runs: list[EpisodeRun] = []
     for instance in args.instances:
-        trajectories.append(_run_instance(run, harness, instance))
+        runs.append(_run_instance(run, harness, instance))
 
-    _emit(trajectories, run_root)
+    _emit(runs, run_root)
 
 
 def _run_instance(
     run: OpenRangeRun, harness: CodexHarness, instance: str
-) -> Trajectory:
+) -> EpisodeRun:
     snapshot = run.build(
         {
             "world": {"goal": f"solve the {instance} SWE task"},
@@ -75,40 +75,37 @@ def _run_instance(
     print(f"\n--- {instance}: admitted {snapshot.snapshot_id}")
     print(f"    task {task.id} — {_first_line(task.instruction)}")
 
-    svc = run.episode_service(snapshot)
-    try:
-        handle = svc.start_episode(snapshot, task.id)
-        root = svc.solver_root(handle)
-        before = _tree(root)
-        turn = _solve(harness, task, root)
-        after = _tree(root)
-        svc.record_turn(handle, turn)
-        report = svc.stop_episode(handle)
-    finally:
-        svc.close()
+    # The whole episode — realize the world, hand the agent its workspace, grade
+    # against the held-out suite — is one call. The start/record/stop/close loop
+    # lives in the runtime; the eval only writes the solver and reads the result.
+    ep = run.run_episode(snapshot, _codex_solver(harness))
 
-    _print_report(report, before, after)
-    trajectory = episode_trajectory(report, [turn])
-    _print_reward(trajectory)
-    return trajectory
+    _print_report(ep.report, snapshot)
+    _print_reward(ep.trajectory)
+    return ep
 
 
-def _solve(harness: CodexHarness, task: TaskSpec, root: Path) -> AgentTurn:
-    """Hand the whole episode to the Codex CLI; a backend failure is a failed
-    episode (graded against whatever the agent left behind), not a crash."""
-    try:
-        result = harness.run(task.instruction, root)
-        return AgentTurn(message=result.text)
-    except LLMBackendError as exc:
-        print(f"    agent backend failed: {exc}")
-        return AgentTurn(message=f"backend error: {exc}")
+def _codex_solver(harness: CodexHarness) -> Solver:
+    """Hand the whole episode to the Codex CLI rooted in the agent's workspace.
+    A backend failure is a failed episode (graded against whatever the agent left
+    behind), not a crash — so it is caught and returned as a turn, not raised."""
+
+    def solve(ctx: EpisodeContext) -> AgentTurn:
+        try:
+            result = harness.run(ctx.task.instruction, ctx.root)
+            return AgentTurn(message=result.text)
+        except LLMBackendError as exc:
+            print(f"    agent backend failed: {exc}")
+            return AgentTurn(message=f"backend error: {exc}")
+
+    return solve
 
 
-def _print_report(
-    report: EpisodeReport, before: Mapping[str, str], after: Mapping[str, str]
-) -> None:
+def _print_report(report: EpisodeReport, snapshot: Snapshot) -> None:
     result = report.episode_result
     status = "RESOLVED" if result.success else "UNRESOLVED"
+    before = _base_files(snapshot)
+    after = _workspace_files(report)
     added = sorted(k for k in after if k not in before)
     modified = sorted(k for k in after if k in before and after[k] != before[k])
     print(f"    agent edits: +{added or '[]'}  ~{modified or '[]'}")
@@ -124,17 +121,18 @@ def _print_reward(traj: Trajectory) -> None:
     print(f"    reward: scalar={traj.reward.scalar:.2f}  success={gate}")
 
 
-def _emit(trajectories: list[Trajectory], out_dir: Path) -> None:
-    if not trajectories:
+def _emit(runs: list[EpisodeRun], out_dir: Path) -> None:
+    if not runs:
         print("\nno episodes completed")
         return
+    trajectories = [ep.trajectory for ep in runs]
     path = out_dir / "trajectories.jsonl"
     path.write_text(to_jsonl(trajectories) + "\n", encoding="utf-8")
     scalars = ", ".join(f"{t.reward.scalar:.2f}" for t in trajectories)
-    resolved = sum(1 for t in trajectories if t.success)
+    resolved = sum(1 for ep in runs if ep.success)
     print("\ntraining seam: real agent episode -> (trajectory, reward)")
     print(f"  rewards across instances: [{scalars}]")
-    print(f"  resolved {resolved}/{len(trajectories)} world(s)")
+    print(f"  resolved {resolved}/{len(runs)} world(s)")
     print(f"  wrote {len(trajectories)} JSONL trajectory record(s) -> {path}")
 
 
@@ -161,15 +159,25 @@ class CodexHarness:
         ).complete(LLMRequest(prompt))
 
 
-def _tree(root: Path) -> dict[str, str]:
-    """Snapshot the workspace as ``{relpath: contents}`` (text, lenient decode)
-    so we can report what the agent added or changed. Bytecode caches are skipped
-    — the agent runs code so they appear, but they aren't edits."""
-    return {
-        p.relative_to(root).as_posix(): p.read_text(encoding="utf-8", errors="replace")
-        for p in sorted(root.rglob("*"))
-        if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
-    }
+def _base_files(snapshot: Snapshot) -> dict[str, str]:
+    """The repo's starting tree, read from the world graph — the ``before`` the
+    agent's edits are diffed against."""
+    repos = snapshot.graph.by_kind("repo")
+    if not repos:
+        return {}
+    raw = repos[0].attrs.get("base_files", {})
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _workspace_files(report: EpisodeReport) -> dict[str, str]:
+    """The agent's final tree, carried on the report's ``final_state`` (already
+    free of ``result.json`` and bytecode caches) — the ``after``."""
+    raw = report.final_state.get("workspace_files", {})
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
 
 
 def _first_line(text: str) -> str:

@@ -57,11 +57,14 @@ from openrange.npc import (
 )
 from openrange.runtime import (
     DashboardServerHandle,
+    EpisodeContext,
     EpisodeRuntimeError,
     OpenRangeRun,
     RunConfig,
+    Solver,
 )
 from openrange.training import (
+    EpisodeRun,
     Reward,
     Trajectory,
     TrajectoryStep,
@@ -86,9 +89,11 @@ __all__ = [
     "Edge",
     "EdgeKind",
     "EpisodeCheckpoint",
+    "EpisodeContext",
     "EpisodeError",
     "EpisodeHandle",
     "EpisodeReport",
+    "EpisodeRun",
     "EpisodeRuntimeError",
     "EpisodeService",
     "EpisodeUpdate",
@@ -107,6 +112,7 @@ __all__ = [
     "Role",
     "RunConfig",
     "SnapshotStore",
+    "Solver",
     "StoreError",
     "StrandsAgentBackend",
     "TickRequest",
