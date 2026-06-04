@@ -257,15 +257,3 @@ class TestInstanceLoader:
         suite = to_graph(load_instance(_BUILD)).by_kind("test_suite")[0]
         assert suite.attrs["unit_tests"] == list(_UNITS)
         assert suite.attrs["integration_tests"] == list(_INTEG)
-
-
-class TestEvalParity:
-    """The build eval and this test each carry a units-only service overlay; they
-    must stay byte-identical so both exercise the same passes-units/fails-
-    integration world (the example is the executable spec for the partial-credit
-    split)."""
-
-    def test_units_only_service_matches_eval(self) -> None:
-        from examples.swe_build_eval import _UNITS_ONLY_SERVICE as eval_service
-
-        assert eval_service == _UNITS_ONLY_SERVICE

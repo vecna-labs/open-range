@@ -1,234 +1,182 @@
-"""Oracle eval over an OpenRange SWE world — the real episode harness, no LLM.
+"""The SWE pack's end-to-end example: a real agent solves a SWE world *blind*,
+and the world's own held-out suite scores it.
 
-Three episodes against one admitted world show the loop end to end:
+``run_episode`` realizes the world, roots the agent in the episode's
+``solver_root`` with only the problem statement and the base working tree, then
+grades whatever it left behind against the held-out suite. That suite and the gold
+overlay never leave the graph, so an agent on disk *cannot* read them — it solves
+blind. The same training seam (``openrange.training``) turns the graded episode
+into a ``(trajectory, reward)``: the number measures the model, not the grader.
 
-- **oracle** applies the hidden gold fix and resolves the held-out suite;
-- **iterative** drives the surfaced ``run_tests`` tool across two turns (write a
-  reproduction → red → apply the fix → green), proving the multi-turn agent
-  surface works and that the tool runs the agent's *own* tests, never the hidden
-  grader;
-- **no-op** leaves the bug in place and fails FAIL_TO_PASS.
+The harness is the swap-in seam. ``CodexHarness`` drives the Codex CLI as the
+reference; point the solver at your own endpoint to eval another model. Two
+instances span both task shapes: ``calc_sum`` (``swe.fix``, a one-line repair)
+and ``notes_app`` (``swe.build``, build-from-skeleton).
 
-Every episode is then shaped through the training seam (``openrange.training``)
-into a ``(trajectory, reward)``, and the batch is written as JSONL — the
-``EpisodeResult`` → (trajectory, reward) standard a trainer consumes, dense by
-default (a solved episode scores 1.0, an unsolved one the fraction of its
-held-out tests that pass).
-
-Deterministic and offline — the gold fix is read from the world graph (the
-oracle's answer key), never guessed, and the held-out tests never touch the
-agent's workspace.
+Non-deterministic and online: the reference harness needs a working ``codex`` CLI
+(OpenAI / ChatGPT auth). Grading replays arbitrary model-written code; on macOS
+that is the bare subprocess sandbox (the trusted-code path) — fine for a model you
+control, not for public adversarial traffic.
 
 Run::
 
     uv run python -m examples.swe_eval
+    uv run python -m examples.swe_eval --instance notes_app
 """
 
 from __future__ import annotations
 
 import argparse
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import LLMBackendError, LLMRequest, LLMResult, Snapshot
 
-from openrange.core import PACKS, auto_evolve
-from openrange.core.episode import AgentTurn
+from openrange.core.episode import AgentTurn, EpisodeReport
+from openrange.llm import CodexBackend
 from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig, Solver
 from openrange.training import EpisodeRun, Trajectory, to_jsonl
 
-MANIFEST: dict[str, object] = {
-    "world": {"goal": "fix the bug so the held-out suite goes green"},
-    "pack": {"id": "swe"},
-    "instance": "calc_sum",
-}
-
-# Per-fixture reproduction the iterative solver writes, then runs via the
-# surfaced ``run_tests`` tool: red on the buggy base tree, green once the fix
-# lands. Used only to demonstrate the multi-turn loop; the hidden grader is
-# unaffected.
-_REPROS: dict[str, str] = {
-    "calc_sum": (
-        "from calc.core import add\n\n\ndef test_repro():\n    assert add(2, 3) == 5\n"
-    ),
-    "shapes_area": (
-        "from shapes.geometry import rectangle_area\n\n\n"
-        "def test_repro():\n    assert rectangle_area(2, 3) == 6\n"
-    ),
-}
+# calc_sum is a one-line fix (swe.fix); notes_app is a build-from-skeleton
+# (swe.build). One of each so the eval spans both task shapes.
+_DEFAULT_INSTANCES = ("calc_sum", "notes_app")
 
 
 def main() -> None:
     args = _parse_args()
-    pack = PACKS.resolve("swe")
-    run_root_dir = _resolve_root(args)
-    run = OpenRangeRun(RunConfig(run_root_dir, dashboard=False))
+    # Fail fast with a clear message if the codex binary isn't installed.
+    CodexBackend(command=args.codex_command).preflight()
+    run_root = _resolve_root(args)
+    run = OpenRangeRun(RunConfig(run_root, dashboard=False))
+    harness = CodexHarness(
+        command=args.codex_command, model=args.model, timeout=args.agent_timeout
+    )
 
-    manifest = {**MANIFEST, "instance": args.instance}
-    snapshot = run.build(manifest)
+    print("=== OpenRange SWE agent eval (real Codex LLM, solves blind) ===")
+    print(f"run root: {run_root}")
+    runs: list[EpisodeRun] = []
+    for instance in args.instances:
+        runs.append(_run_instance(run, harness, instance))
+
+    _emit(runs, run_root)
+
+
+def _run_instance(
+    run: OpenRangeRun, harness: CodexHarness, instance: str
+) -> EpisodeRun:
+    snapshot = run.build(
+        {
+            "world": {"goal": f"solve the {instance} SWE task"},
+            "pack": {"id": "swe"},
+            "instance": instance,
+        }
+    )
     task = snapshot.tasks[0]
-    print("=== OpenRange SWE eval (oracle + tool loop + training seam, no LLM) ===")
-    print(f"build: admitted {snapshot.snapshot_id}")
-    print(f"       task {task.id} — {_first_line(task.instruction)}")
+    print(f"\n--- {instance}: admitted {snapshot.snapshot_id}")
+    print(f"    task {task.id} — {_first_line(task.instruction)}")
 
-    gold = _gold_files(snapshot)
-    realized = ", ".join(sorted(_base_files(snapshot)))
+    # The whole episode — realize the world, hand the agent its workspace, grade
+    # against the held-out suite — is one call. The start/record/stop/close loop
+    # lives in the runtime; the eval only writes the solver and reads the result.
+    ep = run.run_episode(snapshot, _codex_solver(harness))
 
-    # Each episode is one ``run.run_episode`` call; the eval supplies a solver
-    # and reads the graded result. No start/record/stop/close loop in sight.
-    trajectories: list[Trajectory] = []
-    oracle = _run_and_print(
-        run, snapshot, _overlay_solver(gold, "oracle: apply gold fix"), realized
-    )
-    trajectories.append(oracle.trajectory)
-    repro = _REPROS.get(args.instance)
-    if repro is not None:
-        iterative = _run_iterative(run, snapshot, gold, repro)
-        trajectories.append(iterative.trajectory)
-    noop = _run_and_print(
-        run, snapshot, _noop_solver("no-op: leave the bug in place"), realized
-    )
-    trajectories.append(noop.trajectory)
-
-    evolved = auto_evolve(snapshot, oracle.report, pack=pack)
-    summary = (
-        f"a harder world ({evolved.snapshot_id})"
-        if evolved is not None
-        else "None — SWE curriculum is milestone C in the design doc, not wired yet"
-    )
-    print(f"\ncurriculum: auto_evolve -> {summary}")
-    _emit_trajectories(trajectories, run_root_dir)
-    verdict = "RESOLVED" if oracle.success else "FAILED"
-    print(f"\neval complete: oracle {verdict} the world")
-
-
-def _run_and_print(
-    run: OpenRangeRun, snapshot: Snapshot, solver: Solver, realized: str
-) -> EpisodeRun:
-    ep = run.run_episode(snapshot, solver)
-    result = ep.report.episode_result
-    status = "RESOLVED" if result.success else "UNRESOLVED"
-    print(f"\nepisode — {ep.report.agent_summary}")
-    print(f"  realized tree: {realized}  (held-out tests + gold stay in the graph)")
-    print(f"  result: {status} — {result.reason}")
-    for test_id, ok in result.subgoals.items():
-        print(f"    {test_id}: {'pass' if ok else 'FAIL'}")
+    _print_report(ep.report, snapshot)
     _print_reward(ep.trajectory)
     return ep
 
 
-def _run_iterative(
-    run: OpenRangeRun, snapshot: Snapshot, gold: Mapping[str, str], repro: str
-) -> EpisodeRun:
-    """Multi-turn loop over the surfaced ``run_tests`` tool: write a repro, run
-    it (red), apply the fix, run it (green), then end the episode. The grader
-    still runs the held-out suite at stop — the tool never exposes it."""
-    print("\nepisode — iterative: run_tests tool loop (repro red -> fix -> green)")
-    ep = run.run_episode(snapshot, _iterative_solver(gold, repro))
-    result = ep.report.episode_result
+def _codex_solver(harness: CodexHarness) -> Solver:
+    """Hand the whole episode to the Codex CLI rooted in the agent's workspace.
+    A backend failure is a failed episode (graded against whatever the agent left
+    behind), not a crash — so it is caught and returned as a turn, not raised."""
+
+    def solve(ctx: EpisodeContext) -> AgentTurn:
+        try:
+            result = harness.run(ctx.task.instruction, ctx.root)
+            return AgentTurn(message=result.text)
+        except LLMBackendError as exc:
+            print(f"    agent backend failed: {exc}")
+            return AgentTurn(message=f"backend error: {exc}")
+
+    return solve
+
+
+def _print_report(report: EpisodeReport, snapshot: Snapshot) -> None:
+    result = report.episode_result
     status = "RESOLVED" if result.success else "UNRESOLVED"
-    print(f"  result: {status} — {result.reason}  (held-out grader, not the tool)")
-    _print_reward(ep.trajectory)
-    return ep
-
-
-def _overlay_solver(overlay: Mapping[str, str], label: str) -> Solver:
-    """Scripted oracle: write an overlay over the base tree, then end the
-    episode. The returned turn carries ``label`` as its message."""
-
-    def solve(ctx: EpisodeContext) -> AgentTurn:
-        _write_tree(ctx.root, overlay)
-        _finish(ctx.root)
-        return AgentTurn(message=label)
-
-    return solve
-
-
-def _noop_solver(label: str) -> Solver:
-    """Scripted no-op: leave the base tree untouched, then end the episode."""
-
-    def solve(ctx: EpisodeContext) -> AgentTurn:
-        _finish(ctx.root)
-        return AgentTurn(message=label)
-
-    return solve
-
-
-def _iterative_solver(gold: Mapping[str, str], repro: str) -> Solver:
-    def solve(ctx: EpisodeContext) -> Sequence[AgentTurn]:
-        run_tests = ctx.surface["run_tests"]
-        (ctx.root / "repro_test.py").write_text(repro, encoding="utf-8")
-        red = run_tests(["repro_test.py"])
-        print(
-            f"  turn 1 run_tests(repro): ok={red['ok']} rc={red['returncode']} "
-            f"(sandbox isolation={red['isolation']})"
-        )
-        turn_red = AgentTurn(
-            message="run_tests(repro) before fix",
-            tool_calls=(
-                {"tool": "run_tests", "args": {"node_ids": ["repro_test.py"]}},
-            ),
-            tool_results=({"ok": red["ok"], "returncode": red["returncode"]},),
-        )
-        _write_tree(ctx.root, gold)
-        green = run_tests(["repro_test.py"])
-        print(f"  turn 2 run_tests(repro): ok={green['ok']} rc={green['returncode']}")
-        turn_green = AgentTurn(
-            message="run_tests(repro) after fix",
-            tool_calls=(
-                {"tool": "run_tests", "args": {"node_ids": ["repro_test.py"]}},
-            ),
-            tool_results=({"ok": green["ok"], "returncode": green["returncode"]},),
-        )
-        _finish(ctx.root)
-        return [turn_red, turn_green]
-
-    return solve
+    before = _base_files(snapshot)
+    after = _workspace_files(report)
+    added = sorted(k for k in after if k not in before)
+    modified = sorted(k for k in after if k in before and after[k] != before[k])
+    print(f"    agent edits: +{added or '[]'}  ~{modified or '[]'}")
+    print(f"    result: {status} — {result.reason}")
+    passed = sum(1 for v in result.subgoals.values() if v)
+    print(f"    subgoals: {passed}/{len(result.subgoals)} pass")
+    for tid, ok in result.subgoals.items():
+        print(f"      {'pass' if ok else 'FAIL'}  {tid}")
 
 
 def _print_reward(traj: Trajectory) -> None:
-    comps = traj.reward.components
-    passed = sum(1 for v in comps.values() if v >= 1.0)
-    print(
-        f"  reward: scalar={traj.reward.scalar:.2f}  "
-        f"subgoals={passed}/{len(comps)}  steps={len(traj.steps)}"
-    )
+    gate = "RESOLVED" if traj.success else "unresolved"
+    print(f"    reward: scalar={traj.reward.scalar:.2f}  success={gate}")
 
 
-def _emit_trajectories(trajectories: list[Trajectory], out_dir: Path) -> None:
+def _emit(runs: list[EpisodeRun], out_dir: Path) -> None:
+    if not runs:
+        print("\nno episodes completed")
+        return
+    trajectories = [ep.trajectory for ep in runs]
     path = out_dir / "trajectories.jsonl"
     path.write_text(to_jsonl(trajectories) + "\n", encoding="utf-8")
     scalars = ", ".join(f"{t.reward.scalar:.2f}" for t in trajectories)
-    print("\ntraining seam: episode -> (trajectory, reward)")
-    print(f"  rewards across episodes: [{scalars}]")
+    resolved = sum(1 for ep in runs if ep.success)
+    print("\ntraining seam: real agent episode -> (trajectory, reward)")
+    print(f"  rewards across instances: [{scalars}]")
+    print(f"  resolved {resolved}/{len(runs)} world(s)")
     print(f"  wrote {len(trajectories)} JSONL trajectory record(s) -> {path}")
 
 
-def _write_tree(root: Path, overlay: Mapping[str, str]) -> None:
-    for rel, contents in overlay.items():
-        dest = root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(contents, encoding="utf-8")
+@dataclass(frozen=True, slots=True)
+class CodexHarness:
+    """Spawns the Codex CLI with ``cwd`` set to the episode's agent root.
+
+    ``workspace-write`` lets the agent edit files in its workspace and run the
+    tests it writes; no network override — a SWE world has no server, and the
+    held-out suite isn't on disk to be found.
+    """
+
+    command: str | Path = "codex"
+    model: str | None = None
+    timeout: float = 300.0
+
+    def run(self, prompt: str, cwd: Path) -> LLMResult:
+        return CodexBackend(
+            command=self.command,
+            model=self.model,
+            cwd=cwd,
+            sandbox="workspace-write",
+            timeout=self.timeout,
+        ).complete(LLMRequest(prompt))
 
 
-def _finish(root: Path) -> None:
-    (root / "result.json").write_text('{"done": true}\n', encoding="utf-8")
-
-
-def _gold_files(snapshot: Snapshot) -> dict[str, str]:
-    solution = snapshot.graph.by_kind("solution")[0]
-    raw = solution.attrs.get("gold_files", {})
+def _base_files(snapshot: Snapshot) -> dict[str, str]:
+    """The repo's starting tree, read from the world graph — the ``before`` the
+    agent's edits are diffed against."""
+    repos = snapshot.graph.by_kind("repo")
+    if not repos:
+        return {}
+    raw = repos[0].attrs.get("base_files", {})
     if not isinstance(raw, Mapping):
         return {}
     return {str(k): str(v) for k, v in raw.items()}
 
 
-def _base_files(snapshot: Snapshot) -> dict[str, str]:
-    repos = snapshot.graph.by_kind("repo")
-    if not repos:
-        return {}
-    raw = repos[0].attrs.get("base_files", {})
+def _workspace_files(report: EpisodeReport) -> dict[str, str]:
+    """The agent's final tree, carried on the report's ``final_state`` (already
+    free of ``result.json`` and bytecode caches) — the ``after``."""
+    raw = report.final_state.get("workspace_files", {})
     if not isinstance(raw, Mapping):
         return {}
     return {str(k): str(v) for k, v in raw.items()}
@@ -242,19 +190,29 @@ def _resolve_root(args: argparse.Namespace) -> Path:
     if args.run_root is not None:
         return Path(args.run_root)
     args.runs_dir.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix="swe-eval-", dir=args.runs_dir))
+    return Path(tempfile.mkdtemp(prefix="swe-agent-eval-", dir=args.runs_dir))
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--instance",
-        default="calc_sum",
-        help="fixture instance to build (e.g. calc_sum, shapes_area)",
+        dest="instances",
+        action="append",
+        metavar="NAME",
+        help="SWE fixture to solve; repeatable (default: calc_sum, notes_app).",
     )
+    parser.add_argument("--codex-command", type=Path, default=Path("codex"))
+    parser.add_argument(
+        "--model", default=None, help="Codex model; default lets the CLI choose."
+    )
+    parser.add_argument("--agent-timeout", type=float, default=300.0)
     parser.add_argument("--runs-dir", type=Path, default=Path("or-runs"))
     parser.add_argument("--run-root", type=Path)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.instances:
+        args.instances = list(_DEFAULT_INSTANCES)
+    return args
 
 
 if __name__ == "__main__":  # pragma: no cover
