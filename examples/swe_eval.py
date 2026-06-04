@@ -39,14 +39,11 @@ from openrange.llm import CodexBackend
 from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig, Solver
 from openrange.training import EpisodeRun, Trajectory, to_jsonl
 
-# calc_sum is a one-line fix (swe.fix); notes_app is a build-from-skeleton
-# (swe.build). One of each so the eval spans both task shapes.
 _DEFAULT_INSTANCES = ("calc_sum", "notes_app")
 
 
 def main() -> None:
     args = _parse_args()
-    # Fail fast with a clear message if the codex binary isn't installed.
     CodexBackend(command=args.codex_command).preflight()
     run_root = _resolve_root(args)
     run = OpenRangeRun(RunConfig(run_root, dashboard=False))
@@ -77,9 +74,6 @@ def _run_instance(
     print(f"\n--- {instance}: admitted {snapshot.snapshot_id}")
     print(f"    task {task.id} — {_first_line(task.instruction)}")
 
-    # The whole episode — realize the world, hand the agent its workspace, grade
-    # against the held-out suite — is one call. The start/record/stop/close loop
-    # lives in the runtime; the eval only writes the solver and reads the result.
     ep = run.run_episode(snapshot, _codex_solver(harness))
 
     _print_report(ep.report, snapshot)
@@ -88,9 +82,8 @@ def _run_instance(
 
 
 def _codex_solver(harness: CodexHarness) -> Solver:
-    """Hand the whole episode to the Codex CLI rooted in the agent's workspace.
-    A backend failure is a failed episode (graded against whatever the agent left
-    behind), not a crash — so it is caught and returned as a turn, not raised."""
+    """A backend failure is a failed episode — graded against whatever the agent
+    left behind — so it is returned as a turn, not raised."""
 
     def solve(ctx: EpisodeContext) -> AgentTurn:
         try:
@@ -140,12 +133,8 @@ def _emit(runs: list[EpisodeRun], out_dir: Path) -> None:
 
 @dataclass(frozen=True, slots=True)
 class CodexHarness:
-    """Spawns the Codex CLI with ``cwd`` set to the episode's agent root.
-
-    ``workspace-write`` lets the agent edit files in its workspace and run the
-    tests it writes; no network override — a SWE world has no server, and the
-    held-out suite isn't on disk to be found.
-    """
+    """``workspace-write`` lets the agent edit and run tests in its workspace; no
+    network — a SWE world has no server, and the held-out suite isn't on disk."""
 
     command: str | Path = "codex"
     model: str | None = None
@@ -162,8 +151,6 @@ class CodexHarness:
 
 
 def _base_files(snapshot: Snapshot) -> dict[str, str]:
-    """The repo's starting tree, read from the world graph — the ``before`` the
-    agent's edits are diffed against."""
     repos = snapshot.graph.by_kind("repo")
     if not repos:
         return {}
@@ -174,8 +161,6 @@ def _base_files(snapshot: Snapshot) -> dict[str, str]:
 
 
 def _workspace_files(report: EpisodeReport) -> dict[str, str]:
-    """The agent's final tree, carried on the report's ``final_state`` (already
-    free of ``result.json`` and bytecode caches) — the ``after``."""
     raw = report.final_state.get("workspace_files", {})
     if not isinstance(raw, Mapping):
         return {}
