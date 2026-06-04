@@ -107,20 +107,21 @@ A non-cyber pack proves the Pack ABC isn't accidentally cyber-shaped.
   ([#194](https://github.com/vecna-labs/open-range/issues/194)). Order-book
   backtest + P&L success check; the first non-HTTP backing and the
   load-bearing proof that the pack contract is domain-agnostic.
-- 🚧 **SWE pack — imported source shipped, generation next.**
-  ([#238](https://github.com/vecna-labs/open-range/issues/238)) — code repos +
+- 🚧 **SWE pack — MVP shipped, generation next.**
+  ([#248](https://github.com/vecna-labs/open-range/issues/248)) — code repos +
   test-suite grading; generalizes the `webapp.build` grader from one handler to a
-  real repo + test runner. The **imported** source is in tree
-  ([`packs/swe/DESIGN.md`](packs/swe/DESIGN.md)): a world freezes to a
+  real repo + test runner. The **imported** source shipped
+  ([#247](https://github.com/vecna-labs/open-range/pull/247),
+  [`packs/swe/DESIGN.md`](packs/swe/DESIGN.md)): a world freezes to a
   SWE-bench-shaped triple (`repo.base_files` + held-out `test_suite` + HIDDEN
   `solution`), admission proves it well-posed (the gold overlay greens the suite;
   the bare base fails its grading tests), and a sandboxed filesystem realizer
   grades the agent's edited tree — fed either by a bundled fixture or a cloned
   SWE-bench row. Two task shapes ride the one world: **`swe.fix`** (all-or-nothing
   repair) and **`swe.build`** (units shape partial credit, integration tests gate
-  success — the long-horizon sibling). Next, per the issue tree in the design doc:
-  the **injected** (AST-splice) and **authored** (LLM) world-sources + curriculum,
-  plus seccomp / container hardening for adversarial public traffic
+  success — the long-horizon sibling). Next: the **injected** (AST-splice) and
+  **authored** (LLM) world-sources + curriculum, plus seccomp / container
+  hardening for adversarial public traffic
   ([#202](https://github.com/vecna-labs/open-range/issues/202)).
 - 🔮 **Social / negotiation pack**
   ([#195](https://github.com/vecna-labs/open-range/issues/195)) —
