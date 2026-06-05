@@ -1,0 +1,367 @@
+"""Deterministic tests for the torch-free TRL adapter (``openrange.trainers.trl``).
+
+No torch, no trl, no LLM. Every seam is driven *at the seam itself* over **real**
+SWE episodes (per ``.rules``, no mocks): the actuators mutate a real
+``solver_root``, the reward bridge grades the real edited tree through
+``episode_reward``, and the variance policy reads real ``EpisodeReport``s. This
+proves the integration is correct — it does not measure a model (that is the live
+``examples/trl_grpo_eval.py``).
+
+Some tests stop a real episode, which shells out to a sandboxed pytest to grade —
+the same path the SWE pack's own tests take.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+from pathlib import Path
+
+import pytest
+from openrange_pack_sdk import EpisodeResult, Snapshot
+from swe import SwePack
+from swe.instances import load_instance
+
+from openrange.core.admit import AdmissionFailure, admit
+from openrange.core.curriculum import auto_evolve
+from openrange.core.episode import EpisodeReport, EpisodeService
+from openrange.trainers.trl import (
+    FileWorkspaceTools,
+    OpenRangeEnv,
+    WorkspaceError,
+    build_grpo_dataset,
+    env_trajectory,
+    make_environment_factory,
+    make_reward_func,
+    reward_variance_policy,
+)
+
+EnvMaker = Callable[[str], tuple[OpenRangeEnv, Snapshot]]
+
+
+def _admit(instance: str) -> Snapshot:
+    result = admit(SwePack(), manifest={"instance": instance}, max_repairs=0)
+    assert not isinstance(result, AdmissionFailure), result
+    return result
+
+
+@pytest.fixture
+def make_env(tmp_path: Path) -> Iterator[EnvMaker]:
+    """Yield a factory for (env, snapshot) pairs over a real ``EpisodeService``;
+    every service is closed on teardown so no grading subprocess leaks."""
+    services: list[EpisodeService] = []
+
+    def _make(instance: str) -> tuple[OpenRangeEnv, Snapshot]:
+        snapshot = _admit(instance)
+        service = EpisodeService(SwePack(), tmp_path / f"svc{len(services)}")
+        services.append(service)
+        env = OpenRangeEnv(service=service, snapshots={snapshot.snapshot_id: snapshot})
+        return env, snapshot
+
+    yield _make
+    for service in services:
+        service.close()
+
+
+def _solve(env: OpenRangeEnv, instance: str) -> None:
+    for path, content in load_instance(instance).gold_files.items():
+        env.write_file(path, content)
+
+
+class TestBuildDataset:
+    def test_rows_carry_prompt_and_tags(self) -> None:
+        snapshot = _admit("calc_sum")
+        rows = build_grpo_dataset(snapshot)
+        assert len(rows) == len(snapshot.tasks)
+        ids = {t.id for t in snapshot.tasks}
+        for row in rows:
+            assert row["snapshot_id"] == snapshot.snapshot_id
+            assert row["task_id"] in ids
+            assert row["prompt"][0]["role"] == "user"
+            assert isinstance(row["prompt"][0]["content"], str)
+
+    def test_prompt_carries_the_task_instruction(self) -> None:
+        snapshot = _admit("calc_sum")
+        row = build_grpo_dataset(snapshot)[0]
+        head = snapshot.tasks[0].instruction.strip().splitlines()[0]
+        assert head in row["prompt"][0]["content"]
+
+    def test_repeat_multiplies_rows(self) -> None:
+        snapshot = _admit("calc_sum")
+        base = build_grpo_dataset(snapshot)
+        assert len(build_grpo_dataset(snapshot, repeat=3)) == 3 * len(base)
+
+
+class TestFileWorkspaceTools:
+    def test_write_read_roundtrip(self, tmp_path: Path) -> None:
+        tools = FileWorkspaceTools(tmp_path)
+        assert tools.write_file("pkg/mod.py", "x = 1\n").startswith("wrote")
+        assert tools.read_file("pkg/mod.py") == "x = 1\n"
+
+    def test_list_dir_marks_subdirs(self, tmp_path: Path) -> None:
+        tools = FileWorkspaceTools(tmp_path)
+        tools.write_file("a.py", "")
+        tools.write_file("sub/b.py", "")
+        listing = tools.list_dir(".")
+        assert "a.py" in listing
+        assert "sub/" in listing
+
+    def test_apply_patch_replaces_text(self, tmp_path: Path) -> None:
+        tools = FileWorkspaceTools(tmp_path)
+        tools.write_file("m.py", "return 0\n")
+        assert "1 occurrence" in tools.apply_patch("m.py", "0", "42")
+        assert tools.read_file("m.py") == "return 42\n"
+
+    def test_apply_patch_missing_text_raises(self, tmp_path: Path) -> None:
+        tools = FileWorkspaceTools(tmp_path)
+        tools.write_file("m.py", "a\n")
+        with pytest.raises(WorkspaceError):
+            tools.apply_patch("m.py", "nope", "x")
+
+    def test_apply_patch_missing_file_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(WorkspaceError):
+            FileWorkspaceTools(tmp_path).apply_patch("gone.py", "a", "b")
+
+    def test_list_dir_on_a_file_returns_its_path(self, tmp_path: Path) -> None:
+        tools = FileWorkspaceTools(tmp_path)
+        tools.write_file("solo.py", "")
+        assert tools.list_dir("solo.py") == "solo.py"
+
+    def test_list_dir_on_empty_root_is_marked(self, tmp_path: Path) -> None:
+        assert FileWorkspaceTools(tmp_path).list_dir(".") == "(empty)"
+
+    def test_list_dir_missing_dir_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(WorkspaceError):
+            FileWorkspaceTools(tmp_path).list_dir("nope")
+
+    def test_read_missing_file_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(WorkspaceError):
+            FileWorkspaceTools(tmp_path).read_file("nope.py")
+
+    def test_traversal_escape_is_refused(self, tmp_path: Path) -> None:
+        tools = FileWorkspaceTools(tmp_path / "root")
+        with pytest.raises(WorkspaceError):
+            tools.write_file("../escape.py", "pwned")
+        with pytest.raises(WorkspaceError):
+            tools.read_file("../../etc/passwd")
+        assert not (tmp_path / "escape.py").exists()
+
+
+class TestEnvLifecycle:
+    def test_reset_returns_live_workspace_listing(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        obs = env.reset(snapshot_id=snapshot.snapshot_id, task_id=snapshot.tasks[0].id)
+        assert "calc" in obs  # the base tree ships a calc/ package
+
+    def test_reset_picks_sole_snapshot_without_id(self, make_env: EnvMaker) -> None:
+        env, _ = make_env("calc_sum")
+        assert "calc" in env.reset()  # single registered snapshot → no id needed
+
+    def test_gold_overlay_solves_and_rewards(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        _solve(env, "calc_sum")
+        env._finalize()
+        assert env.report is not None
+        assert env.report.passed
+        assert env.reward == 1.0
+
+    def test_untouched_base_does_not_resolve(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        env._finalize()
+        assert env.report is not None
+        assert not env.report.passed
+        # The bug (FAIL_TO_PASS) stays red, but the trivially-passing
+        # PASS_TO_PASS test floors the dense reward at 0.5 — not zero, and
+        # strictly below the gold's 1.0, so the group still has spread.
+        assert env.reward == 0.5
+
+    def test_build_partial_credit_is_dense(self, make_env: EnvMaker) -> None:
+        # notes_app (swe.build): the bare skeleton fails every tier -> 0.0, but
+        # the gold overlay greens all -> 1.0. Proves the dense seam end to end.
+        env, snapshot = make_env("notes_app")
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        env._finalize()
+        assert env.reward == 0.0
+        solved, snap2 = make_env("notes_app")
+        solved.reset(snapshot_id=snap2.snapshot_id)
+        _solve(solved, "notes_app")
+        solved._finalize()
+        assert solved.reward == 1.0
+
+    def test_tool_calls_are_recorded(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        env.list_dir(".")
+        env.read_file("calc/core.py")
+        assert [t.tool_calls[0]["tool"] for t in env.turns] == [
+            "list_dir",
+            "read_file",
+        ]
+
+    def test_run_tests_tool_executes(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        out = env.run_tests("")
+        assert "tests" in out  # "tests passed"/"tests failed" summary line
+        assert env.turns[-1].tool_calls[0]["tool"] == "run_tests"
+
+    def test_apply_patch_tool_edits_the_workspace(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        env.write_file("scratch.py", "return 0\n")
+        out = env.apply_patch("scratch.py", "0", "1")
+        assert "occurrence" in out
+        assert env.read_file("scratch.py") == "return 1\n"  # edit landed on disk
+        assert "apply_patch" in [t.tool_calls[0]["tool"] for t in env.turns]
+
+    def test_bad_tool_call_fails_soft(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        out = env.write_file("../escape.py", "pwned")
+        assert out.startswith("error")
+        root = env.service.solver_root(env._handle)  # type: ignore[arg-type]
+        assert not (root.parent / "escape.py").exists()
+
+    def test_unknown_snapshot_id_raises(self, make_env: EnvMaker) -> None:
+        env, _ = make_env("calc_sum")
+        with pytest.raises(KeyError):
+            env.reset(snapshot_id="sha256:does-not-exist")
+
+    def test_reset_demands_id_when_multiple_registered(
+        self, make_env: EnvMaker
+    ) -> None:
+        env, _ = make_env("calc_sum")
+        other = _admit("notes_app")  # a second, distinct world on the ladder
+        env.snapshots[other.snapshot_id] = other
+        with pytest.raises(ValueError, match="snapshot_id"):
+            env.reset()
+
+    def test_tools_before_reset_fail_soft(self, make_env: EnvMaker) -> None:
+        # No reset(): the file tools have no root and there's no surface. Every
+        # call must degrade to an error string (never raise) and still be
+        # recorded as a turn — a weak model that acts before reset loses reward,
+        # not the run.
+        env, _ = make_env("calc_sum")
+        assert env.read_file("x").startswith("error")
+        assert env.run_tests("").startswith("error")
+        assert [t.tool_calls[0]["tool"] for t in env.turns] == [
+            "read_file",
+            "run_tests",
+        ]
+
+
+class TestRewardFunc:
+    def test_reward_func_grades_envs_in_order(self, make_env: EnvMaker) -> None:
+        solved, snap = make_env("calc_sum")
+        solved.reset(snapshot_id=snap.snapshot_id)
+        _solve(solved, "calc_sum")
+        unsolved, snap2 = make_env("calc_sum")
+        unsolved.reset(snapshot_id=snap2.snapshot_id)
+        reward_func = make_reward_func()
+        # Solved earns the full 1.0; the untouched base floors at 0.5 (its
+        # PASS_TO_PASS test passes for free) — distinct, and in env order.
+        assert reward_func(environments=[solved, unsolved]) == [1.0, 0.5]
+
+    def test_reward_func_is_idempotent(self, make_env: EnvMaker) -> None:
+        env, snap = make_env("calc_sum")
+        env.reset(snapshot_id=snap.snapshot_id)
+        _solve(env, "calc_sum")
+        reward_func = make_reward_func()
+        first = reward_func(environments=[env])
+        second = reward_func(environments=[env])  # double read is safe
+        assert first == second == [1.0]
+
+    def test_reward_func_empty_without_envs(self) -> None:
+        assert make_reward_func()(environments=None) == []
+
+
+class TestTrajectoryExport:
+    def test_trajectory_tagged_and_stepped(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        env.list_dir(".")
+        _solve(env, "calc_sum")
+        traj = env_trajectory(env)
+        assert traj.snapshot_id == snapshot.snapshot_id
+        assert traj.task_id == snapshot.tasks[0].id
+        assert traj.success
+        assert traj.reward.scalar == 1.0
+        assert len(traj.steps) == len(env.turns)
+        assert traj.steps[0].tool_calls[0]["tool"] == "list_dir"
+
+    def test_export_without_an_episode_raises(self, make_env: EnvMaker) -> None:
+        env, _ = make_env("calc_sum")  # never reset → nothing to export
+        with pytest.raises(RuntimeError, match="no completed episode"):
+            env_trajectory(env)
+
+
+class TestEnvFactory:
+    def test_factory_isolates_concurrent_envs(self, tmp_path: Path) -> None:
+        snapshot = _admit("calc_sum")
+        factory = make_environment_factory(SwePack(), [snapshot], tmp_path)
+        a, b = factory(), factory()
+        try:
+            a.reset(snapshot_id=snapshot.snapshot_id)
+            b.reset(snapshot_id=snapshot.snapshot_id)
+            root_a = a.service.solver_root(a._handle)  # type: ignore[arg-type]
+            root_b = b.service.solver_root(b._handle)  # type: ignore[arg-type]
+            assert root_a != root_b
+            a.write_file("calc/core.py", "TAINTED")
+            assert b.read_file("calc/core.py") != "TAINTED"
+        finally:
+            a.service.close()
+            b.service.close()
+
+
+def _report(
+    success: bool,
+    subgoals: dict[str, bool],
+    *,
+    task_id: str = "t",
+) -> EpisodeReport:
+    return EpisodeReport(
+        snapshot_id="sha256:test",
+        task_id=task_id,
+        episode_result=EpisodeResult(success=success, subgoals=subgoals),
+    )
+
+
+class TestVariancePolicy:
+    def test_all_solved_collapse_hardens(self) -> None:
+        reports = [_report(True, {"a": True}) for _ in range(4)]
+        assert reward_variance_policy(reports) == "harden"
+
+    def test_all_failed_collapse_softens(self) -> None:
+        reports = [_report(False, {"a": False}) for _ in range(4)]
+        assert reward_variance_policy(reports) == "soften"
+
+    def test_mixed_outcomes_hold(self) -> None:
+        reports = [_report(True, {"a": True}), _report(False, {"a": False})]
+        assert reward_variance_policy(reports) is None
+
+    def test_partial_credit_spread_holds(self) -> None:
+        # Both fail, but dense partial credit differs -> spread alive -> hold.
+        units_only = _report(False, {"u1": True, "u2": True, "i1": False})
+        skeleton = _report(False, {"u1": False, "u2": False, "i1": False})
+        assert reward_variance_policy([units_only, skeleton]) is None
+
+    def test_uniform_partial_credit_collapses(self) -> None:
+        # Identical partial credit (1/3 each): zero spread, low mean -> soften.
+        flat = [_report(False, {"u1": True, "i1": False, "i2": False})] * 3
+        assert reward_variance_policy(flat) == "soften"
+
+    def test_empty_is_none(self) -> None:
+        assert reward_variance_policy([]) is None
+
+    def test_plugs_into_auto_evolve_noop_for_swe(self) -> None:
+        # The policy is a CurriculumPolicy; auto_evolve accepts it. SWE opts out
+        # of in-place mutation, so a zero-variance round still yields None — the
+        # live curriculum rides the instance ladder instead (see DESIGN.md).
+        snapshot = _admit("calc_sum")
+        tid = snapshot.tasks[0].id
+        reports = [_report(True, {tid: True}, task_id=tid) for _ in range(3)]
+        evolved = auto_evolve(
+            snapshot, *reports, pack=SwePack(), policy=reward_variance_policy
+        )
+        assert evolved is None

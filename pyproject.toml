@@ -21,6 +21,20 @@ strands = [
     "strands-agents>=1.38.0",
     "strands-agents-tools>=0.4.1",
 ]
+# HuggingFace TRL trainer adapter (``openrange[trl]``). The torch-free adapter in
+# ``openrange.trainers.trl`` needs none of this; only the live example
+# (``examples/trl_grpo_eval.py``) constructs a real ``GRPOTrainer``. transformers
+# >=5.2 carries the agentic ``environment_factory`` path. Not installed in the dev
+# group on purpose — the deterministic suite + mypy stay GPU-free (see overrides
+# below); the live run installs the extra into an isolated venv.
+trl = [
+    "torch>=2.12",
+    "transformers>=5.2",
+    "trl>=1.5",
+    "datasets>=4.0",
+    "accelerate>=1.0",
+    "jmespath>=1.0",
+]
 
 [project.scripts]
 openrange = "openrange.__main__:main"
@@ -88,6 +102,24 @@ ignore_missing_imports = true
 # isn't installed.
 [[tool.mypy.overrides]]
 module = ["strands", "strands.*", "strands_tools", "strands_tools.*"]
+ignore_missing_imports = true
+
+# TRL trainer stack is an optional dependency (``openrange[trl]``). Skip import
+# resolution so ``examples/trl_grpo_eval.py`` type-checks cleanly when the extra
+# isn't installed (the default dev env).
+[[tool.mypy.overrides]]
+module = [
+    "torch",
+    "torch.*",
+    "transformers",
+    "transformers.*",
+    "trl",
+    "trl.*",
+    "datasets",
+    "datasets.*",
+    "accelerate",
+    "accelerate.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
