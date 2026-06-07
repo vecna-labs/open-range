@@ -69,7 +69,7 @@ and reads a reward back off the env after the rollout. That maps cleanly onto
 
 | TRL env hook | OpenRange counterpart |
 | --- | --- |
-| `reset()` → text appended to the prompt | `EpisodeService.start_episode(snapshot, task_id)` → realizes the world, writes the base tree, returns `task.instruction` |
+| `reset()` → text appended to the prompt | `EpisodeService.start_episode(snapshot, task_id)` → realizes the world, writes the base tree, returns the initial workspace listing (the task instruction rides in the dataset prompt via `build_grpo_dataset`) |
 | public methods → agent tools | the file actuators (below) + the callables in `runtime.surface()` (for SWE, `run_tests`) |
 | reward read after the rollout | lazy: the first read of `env.reward` runs `stop_episode` → `EpisodeReport` → `episode_reward(report).scalar` |
 | — | `env.turns` records each tool call as an `AgentTurn`, so `episode_trajectory` exports a replayable, `snapshot_id`-tagged `Trajectory` |
@@ -143,8 +143,10 @@ loop end-to-end.
 
 `make_reward_func(...)` returns a TRL-shaped `reward_func(prompts, completions,
 **kwargs) -> list[float]`. In the agentic path it reads the `environments` kwarg
-and returns `[episode_reward(env.report).scalar for env in environments]` — it
-defers entirely to the pack's structured grade through the standard seam. No reward
+and returns `[float(env.reward) for env in environments]`; the first read of
+`env.reward` lazily stops + grades the episode through the injectable `reward_fn`
+(default `episode_reward`). It defers entirely to the pack's structured grade
+through the standard seam. No reward
 logic is reinvented trainer-side; the trainer only *shapes*, exactly as the
 gym-not-trainer contract intends. `episode_reward`'s dense default (1.0 solved,
 else the fraction of subgoals passed) is what makes a long agentic episode

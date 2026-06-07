@@ -4,8 +4,8 @@ No torch, no trl, no LLM. Every seam is driven *at the seam itself* over **real*
 SWE episodes (per ``.rules``, no mocks): the actuators mutate a real
 ``solver_root``, the reward bridge grades the real edited tree through
 ``episode_reward``, and the variance policy reads real ``EpisodeReport``s. This
-proves the integration is correct — it does not measure a model (that is the live
-``examples/trl_grpo_eval.py``).
+proves the integration is correct — it does not measure a model (that is the
+``examples/trl_grpo_lora.ipynb`` notebook + the gated ``tests/test_trl_live.py``).
 
 Some tests stop a real episode, which shells out to a sandboxed pytest to grade —
 the same path the SWE pack's own tests take.
