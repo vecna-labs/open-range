@@ -1,0 +1,110 @@
+"""Gated, opt-in live test: the adapter drives a real ``trl.GRPOTrainer``.
+
+This is the live half of the training seam whose deterministic, torch-free tests
+live in ``test_trl_adapter.py``. It runs one real GRPO step (tiny model, LoRA)
+against a live OpenRange SWE world and asserts the *mechanics* end to end: rollouts
+reach grading, the structured reward maps through, and a ``snapshot_id``-tagged
+trajectory comes back.
+
+It is skipped unless ``OPENRANGE_LIVE_TRL=1`` and the ``trl`` extra is installed::
+
+    OPENRANGE_LIVE_TRL=1 uv run --extra trl pytest tests/test_trl_live.py
+
+so the default CI suite stays GPU-free. The bigger-model demonstration of *learning*
+(non-zero reward spread, solved rollouts) lives in the notebook tutorial.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from openrange.core.admit import AdmissionFailure, admit
+from openrange.trainers.trl import (
+    OpenRangeEnv,
+    build_grpo_dataset,
+    env_trajectory,
+    make_environment_factory,
+    make_reward_func,
+)
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("OPENRANGE_LIVE_TRL") != "1",
+    reason="live TRL GRPO test; set OPENRANGE_LIVE_TRL=1 and install openrange[trl]",
+)
+
+_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+
+
+def test_live_grpo_one_step(tmp_path: Path) -> None:
+    """One real GRPO step over calc_sum: rollouts grade, reward + trajectory flow."""
+    # Heavy, optional deps are imported here (not at module top) so collection
+    # stays clean in the GPU-free dev env; importorskip turns a missing extra
+    # into a skip rather than a collection error.
+    datasets = pytest.importorskip("datasets")
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+    trl = pytest.importorskip("trl")
+
+    from swe import SwePack
+
+    pack = SwePack()
+    snapshot = admit(pack, manifest={"instance": "calc_sum"}, max_repairs=0)
+    assert not isinstance(snapshot, AdmissionFailure)
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(_MODEL)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(_MODEL)
+    lora = peft.LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        task_type="CAUSAL_LM",
+    )
+
+    num_generations = 2
+    dataset = datasets.Dataset.from_list(build_grpo_dataset(snapshot, repeat=2))
+    factory = make_environment_factory(pack, [snapshot], tmp_path / "envs")
+    config = trl.GRPOConfig(
+        output_dir=str(tmp_path / "trainer"),
+        per_device_train_batch_size=num_generations,
+        num_generations=num_generations,
+        steps_per_generation=1,
+        gradient_accumulation_steps=1,
+        max_steps=1,
+        beta=0.0,
+        temperature=1.0,
+        max_completion_length=128,
+        max_tool_calling_iterations=2,
+        use_vllm=False,
+        log_completions=False,
+        report_to="none",
+        save_strategy="no",
+        bf16=False,
+        fp16=False,
+    )
+    trainer = trl.GRPOTrainer(
+        model=model,
+        reward_funcs=[make_reward_func()],
+        args=config,
+        train_dataset=dataset,
+        processing_class=tokenizer,
+        environment_factory=factory,
+        peft_config=lora,
+    )
+
+    envs: list[OpenRangeEnv] = list(trainer.environments or ())
+    try:
+        trainer.train()
+
+        graded = [env for env in envs if env.report is not None]
+        assert graded, "no rollout reached grading"
+        for env in graded:
+            trajectory = env_trajectory(env)
+            assert trajectory.snapshot_id == snapshot.snapshot_id
+            assert 0.0 <= trajectory.reward.scalar <= 1.0
+    finally:
+        for env in envs:
+            env.service.close()

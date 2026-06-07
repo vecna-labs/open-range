@@ -123,18 +123,21 @@ The decisive structural choice: **almost the entire adapter is torch-free.**
   `reward_variance_policy`, `OpenRangeEnv`, `FileWorkspaceTools`. Imports only
   `openrange` + stdlib. `import openrange.trainers.trl` works with no torch
   installed, and every piece is deterministically unit-testable without a model.
-- **`examples/trl_grpo_eval.py`** — the *only* module that imports `trl` / `torch`.
-  It builds the `GRPOTrainer`, points it at `OpenRangeEnv`, and runs live. It ships
-  as an **example, not a pytest test** — online, heavy, non-deterministic — the
-  same call made for `examples/codex_eval.py` and `examples/swe_eval.py`.
+- **`tests/test_trl_live.py`** + **the notebook tutorial** — the only places that
+  touch `trl` / `torch` / `peft`. Both build a real `GRPOTrainer` over
+  `OpenRangeEnv` and run live; both are **gated** (the test skips unless
+  `OPENRANGE_LIVE_TRL=1` and pulls the stack via `pytest.importorskip`; the
+  notebook is run by hand), so the default suite never imports torch.
 - **`pyproject.toml`** — `[project.optional-dependencies] trl = ["torch",
-  "transformers>=5.2", "trl", "datasets", "accelerate"]`, plus mypy
+  "transformers>=5.2", "trl", "datasets", "accelerate", "peft"]`, plus mypy
   `ignore_missing_imports` overrides, mirroring the existing `strands` extra.
   `import openrange` never requires the extra.
 
 Why it matters: it keeps the merge-ready bar reachable without a GPU — the
-deterministic suite proves the seam is *correct*; the live example proves it
-*runs*.
+deterministic suite proves the seam is *correct* and that the reward surface spans
+0.0 → 0.5 → 1.0 (the spread GRPO consumes); the gated live test proves a real
+`GRPOTrainer` *runs*; the notebook makes that reward surface concrete and runs the
+loop end-to-end.
 
 ## The reward bridge
 
@@ -168,15 +171,16 @@ step — that is the injected/authored-source curriculum tracked in
 [#248](https://github.com/vecna-labs/open-range/issues/248)), so `auto_evolve`
 returns `None` for it today. The *standard* — the variance policy, the
 re-root-the-dataset-on-the-new-world loop, the `snapshot_id` attribution — is the
-part #245 owns, and it is pack-agnostic. So the live example demonstrates the
-identical beat over the dimension SWE *does* expose: an **instance ladder** of
-three real, distinct, content-addressed worlds (`calc_sum` → `shapes_area` →
-`notes_app`, easy→hard), with the *same* `reward_variance_policy` deciding each
-round whether to climb (harden), descend (soften), or hold. It calls `auto_evolve`
-first (the generic seam, exercised live); when a pack returns a new world the loop
-uses it unchanged. The demonstration is real — distinct snapshots, policy-tracked,
-trajectories attributed — without a pack change; a pack that wires the mutation
-hooks gets in-place evolution through the same loop for free.
+part #245 owns, and it is pack-agnostic. So the standard's curriculum beat runs over the
+dimension SWE *does* expose: an **instance ladder** of three real, distinct,
+content-addressed worlds (`calc_sum` → `shapes_area` → `notes_app`, easy→hard), with
+the *same* `reward_variance_policy` deciding each round whether to climb (harden),
+descend (soften), or hold, calling `auto_evolve` first (the generic seam) and using
+whatever world a pack returns. The mechanism is exercised deterministically —
+`reward_variance_policy`'s direction and the `auto_evolve` trigger are asserted in
+`tests/test_trl_adapter.py` over real snapshots — and the notebook's closing section
+shows where the new world re-roots the next round's dataset. A pack that wires the
+mutation hooks gets in-place evolution through the same loop for free.
 
 ## Validation plan (two layers, like the SWE pack)
 
@@ -188,23 +192,36 @@ hooks gets in-place evolution through the same loop for free.
    the actuators including the traversal guard; `reward_variance_policy` direction
    + the `auto_evolve` trigger. This proves the integration is *right*; it does not
    measure a model.
-2. **Live capability — real model, real GRPO.** `examples/trl_grpo_eval.py` trains
-   a small model (SmolLM2-135M / Qwen2.5-0.5B) on MPS/CPU end-to-end: real rollouts
-   through `OpenRangeEnv`, real rewards from `episode_reward`, real GRPO optimizer
-   steps, real `auto_evolve` between rounds, trajectories tagged by `snapshot_id`.
-   This proves the integration *runs live*.
+2. **Live capability — real model, real GRPO.** Two gated artifacts cover the live
+   path. `tests/test_trl_live.py` runs one GRPO step on a tiny model (Qwen2.5-0.5B)
+   with LoRA and asserts the *mechanics* — rollouts grade, reward maps through, a
+   `snapshot_id`-tagged trajectory comes back. The **notebook tutorial**
+   (`examples/trl_grpo_lora.ipynb`, also Qwen2.5-0.5B + LoRA) first makes the reward
+   surface concrete — driving the env tools by hand to show no-op → 0.5, targeted
+   fix → 1.0, the naive both-line patch → 0.5, break → 0.0 (the same surface
+   `TestRewardSpread` asserts) — then runs one real GRPO step end-to-end. This
+   proves the integration *runs live* and that the gradient it would climb is real;
+   see "Hardware reality" for why *mastery* needs more than a laptop.
 
 ## Hardware reality & honest scope
 
 The reference machine is Python 3.14, arm64 macOS, 24 GB, MPS, **no CUDA / no
 vLLM**. The stack resolves (`torch 2.12`, `transformers 5.10`, `trl 1.5`,
 `datasets`, `accelerate`) and a sub-1B model generates on MPS, so the loop is
-genuinely runnable here. But a tiny model on CPU/MPS will not *master* SWE in a
-laptop compute budget: the live run proves end-to-end *mechanics + a real reward
-signal*, not SOTA capability. To give the signal the best chance of visible
-variance, the example favors `calc_sum` (a one-line `swe.fix` a small model can
-sometimes get right) and exercises `notes_app` (`swe.build`) for dense partial
-credit. The example output frames this honestly, same as `swe_eval.py`.
+genuinely runnable here — the notebook executes a real GRPO step end-to-end.
+
+What a laptop-scale model *cannot* do is master `calc_sum`. Measured directly (0.5B
+and 1.5B, 8 rollouts, temperatures 1.0–1.3): every rollout floors at 0.5. The cause
+is specific, and it is the same reason the reward is a good probe — `return a - b`
+appears in *both* `add` and `subtract`, so the naive replace-all a weak model
+reaches for fixes `add` but breaks `subtract`, netting the same 0.5 an untouched
+tree earns; only a *targeted* edit escapes that local optimum. So the honest split
+is: the **gradient is real and its optimum reachable** — proven deterministically
+in `TestRewardSpread` (0.0 / 0.5 / 1.0 by construction) and made concrete in the
+notebook — while a **non-zero live spread needs scale** (a stronger policy, more
+samples) beyond a laptop budget. The live artifacts prove *mechanics*; the
+deterministic suite proves *signal*. Same honest framing `swe_eval.py` uses for
+blind-solve capability.
 
 ## The pinned trl 1.5.1 agentic contract (verified against installed source)
 
@@ -253,9 +270,12 @@ matches reality, not a guess:
 - **M1** — `trl` extra + mypy overrides; torch-free adapter (dataset, reward
   bridge, variance policy) + deterministic tests.
 - **M2** — `OpenRangeEnv` + `FileWorkspaceTools` actuators + lifecycle tests.
-- **M3** — `examples/trl_grpo_eval.py`; install the extra; run it live end-to-end.
+- **M3** — gated live test (`tests/test_trl_live.py`) + the notebook tutorial;
+  install the extra; run live end-to-end.
 - **M4** — evolve-in-the-loop wired (`auto_evolve` + `reward_variance_policy`) and
-  exercised in the live run over the instance ladder (SWE opts out of in-place
-  mutation; the ladder is the real, pack-agnostic demonstration — see above).
+  exercised deterministically over real snapshots (`test_trl_adapter.py`); the
+  instance ladder (`calc_sum → shapes_area → notes_app`) is the pack-agnostic live
+  shape it re-roots, shown in the notebook's closing section (SWE opts out of
+  in-place mutation — see above).
 - **Gate** — ruff / mypy (strict) / full pytest green; docs updated; PR referencing
   #245 (touches #199 / #200).

@@ -2,9 +2,10 @@
 
 The whole adapter lives here and imports only ``openrange`` + stdlib, so
 ``import openrange.trainers.trl`` works with no ``torch`` installed and every
-piece below is deterministically unit-testable without a model. Only the live
-``examples/trl_grpo_eval.py`` imports ``trl`` / ``torch`` and builds a real
-``GRPOTrainer``. See ``DESIGN.md`` for why this seam is drawn here.
+piece below is deterministically unit-testable without a model. Only the gated
+``tests/test_trl_live.py`` and the ``examples/trl_grpo_lora.ipynb`` notebook
+import ``trl`` / ``torch`` and build a real ``GRPOTrainer``. See ``DESIGN.md``
+for why this seam is drawn here.
 
 The five public pieces map onto TRL's agentic GRPO (the ``environment_factory``
 path, ``transformers>=5.2``):

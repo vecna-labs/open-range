@@ -251,6 +251,73 @@ class TestEnvLifecycle:
         ]
 
 
+class TestRewardSpread:
+    """The reward is a genuine [0, 1] discriminator over the *tool* path.
+
+    GRPO learns from the spread of a group's rewards, so the integration only
+    yields a gradient if different edits earn different grades. These drive the
+    ``apply_patch`` tool to each distinct grade ``calc_sum`` admits — proving the
+    spread is real and, just as importantly, mapping the trap a weak policy falls
+    into: ``return a - b`` appears in *both* ``add`` and ``subtract``, so the
+    naive replace-all fixes ``add`` but breaks ``subtract`` and nets right back to
+    the 0.5 floor. Only the *targeted* edit reaches 1.0, so "learn to target the
+    add block" is exactly the climb the gradient rewards. This is the
+    deterministic floor under the live signal the notebook demonstrates at scale.
+    """
+
+    def _reward_after(
+        self,
+        env: OpenRangeEnv,
+        snapshot: Snapshot,
+        edit: Callable[[OpenRangeEnv], object],
+    ) -> float:
+        env.reset(snapshot_id=snapshot.snapshot_id)
+        edit(env)
+        env._finalize()
+        return env.reward
+
+    def test_targeted_fix_reaches_full_reward(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        reward = self._reward_after(
+            env,
+            snapshot,
+            lambda e: e.apply_patch(
+                "calc/core.py",
+                "def add(a, b):\n    return a - b",
+                "def add(a, b):\n    return a + b",
+            ),
+        )
+        assert reward == 1.0
+        assert env.report is not None and env.report.passed
+
+    def test_naive_replace_all_nets_the_floor(self, make_env: EnvMaker) -> None:
+        env, snapshot = make_env("calc_sum")
+        reward = self._reward_after(
+            env,
+            snapshot,
+            lambda e: e.apply_patch("calc/core.py", "return a - b", "return a + b"),
+        )
+        # FAIL_TO_PASS test_add now greens, but PASS_TO_PASS test_subtract reds:
+        # one subgoal each way -> the same 0.5 an untouched workspace earns.
+        assert reward == 0.5
+
+    def test_breaking_pass_to_pass_sinks_below_the_floor(
+        self, make_env: EnvMaker
+    ) -> None:
+        env, snapshot = make_env("calc_sum")
+        reward = self._reward_after(
+            env,
+            snapshot,
+            lambda e: e.apply_patch(
+                "calc/core.py",
+                "def subtract(a, b):\n    return a - b",
+                "def subtract(a, b):\n    return a * b",
+            ),
+        )
+        # Both tests red now -> below the floor, the bottom of the spread.
+        assert reward == 0.0
+
+
 class TestRewardFunc:
     def test_reward_func_grades_envs_in_order(self, make_env: EnvMaker) -> None:
         solved, snap = make_env("calc_sum")
