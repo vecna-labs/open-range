@@ -424,7 +424,7 @@ class TestVariancePolicy:
     def test_plugs_into_auto_evolve_noop_for_swe(self) -> None:
         # The policy is a CurriculumPolicy; auto_evolve accepts it. SWE opts out
         # of in-place mutation, so a zero-variance round still yields None — the
-        # live curriculum rides the instance ladder instead (see DESIGN.md).
+        # live curriculum rides the instance ladder instead.
         snapshot = _admit("calc_sum")
         tid = snapshot.tasks[0].id
         reports = [_report(True, {tid: True}, task_id=tid) for _ in range(3)]
