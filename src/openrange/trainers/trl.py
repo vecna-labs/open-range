@@ -7,7 +7,7 @@ piece below is deterministically unit-testable without a model. Only the gated
 import ``trl`` / ``torch`` and build a real ``GRPOTrainer``. See ``DESIGN.md``
 for why this seam is drawn here.
 
-The five public pieces map onto TRL's agentic GRPO (the ``environment_factory``
+The core public pieces map onto TRL's agentic GRPO (the ``environment_factory``
 path, ``transformers>=5.2``):
 
 - ``OpenRangeEnv`` — one rollout's environment. ``reset(**row)`` starts a fresh
@@ -16,6 +16,10 @@ path, ``transformers>=5.2``):
   ``list_dir`` / ``apply_patch`` / ``run_tests``) are what TRL exposes to the
   policy as tools; the first read of ``env.reward`` (via the reward func) lazily
   stops + grades the episode through ``episode_reward``.
+- ``WebTargetEnv`` — the sibling env for tasks against a *live web target*: same
+  lifecycle, different action surface (``http_get`` to probe the running service,
+  ``submit`` to write the answer the pack grades). The cyber webapp pack trains
+  through this one; pair it with ``make_web_environment_factory``.
 - ``FileWorkspaceTools`` — the sandboxed, path-traversal-guarded file IO the SWE
   *surface* never exposed (gap C): a tool-calling policy can now *change* the
   graded state, not just observe it. Harness-neutral, no TRL import.
@@ -35,6 +39,8 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from openrange_pack_sdk import EpisodeReportLike, Pack, Snapshot, TaskSpec
 
@@ -65,6 +71,17 @@ _TOOL_GUIDE = (
     "empty runs all\n"
     "Edit files until the task is solved, then stop. A held-out test suite "
     "grades your final workspace."
+)
+
+_HTTP_TIMEOUT = 5
+
+WEB_TOOL_GUIDE = (
+    "You are probing a live web service. Use these tools:\n"
+    "- http_get(path): send an HTTP GET (include any query string) and read the "
+    "response status + body\n"
+    "- submit(content): submit your final answer as a JSON object, e.g. "
+    '{"flag": "<the value you recovered>"}\n'
+    "Investigate the service, then submit. A held-out grader checks your answer."
 )
 
 
@@ -130,20 +147,26 @@ class FileWorkspaceTools:
         return f"patched {path} ({occurrences} occurrence(s))"
 
 
-class OpenRangeEnv:
-    """One GRPO rollout's environment, over a single ``EpisodeService``.
+class EpisodeEnv:
+    """One GRPO rollout's environment over a single ``EpisodeService`` episode —
+    the pack-agnostic lifecycle, with no tools of its own.
+
+    Subclasses add the action surface, and TRL exposes a subclass's *public*
+    methods as the policy's tools — so each subclass owns exactly the tool set it
+    defines. ``OpenRangeEnv`` exposes file tools for SWE-style workspace tasks; a
+    second env can expose a different surface (e.g. HTTP tools against a live web
+    target) without changing this base. Tool methods are **fail-soft** (wrap the
+    body in ``_safe``) — they return an error string rather than raising, so a
+    weak model's bad call costs reward, not the run.
 
     Lifecycle (mirrors TRL's agentic loop): ``reset(**row)`` starts a fresh
-    episode (each ``start_episode`` realizes its own ``solver_root``, so a group
-    of N concurrent envs never collides); the public tool methods mutate that
-    workspace; the first ``_finalize`` (driven by the reward func) stops the
-    episode and grades the *final* tree into ``self.reward``. Tool methods are
-    **fail-soft** — they return an error string rather than raising, so a weak
-    model's bad call costs reward, not the run.
-
-    Only ``reset`` + the five tool methods are public, so those are exactly the
-    tools TRL exposes; everything else is underscore-prefixed (TRL skips it) or a
-    plain data attribute (``reward`` / ``turns`` / ``report``).
+    episode (each ``start_episode`` realizes its own ``solver_root`` / target, so
+    a group of N concurrent envs never collides), calls ``_setup`` so the subclass
+    can bind its tools, and returns ``_initial_observation`` (appended to the
+    prompt). The public tool methods drive the episode; the first ``_finalize``
+    (via the reward func) stops + grades the *final* state into ``self.reward``.
+    Everything but ``reset`` and the subclass's tools is underscore-prefixed (TRL
+    skips it) or a plain data attribute (``reward`` / ``turns`` / ``report``).
     """
 
     def __init__(
@@ -161,7 +184,6 @@ class OpenRangeEnv:
         self.report: EpisodeReport | None = None
         self._handle: EpisodeHandle | None = None
         self._surface: Mapping[str, Any] | None = None
-        self._tools: FileWorkspaceTools | None = None
         self._finalized = False
 
     # -- lifecycle -----------------------------------------------------------
@@ -173,23 +195,101 @@ class OpenRangeEnv:
         task_id: str | None = None,
         **_: object,
     ) -> str:
-        """Start a fresh episode and return the initial workspace listing.
+        """Start a fresh episode and return the initial observation.
 
         ``snapshot_id`` / ``task_id`` come straight from the dataset row (the
         extra columns are absorbed by ``**_``). The returned text is appended to
-        the prompt by TRL — it carries the *live* file listing the dataset can't
-        know, since ``solver_root`` is materialized only at episode start.
+        the prompt by TRL — it carries the *live* state (a workspace listing, a
+        target URL) the dataset can't know, since the world is realized only at
+        episode start.
         """
         snapshot = self._resolve_snapshot(snapshot_id)
         handle = self.service.start_episode(snapshot, task_id)
         self._handle = handle
         self._surface = self.service.surface(handle)
-        self._tools = FileWorkspaceTools(self.service.solver_root(handle))
         self.reward = 0.0
         self.turns = []
         self.report = None
         self._finalized = False
-        return f"Workspace ready. Files:\n{self._tools.list_dir('.')}"
+        self._setup(handle)
+        return self._initial_observation()
+
+    def _setup(self, handle: EpisodeHandle) -> None:
+        """Bind the subclass's tools/state for the new episode (default: none)."""
+
+    def _initial_observation(self) -> str:
+        """The reset text appended to the prompt (default: a bare ready marker)."""
+        return "Environment ready."
+
+    # -- grading / lifecycle internals (underscore → TRL skips these) --------
+
+    def _finalize(self) -> None:
+        """Stop + grade the episode, caching the report and scalar reward.
+
+        Idempotent: the reward func may read ``env.reward`` more than once, and
+        ``stop_episode`` itself caches, so a double read is safe.
+        """
+        if self._finalized or self._handle is None:
+            self._finalized = True
+            return
+        self._finalized = True
+        report = self.service.stop_episode(self._handle)
+        self.report = report
+        self.reward = self.reward_fn(report).scalar
+
+    def _resolve_snapshot(self, snapshot_id: str | None) -> Snapshot:
+        if snapshot_id is not None:
+            snapshot = self.snapshots.get(snapshot_id)
+            if snapshot is None:
+                raise KeyError(f"unknown snapshot_id {snapshot_id!r}")
+            return snapshot
+        if len(self.snapshots) == 1:
+            return next(iter(self.snapshots.values()))
+        raise ValueError(
+            "reset() needs a snapshot_id when multiple snapshots are registered"
+        )
+
+    @staticmethod
+    def _safe(fn: Callable[[], str]) -> str:
+        try:
+            return fn()
+        except Exception as exc:  # fail-soft: a bad tool call costs reward only
+            return f"error: {exc}"
+
+    def _record(self, tool: str, args: Mapping[str, Any], result: str) -> None:
+        turn = AgentTurn(
+            tool_calls=({"tool": tool, "args": dict(args)},),
+            tool_results=({"output": result},),
+        )
+        self.turns.append(turn)
+        if self._handle is not None:
+            self.service.record_turn(self._handle, turn)
+
+
+class OpenRangeEnv(EpisodeEnv):
+    """SWE-style env: the policy edits a sandboxed file workspace.
+
+    Adds the five file tools (``read_file`` / ``write_file`` / ``list_dir`` /
+    ``apply_patch`` / ``run_tests``) over the episode's ``solver_root``; the
+    ``run_tests`` tool defers to whatever ``run_tests`` callable the pack's
+    surface exposes.
+    """
+
+    def __init__(
+        self,
+        *,
+        service: EpisodeService,
+        snapshots: Mapping[str, Snapshot],
+        reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+    ) -> None:
+        super().__init__(service=service, snapshots=snapshots, reward_fn=reward_fn)
+        self._tools: FileWorkspaceTools | None = None
+
+    def _setup(self, handle: EpisodeHandle) -> None:
+        self._tools = FileWorkspaceTools(self.service.solver_root(handle))
+
+    def _initial_observation(self) -> str:
+        return f"Workspace ready. Files:\n{self._require_tools().list_dir('.')}"
 
     # -- tools (public → exposed to the policy) ------------------------------
 
@@ -270,58 +370,100 @@ class OpenRangeEnv:
         body = stdout[-_OUTPUT_TAIL:] if stdout else "(no output)"
         return f"{head}\n{body}"
 
-    def _finalize(self) -> None:
-        """Stop + grade the episode, caching the report and scalar reward.
-
-        Idempotent: the reward func may read ``env.reward`` more than once, and
-        ``stop_episode`` itself caches, so a double read is safe.
-        """
-        if self._finalized or self._handle is None:
-            self._finalized = True
-            return
-        self._finalized = True
-        report = self.service.stop_episode(self._handle)
-        self.report = report
-        self.reward = self.reward_fn(report).scalar
-
-    def _resolve_snapshot(self, snapshot_id: str | None) -> Snapshot:
-        if snapshot_id is not None:
-            snapshot = self.snapshots.get(snapshot_id)
-            if snapshot is None:
-                raise KeyError(f"unknown snapshot_id {snapshot_id!r}")
-            return snapshot
-        if len(self.snapshots) == 1:
-            return next(iter(self.snapshots.values()))
-        raise ValueError(
-            "reset() needs a snapshot_id when multiple snapshots are registered"
-        )
-
     def _require_tools(self) -> FileWorkspaceTools:
         if self._tools is None:
             raise WorkspaceError("reset() has not been called")
         return self._tools
 
-    @staticmethod
-    def _safe(fn: Callable[[], str]) -> str:
-        try:
-            return fn()
-        except Exception as exc:  # fail-soft: a bad tool call costs reward only
-            return f"error: {exc}"
 
-    def _record(self, tool: str, args: Mapping[str, Any], result: str) -> None:
-        turn = AgentTurn(
-            tool_calls=({"tool": tool, "args": dict(args)},),
-            tool_results=({"output": result},),
+class WebTargetEnv(EpisodeEnv):
+    """Web-target env: the policy probes a live HTTP service the episode boots.
+
+    Adds two tools — ``http_get`` (send a GET to the running target and read the
+    status + body) and ``submit`` (write the final answer to the episode's
+    ``result.json``, which the pack grades). The episode surface provides the
+    target's ``base_url``; each request hits the live server (and is logged
+    there), so the pack's held-out grade reads off the *real* interaction. Used
+    for the cyber webapp pack, where a rollout exploits a planted vulnerability
+    over HTTP and submits the value it exfiltrates.
+    """
+
+    _RESULT_FILE = "result.json"
+
+    def __init__(
+        self,
+        *,
+        service: EpisodeService,
+        snapshots: Mapping[str, Snapshot],
+        reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+    ) -> None:
+        super().__init__(service=service, snapshots=snapshots, reward_fn=reward_fn)
+        self._base_url: str | None = None
+        self._solver_root: Path | None = None
+
+    def _setup(self, handle: EpisodeHandle) -> None:
+        surface = self._surface or {}
+        base_url = surface.get("base_url")
+        self._base_url = base_url if isinstance(base_url, str) else None
+        self._solver_root = Path(self.service.solver_root(handle))
+
+    def _initial_observation(self) -> str:
+        target = self._base_url or "(no web target exposed)"
+        return (
+            f"A live web service is running at {target}. Probe it with "
+            "http_get(path); call submit(content) when you have the answer."
         )
-        self.turns.append(turn)
-        if self._handle is not None:
-            self.service.record_turn(self._handle, turn)
+
+    # -- tools (public → exposed to the policy) ------------------------------
+
+    def http_get(self, path: str) -> str:
+        """Send an HTTP GET to the running target and return its status + body.
+
+        Args:
+            path: Request path including any query string (e.g. ``/items?id=1``),
+                resolved against the target's base URL.
+        """
+        out = self._safe(lambda: self._http_get(path))
+        self._record("http_get", {"path": path}, out)
+        return out
+
+    def submit(self, content: str) -> str:
+        """Submit your final answer; the held-out grader reads ``result.json``.
+
+        Args:
+            content: A JSON object carrying the requested field, e.g.
+                ``{"flag": "<the value you recovered>"}``.
+        """
+        out = self._safe(lambda: self._submit(content))
+        self._record("submit", {"content": content}, out)
+        return out
+
+    # -- internals (underscore → TRL skips these) ----------------------------
+
+    def _http_get(self, path: str) -> str:
+        if not self._base_url:
+            return "error: this world exposes no web target"
+        try:
+            with urlopen(Request(self._base_url + path), timeout=_HTTP_TIMEOUT) as r:
+                status, body = r.status, r.read().decode("utf-8", "replace")
+        except HTTPError as exc:
+            status, body = exc.code, exc.read().decode("utf-8", "replace")
+        except URLError as exc:
+            return f"error: {exc.reason}"
+        return f"status={status}\n{body[-_OUTPUT_TAIL:]}"
+
+    def _submit(self, content: str) -> str:
+        if self._solver_root is None:
+            raise WorkspaceError("reset() has not been called")
+        (self._solver_root / self._RESULT_FILE).write_text(content, encoding="utf-8")
+        return f"submitted {len(content)} byte(s)"
 
 
 def build_grpo_dataset(
     snapshot: Snapshot,
     *,
     repeat: int = 1,
+    tool_guide: str = _TOOL_GUIDE,
 ) -> list[dict[str, Any]]:
     """Turn a snapshot's tasks into GRPO prompt rows.
 
@@ -331,13 +473,18 @@ def build_grpo_dataset(
     them to ``reset`` (which episode to start) and to the reward func, and they
     tag the exported trajectory to the exact (possibly evolved) world. Torch-free
     by design; the live example wraps the rows in a ``datasets.Dataset``.
+
+    ``tool_guide`` is the tool-usage block appended to each task instruction;
+    pass ``WEB_TOOL_GUIDE`` for the ``WebTargetEnv`` action surface.
     """
     rows: list[dict[str, Any]] = []
     for _ in range(max(1, repeat)):
         for task in snapshot.tasks:
             rows.append(
                 {
-                    "prompt": [{"role": "user", "content": _task_prompt(task)}],
+                    "prompt": [
+                        {"role": "user", "content": _task_prompt(task, tool_guide)}
+                    ],
                     "snapshot_id": snapshot.snapshot_id,
                     "task_id": task.id,
                 }
@@ -345,8 +492,8 @@ def build_grpo_dataset(
     return rows
 
 
-def _task_prompt(task: TaskSpec) -> str:
-    return f"{task.instruction}\n\n{_TOOL_GUIDE}"
+def _task_prompt(task: TaskSpec, tool_guide: str = _TOOL_GUIDE) -> str:
+    return f"{task.instruction}\n\n{tool_guide}"
 
 
 def make_reward_func() -> Callable[..., list[float]]:
@@ -363,7 +510,7 @@ def make_reward_func() -> Callable[..., list[float]]:
         completions: object = None,
         completion_ids: object = None,
         *,
-        environments: Sequence[OpenRangeEnv] | None = None,
+        environments: Sequence[EpisodeEnv] | None = None,
         **kwargs: object,
     ) -> list[float]:
         rewards: list[float] = []
@@ -402,7 +549,33 @@ def make_environment_factory(
     return factory
 
 
-def env_trajectory(env: OpenRangeEnv) -> Trajectory:
+def make_web_environment_factory(
+    pack: Pack,
+    snapshots: Sequence[Snapshot],
+    run_root: str | Path,
+    *,
+    reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+) -> Callable[[], WebTargetEnv]:
+    """Like ``make_environment_factory`` but yields ``WebTargetEnv`` rollouts.
+
+    For packs whose episode realizes a live web target (e.g. the cyber webapp
+    pack): each rollout boots its own isolated service + HTTP server, and the
+    policy acts through ``http_get`` / ``submit``. Pair with
+    ``build_grpo_dataset(..., tool_guide=WEB_TOOL_GUIDE)``.
+    """
+    snap_map = {s.snapshot_id: s for s in snapshots}
+    base = Path(run_root)
+    base.mkdir(parents=True, exist_ok=True)
+
+    def factory() -> WebTargetEnv:
+        env_root = base / f"env-{uuid.uuid4().hex[:8]}"
+        service = EpisodeService(pack, env_root)
+        return WebTargetEnv(service=service, snapshots=snap_map, reward_fn=reward_fn)
+
+    return factory
+
+
+def env_trajectory(env: EpisodeEnv) -> Trajectory:
     """Export an env's last episode as a ``snapshot_id``-tagged ``Trajectory``.
 
     Finalizes the episode first if the reward was never read, so a caller can

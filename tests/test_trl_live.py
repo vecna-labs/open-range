@@ -1,10 +1,11 @@
 """Gated, opt-in live test: the adapter drives a real ``trl.GRPOTrainer``.
 
 This is the live half of the training seam whose deterministic, torch-free tests
-live in ``test_trl_adapter.py``. It runs one real GRPO step (tiny model, LoRA)
-against a live OpenRange SWE world and asserts the *mechanics* end to end: rollouts
-reach grading, the structured reward maps through, and a ``snapshot_id``-tagged
-trajectory comes back.
+live in ``test_trl_adapter.py`` (SWE) and ``test_trl_cyber.py`` (cyber). It runs
+one real GRPO step (tiny model, LoRA) against a live OpenRange world — once over a
+SWE workspace (file tools), once over a cyber webapp (HTTP tools) — and asserts the
+*mechanics* end to end: rollouts reach grading, the structured reward maps through,
+and a ``snapshot_id``-tagged trajectory comes back.
 
 It is skipped unless ``OPENRANGE_LIVE_TRL=1`` and the ``trl`` extra is installed::
 
@@ -23,11 +24,13 @@ import pytest
 
 from openrange.core.admit import AdmissionFailure, admit
 from openrange.trainers.trl import (
-    OpenRangeEnv,
+    WEB_TOOL_GUIDE,
+    EpisodeEnv,
     build_grpo_dataset,
     env_trajectory,
     make_environment_factory,
     make_reward_func,
+    make_web_environment_factory,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -95,7 +98,92 @@ def test_live_grpo_one_step(tmp_path: Path) -> None:
         peft_config=lora,
     )
 
-    envs: list[OpenRangeEnv] = list(trainer.environments or ())
+    envs: list[EpisodeEnv] = list(trainer.environments or ())
+    try:
+        trainer.train()
+
+        graded = [env for env in envs if env.report is not None]
+        assert graded, "no rollout reached grading"
+        for env in graded:
+            trajectory = env_trajectory(env)
+            assert trajectory.snapshot_id == snapshot.snapshot_id
+            assert 0.0 <= trajectory.reward.scalar <= 1.0
+    finally:
+        for env in envs:
+            env.service.close()
+
+
+def test_live_grpo_one_step_cyber(tmp_path: Path) -> None:
+    """One real GRPO step over a live cyber webapp: the policy issues HTTP tool
+    calls against the booted server, rollouts grade, reward + trajectory flow."""
+    datasets = pytest.importorskip("datasets")
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+    trl = pytest.importorskip("trl")
+
+    from cyber_webapp import WebappPack
+
+    pack = WebappPack()
+    snapshot = admit(
+        pack,
+        manifest={
+            "world": {"goal": "recover the flag"},
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "seed": 0,
+        },
+    )
+    assert not isinstance(snapshot, AdmissionFailure)
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(_MODEL)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(_MODEL)
+    lora = peft.LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        task_type="CAUSAL_LM",
+    )
+
+    num_generations = 2
+    # Only the pentest task suits the HTTP action surface (build is code-gen).
+    rows = [
+        row
+        for row in build_grpo_dataset(snapshot, repeat=2, tool_guide=WEB_TOOL_GUIDE)
+        if "pentest" in row["task_id"]
+    ]
+    dataset = datasets.Dataset.from_list(rows)
+    factory = make_web_environment_factory(pack, [snapshot], tmp_path / "envs")
+    config = trl.GRPOConfig(
+        output_dir=str(tmp_path / "trainer"),
+        per_device_train_batch_size=num_generations,
+        num_generations=num_generations,
+        steps_per_generation=1,
+        gradient_accumulation_steps=1,
+        max_steps=1,
+        beta=0.0,
+        temperature=1.0,
+        max_completion_length=128,
+        max_tool_calling_iterations=3,
+        use_vllm=False,
+        log_completions=False,
+        report_to="none",
+        save_strategy="no",
+        bf16=False,
+        fp16=False,
+    )
+    trainer = trl.GRPOTrainer(
+        model=model,
+        reward_funcs=[make_reward_func()],
+        args=config,
+        train_dataset=dataset,
+        processing_class=tokenizer,
+        environment_factory=factory,
+        peft_config=lora,
+    )
+
+    envs: list[EpisodeEnv] = list(trainer.environments or ())
     try:
         trainer.train()
 
