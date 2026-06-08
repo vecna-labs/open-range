@@ -37,6 +37,7 @@ from openrange.trainers.trl import (
     build_grpo_dataset,
     env_trajectory,
     make_reward_func,
+    make_web_environment_factory,
     reward_variance_policy,
 )
 
@@ -241,6 +242,22 @@ class TestSeams:
 
         rewards = make_reward_func()([], [], environments=[solved, floored])
         assert rewards == [1.0, 0.0]
+
+    def test_web_factory_builds_isolated_web_envs(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        factory = make_web_environment_factory(
+            WebappPack(), [snapshot], tmp_path / "factory-envs"
+        )
+        env = factory()
+        assert isinstance(env, WebTargetEnv)
+        task = _pentest_task(snapshot)
+        try:
+            obs = env.reset(snapshot_id=snapshot.snapshot_id, task_id=task.id)
+            assert "http://127.0.0.1" in obs
+            assert env.http_get("/").startswith("status=200")
+        finally:
+            env.service.close()
 
 
 class TestCurriculum:
