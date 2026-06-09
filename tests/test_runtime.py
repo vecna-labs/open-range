@@ -173,6 +173,52 @@ class TestRunEpisode:
         assert ep.report.agent_summary.startswith("http://")
 
 
+class TestEpisodeCost:
+    def test_counts_recorded_turns(self, snapshot: Snapshot, tmp_path: Path) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+
+        def solve(ctx: EpisodeContext) -> list[AgentTurn]:
+            _write_reference(ctx)
+            return [AgentTurn(message="a"), AgentTurn(message="b")]
+
+        ep = run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
+        assert ep.report.cost.turns == 2
+
+    def test_noop_solver_costs_zero_turns(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+        ep = run.run_episode(
+            snapshot, lambda ctx: None, task_id=_build_task_id(snapshot)
+        )
+        assert ep.report.cost.turns == 0
+
+    def test_timing_invariants(self, snapshot: Snapshot, tmp_path: Path) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+
+        def solve(ctx: EpisodeContext) -> AgentTurn:
+            _write_reference(ctx)
+            return AgentTurn(message="ok")
+
+        ep = run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
+        cost = ep.report.cost
+        assert cost.wall_seconds >= cost.realize_seconds >= 0.0
+
+    def test_cost_serialized_in_as_dict(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+
+        def solve(ctx: EpisodeContext) -> AgentTurn:
+            _write_reference(ctx)
+            return AgentTurn(message="ok")
+
+        ep = run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
+        cost = ep.report.as_dict()["cost"]
+        assert set(cost) == {"wall_seconds", "realize_seconds", "turns"}
+        assert cost["turns"] == 1
+
+
 def _backing_manifest(backing: str | None) -> dict[str, object]:
     manifest: dict[str, object] = {
         "world": {"goal": "backing selection"},

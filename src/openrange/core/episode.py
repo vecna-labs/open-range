@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import threading
+import time
 import uuid
 import weakref
 from collections.abc import Callable, Mapping
@@ -99,6 +100,17 @@ class EpisodeUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class EpisodeCost:
+    """What one episode cost to run. ``wall_seconds`` spans realize → grade;
+    ``realize_seconds`` is the setup portion (realize + reset). Token usage
+    is not yet attributed — it needs per-backend usage reporting."""
+
+    wall_seconds: float = 0.0
+    realize_seconds: float = 0.0
+    turns: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class EpisodeReport:
     """Terminal artifact from a stopped episode. Implements `EpisodeReportLike`."""
 
@@ -107,6 +119,7 @@ class EpisodeReport:
     episode_result: EpisodeResult
     final_state: Mapping[str, Any] = field(default_factory=dict)
     agent_summary: str = ""
+    cost: EpisodeCost = field(default_factory=EpisodeCost)
 
     @property
     def passed(self) -> bool:
@@ -123,6 +136,11 @@ class EpisodeReport:
             },
             "final_state": dict(self.final_state),
             "agent_summary": self.agent_summary,
+            "cost": {
+                "wall_seconds": self.cost.wall_seconds,
+                "realize_seconds": self.cost.realize_seconds,
+                "turns": self.cost.turns,
+            },
         }
 
 
@@ -154,6 +172,10 @@ class _RunningEpisode:
     tick_stop: threading.Event | None = None
     npcs: list[NPC] = field(default_factory=list)
     stopped: bool = False
+    started_at: float = 0.0
+    realized_at: float = 0.0
+    stopped_at: float = 0.0
+    turns: int = 0
 
 
 class EpisodeService:
@@ -217,6 +239,7 @@ class EpisodeService:
         )
         episode_root.mkdir(parents=True)
 
+        started_at = time.perf_counter()
         runtime = self.pack.realize(snapshot.graph, self.backing)
         try:
             runtime.reset()
@@ -235,6 +258,8 @@ class EpisodeService:
             run_root=episode_root,
             surface_cache=surface_mapping,
             dashboard=self.dashboard,
+            started_at=started_at,
+            realized_at=time.perf_counter(),
         )
         self._episodes[handle.id] = running
         self._record_system(
@@ -276,6 +301,7 @@ class EpisodeService:
         running.final_state = final_state
         episode_result = self._check_success(running, final_state)
         running.episode_result = episode_result
+        running.stopped_at = time.perf_counter()
         try:
             running.runtime.stop()
         except Exception as exc:  # noqa: BLE001
@@ -344,6 +370,7 @@ class EpisodeService:
         """Observational breadcrumb. The latest non-empty `message` lands
         in `EpisodeReport.agent_summary`."""
         running = self._require(episode)
+        running.turns += 1
         if turn.message:
             running.agent_summary = turn.message
 
@@ -466,6 +493,11 @@ class EpisodeService:
             episode_result=running.episode_result,
             final_state=running.final_state,
             agent_summary=running.agent_summary,
+            cost=EpisodeCost(
+                wall_seconds=running.stopped_at - running.started_at,
+                realize_seconds=running.realized_at - running.started_at,
+                turns=running.turns,
+            ),
         )
 
     def _check_success(
