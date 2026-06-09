@@ -21,22 +21,8 @@ strands = [
     "strands-agents>=1.38.0",
     "strands-agents-tools>=0.4.1",
 ]
-# HuggingFace TRL trainer adapter (``openrange[trl]``). The torch-free adapter in
-# ``openrange.trainers.trl`` needs none of this; only the gated live test
-# (``tests/test_trl_live.py``) and the notebook tutorial construct a real
-# ``GRPOTrainer``. transformers >=5.2 carries the agentic ``environment_factory``
-# path; peft supplies the LoRA config the live path trains through. Not installed
-# in the dev group on purpose — the deterministic suite + mypy stay GPU-free (see
-# overrides below); the live run installs the extra into an isolated venv.
-trl = [
-    "torch>=2.12",
-    "transformers>=5.2",
-    "trl>=1.5",
-    "datasets>=4.0",
-    "accelerate>=1.0",
-    "peft>=0.14",
-    "jmespath>=1.0",
-]
+# The HuggingFace TRL GRPO integration is a *separate* optional package,
+# ``packages/openrange-trl`` — OpenRange itself owns no trainer code or deps.
 
 [project.scripts]
 openrange = "openrange.__main__:main"
@@ -54,6 +40,7 @@ dev = [
     "openrange-cyber-webapp",
     "openrange-trading",
     "openrange-swe",
+    "openrange-trl",
 ]
 
 [tool.uv.workspace]
@@ -63,6 +50,7 @@ members = [
     "packs/swe",
     "packages/graphschema",
     "packages/openrange-pack-sdk",
+    "packages/openrange-trl",
 ]
 
 [tool.uv.sources]
@@ -71,6 +59,7 @@ openrange-cyber-webapp = { workspace = true }
 openrange-trading = { workspace = true }
 openrange-swe = { workspace = true }
 openrange-pack-sdk = { workspace = true }
+openrange-trl = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openrange"]
@@ -91,6 +80,7 @@ mypy_path = [
     "packs/swe",
     "packages/graphschema/src",
     "packages/openrange-pack-sdk/src",
+    "packages/openrange-trl/src",
 ]
 strict = true
 warn_unreachable = true
@@ -106,28 +96,6 @@ ignore_missing_imports = true
 module = ["strands", "strands.*", "strands_tools", "strands_tools.*"]
 ignore_missing_imports = true
 
-# TRL trainer stack is an optional dependency (``openrange[trl]``). The gated live
-# test imports it through ``pytest.importorskip`` (no static import to resolve), so
-# this override is belt-and-suspenders: it keeps ``mypy`` green for any future
-# top-level reference to the stack when the extra isn't installed (the default dev
-# env). The torch-free adapter + its deterministic tests never touch these.
-[[tool.mypy.overrides]]
-module = [
-    "torch",
-    "torch.*",
-    "transformers",
-    "transformers.*",
-    "trl",
-    "trl.*",
-    "datasets",
-    "datasets.*",
-    "accelerate",
-    "accelerate.*",
-    "peft",
-    "peft.*",
-]
-ignore_missing_imports = true
-
 [tool.pytest.ini_options]
 # Repo root on the path so tests can import the example eval scripts (the
 # `examples` package) — they double as executable specs worth pinning.
@@ -140,7 +108,7 @@ testpaths = [
 
 [tool.coverage.run]
 branch = true
-source = ["openrange", "openrange_pack_sdk", "cyber_webapp"]
+source = ["openrange", "openrange_pack_sdk", "cyber_webapp", "openrange_trl"]
 omit = [
     "src/openrange/__main__.py",
 ]

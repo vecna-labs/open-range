@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openrange-trl"
+version = "0.1.0"
+description = "Optional HuggingFace TRL GRPO integration for OpenRange. Adapts an OpenRange episode into a trl.GRPOTrainer agentic environment; OpenRange itself stays trainer-agnostic."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+    "openrange",
+    "openrange-pack-sdk",
+]
+
+# The adapter is import-light (torch-free): ``import openrange_trl`` needs none of
+# the stack below. Install the ``train`` extra to construct a real
+# ``trl.GRPOTrainer`` (the gated live test + the notebooks). ``transformers`` >=5.2
+# carries the agentic ``environment_factory`` path; ``peft`` supplies the LoRA
+# config the live path trains through.
+[project.optional-dependencies]
+train = [
+    "torch>=2.12",
+    "transformers>=5.2",
+    "trl>=1.5",
+    "datasets>=4.0",
+    "accelerate>=1.0",
+    "peft>=0.14",
+    "jmespath>=1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openrange_trl"]
+
+[tool.uv.sources]
+openrange = { workspace = true }
+openrange-pack-sdk = { workspace = true }

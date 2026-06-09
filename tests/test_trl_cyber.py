@@ -27,11 +27,7 @@ from urllib.parse import urlencode
 import pytest
 from cyber_webapp import WebappPack
 from openrange_pack_sdk import EpisodeResult, Snapshot, TaskSpec
-
-from openrange.core.admit import admit
-from openrange.core.curriculum import auto_evolve
-from openrange.core.episode import EpisodeReport, EpisodeService
-from openrange.trainers.trl import (
+from openrange_trl import (
     WEB_TOOL_GUIDE,
     WebTargetEnv,
     build_grpo_dataset,
@@ -40,6 +36,10 @@ from openrange.trainers.trl import (
     make_web_environment_factory,
     reward_variance_policy,
 )
+
+from openrange.core.admit import admit
+from openrange.core.curriculum import auto_evolve
+from openrange.core.episode import EpisodeReport, EpisodeService
 
 _MANIFEST = {
     "world": {"goal": "recover the hidden flag"},

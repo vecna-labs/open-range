@@ -36,7 +36,7 @@ jobs:
         run: bash scripts/check_boundary.sh
 
       - name: Typecheck
-        run: uv run mypy src tests examples main.py
+        run: uv run mypy src tests examples main.py packages/openrange-trl/src
 
       - name: Test with coverage
         run: uv run coverage run -m pytest tests

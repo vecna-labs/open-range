@@ -18,6 +18,7 @@ members = [
     "openrange-pack-sdk",
     "openrange-swe",
     "openrange-trading",
+    "openrange-trl",
 ]
 
 [[package]]
@@ -1195,15 +1196,6 @@ strands = [
     { name = "strands-agents" },
     { name = "strands-agents-tools" },
 ]
-trl = [
-    { name = "accelerate" },
-    { name = "datasets" },
-    { name = "jmespath" },
-    { name = "peft" },
-    { name = "torch" },
-    { name = "transformers" },
-    { name = "trl" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -1212,27 +1204,21 @@ dev = [
     { name = "openrange-cyber-webapp" },
     { name = "openrange-swe" },
     { name = "openrange-trading" },
+    { name = "openrange-trl" },
     { name = "pytest" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "accelerate", marker = "extra == 'trl'", specifier = ">=1.0" },
-    { name = "datasets", marker = "extra == 'trl'", specifier = ">=4.0" },
     { name = "graphschema", editable = "packages/graphschema" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "jmespath", marker = "extra == 'trl'", specifier = ">=1.0" },
     { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
-    { name = "peft", marker = "extra == 'trl'", specifier = ">=0.14" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "strands-agents", marker = "extra == 'strands'", specifier = ">=1.38.0" },
     { name = "strands-agents-tools", marker = "extra == 'strands'", specifier = ">=0.4.1" },
-    { name = "torch", marker = "extra == 'trl'", specifier = ">=2.12" },
-    { name = "transformers", marker = "extra == 'trl'", specifier = ">=5.2" },
-    { name = "trl", marker = "extra == 'trl'", specifier = ">=1.5" },
 ]
-provides-extras = ["strands", "trl"]
+provides-extras = ["strands"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1241,6 +1227,7 @@ dev = [
     { name = "openrange-cyber-webapp", editable = "packs/cyber_webapp" },
     { name = "openrange-swe", editable = "packs/swe" },
     { name = "openrange-trading", editable = "packs/trading" },
+    { name = "openrange-trl", editable = "packages/openrange-trl" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.15.6" },
 ]
@@ -1304,6 +1291,40 @@ requires-dist = [
     { name = "graphschema", editable = "packages/graphschema" },
     { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
 ]
+
+[[package]]
+name = "openrange-trl"
+version = "0.1.0"
+source = { editable = "packages/openrange-trl" }
+dependencies = [
+    { name = "openrange" },
+    { name = "openrange-pack-sdk" },
+]
+
+[package.optional-dependencies]
+train = [
+    { name = "accelerate" },
+    { name = "datasets" },
+    { name = "jmespath" },
+    { name = "peft" },
+    { name = "torch" },
+    { name = "transformers" },
+    { name = "trl" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "accelerate", marker = "extra == 'train'", specifier = ">=1.0" },
+    { name = "datasets", marker = "extra == 'train'", specifier = ">=4.0" },
+    { name = "jmespath", marker = "extra == 'train'", specifier = ">=1.0" },
+    { name = "openrange", editable = "." },
+    { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
+    { name = "peft", marker = "extra == 'train'", specifier = ">=0.14" },
+    { name = "torch", marker = "extra == 'train'", specifier = ">=2.12" },
+    { name = "transformers", marker = "extra == 'train'", specifier = ">=5.2" },
+    { name = "trl", marker = "extra == 'train'", specifier = ">=1.5" },
+]
+provides-extras = ["train"]
 
 [[package]]
 name = "opentelemetry-api"

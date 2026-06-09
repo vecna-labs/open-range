@@ -21,9 +21,7 @@ import os
 from pathlib import Path
 
 import pytest
-
-from openrange.core.admit import AdmissionFailure, admit
-from openrange.trainers.trl import (
+from openrange_trl import (
     WEB_TOOL_GUIDE,
     EpisodeEnv,
     build_grpo_dataset,
@@ -32,6 +30,8 @@ from openrange.trainers.trl import (
     make_reward_func,
     make_web_environment_factory,
 )
+
+from openrange.core.admit import AdmissionFailure, admit
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("OPENRANGE_LIVE_TRL") != "1",

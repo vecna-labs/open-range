@@ -18,13 +18,7 @@ from pathlib import Path
 
 import pytest
 from openrange_pack_sdk import EpisodeResult, Snapshot
-from swe import SwePack
-from swe.instances import load_instance
-
-from openrange.core.admit import AdmissionFailure, admit
-from openrange.core.curriculum import auto_evolve
-from openrange.core.episode import EpisodeReport, EpisodeService
-from openrange.trainers.trl import (
+from openrange_trl import (
     FileWorkspaceTools,
     OpenRangeEnv,
     WorkspaceError,
@@ -34,6 +28,12 @@ from openrange.trainers.trl import (
     make_reward_func,
     reward_variance_policy,
 )
+from swe import SwePack
+from swe.instances import load_instance
+
+from openrange.core.admit import AdmissionFailure, admit
+from openrange.core.curriculum import auto_evolve
+from openrange.core.episode import EpisodeReport, EpisodeService
 
 EnvMaker = Callable[[str], tuple[OpenRangeEnv, Snapshot]]
 
