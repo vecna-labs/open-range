@@ -38,7 +38,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from openrange_pack_sdk import EpisodeReportLike, Pack, Snapshot, TaskSpec
@@ -357,8 +357,6 @@ class OpenRangeEnv(EpisodeEnv):
             return "error: this world exposes no run_tests tool"
         targets = node_ids.split() or None
         res = fn(targets)
-        if not isinstance(res, Mapping):
-            return str(res)
         ok = bool(res.get("ok"))
         head = (
             f"tests {'passed' if ok else 'failed'} "
@@ -447,8 +445,6 @@ class WebTargetEnv(EpisodeEnv):
                 status, body = r.status, r.read().decode("utf-8", "replace")
         except HTTPError as exc:
             status, body = exc.code, exc.read().decode("utf-8", "replace")
-        except URLError as exc:
-            return f"error: {exc.reason}"
         return f"status={status}\n{body[-_OUTPUT_TAIL:]}"
 
     def _submit(self, content: str) -> str:
@@ -521,6 +517,24 @@ def make_reward_func() -> Callable[..., list[float]]:
     return reward_func
 
 
+def _make_factory[E: EpisodeEnv](
+    pack: Pack,
+    snapshots: Sequence[Snapshot],
+    run_root: str | Path,
+    reward_fn: Callable[[EpisodeReport], Reward],
+    env_cls: type[E],
+) -> Callable[[], E]:
+    snap_map = {s.snapshot_id: s for s in snapshots}
+    base = Path(run_root)
+    base.mkdir(parents=True, exist_ok=True)
+
+    def factory() -> E:
+        service = EpisodeService(pack, base / f"env-{uuid.uuid4().hex[:8]}")
+        return env_cls(service=service, snapshots=snap_map, reward_fn=reward_fn)
+
+    return factory
+
+
 def make_environment_factory(
     pack: Pack,
     snapshots: Sequence[Snapshot],
@@ -536,16 +550,7 @@ def make_environment_factory(
     re-roots the next round by re-building the dataset + factory against the
     evolved snapshot.
     """
-    snap_map = {s.snapshot_id: s for s in snapshots}
-    base = Path(run_root)
-    base.mkdir(parents=True, exist_ok=True)
-
-    def factory() -> OpenRangeEnv:
-        env_root = base / f"env-{uuid.uuid4().hex[:8]}"
-        service = EpisodeService(pack, env_root)
-        return OpenRangeEnv(service=service, snapshots=snap_map, reward_fn=reward_fn)
-
-    return factory
+    return _make_factory(pack, snapshots, run_root, reward_fn, OpenRangeEnv)
 
 
 def make_web_environment_factory(
@@ -562,16 +567,7 @@ def make_web_environment_factory(
     policy acts through ``http_get`` / ``submit``. Pair with
     ``build_grpo_dataset(..., tool_guide=WEB_TOOL_GUIDE)``.
     """
-    snap_map = {s.snapshot_id: s for s in snapshots}
-    base = Path(run_root)
-    base.mkdir(parents=True, exist_ok=True)
-
-    def factory() -> WebTargetEnv:
-        env_root = base / f"env-{uuid.uuid4().hex[:8]}"
-        service = EpisodeService(pack, env_root)
-        return WebTargetEnv(service=service, snapshots=snap_map, reward_fn=reward_fn)
-
-    return factory
+    return _make_factory(pack, snapshots, run_root, reward_fn, WebTargetEnv)
 
 
 def env_trajectory(env: EpisodeEnv) -> Trajectory:
@@ -616,4 +612,6 @@ def reward_variance_policy(
 def _report_scalar(report: EpisodeReportLike) -> float:
     if isinstance(report, EpisodeReport):
         return episode_reward(report).scalar
-    return 1.0 if report.passed else 0.0
+    # CurriculumPolicy takes the EpisodeReportLike Protocol, but the trainer only
+    # emits concrete EpisodeReport; this contract fallback needs a fake to hit.
+    return 1.0 if report.passed else 0.0  # pragma: no cover

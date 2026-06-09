@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from openrange_pack_sdk import EpisodeResult, Snapshot
 from openrange_trl import (
+    EpisodeEnv,
     FileWorkspaceTools,
     OpenRangeEnv,
     WorkspaceError,
@@ -65,6 +66,18 @@ def make_env(tmp_path: Path) -> Iterator[EnvMaker]:
 def _solve(env: OpenRangeEnv, instance: str) -> None:
     for path, content in load_instance(instance).gold_files.items():
         env.write_file(path, content)
+
+
+def test_base_env_resets_with_no_tools(tmp_path: Path) -> None:
+    # The tool-less EpisodeEnv base is usable directly: reset starts a real
+    # episode and returns the default observation (subclasses override it).
+    snapshot = _admit("calc_sum")
+    service = EpisodeService(SwePack(), tmp_path / "base")
+    env = EpisodeEnv(service=service, snapshots={snapshot.snapshot_id: snapshot})
+    try:
+        assert env.reset() == "Environment ready."
+    finally:
+        service.close()
 
 
 class TestBuildDataset:

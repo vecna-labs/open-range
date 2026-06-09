@@ -160,6 +160,13 @@ class TestWebTargetLifecycle:
         out = env.http_get("/no/such/route")
         assert out.startswith("status=") and "error" not in out.split("\n")[0]
 
+    def test_http_get_before_reset_reports_no_target(self, make_env: EnvMaker) -> None:
+        # No episode started yet -> no base_url -> fail-soft, not a crash.
+        assert make_env().http_get("/") == "error: this world exposes no web target"
+
+    def test_submit_before_reset_is_fail_soft(self, make_env: EnvMaker) -> None:
+        assert make_env().submit('{"flag": "x"}').startswith("error:")
+
 
 class TestRewardRungs:
     """Each reward rung the pentest world admits, driven over real HTTP."""
