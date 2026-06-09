@@ -173,7 +173,7 @@ def test_codex_backend_runs_local_command_without_schema(tmp_path: Path) -> None
         print(sys.stdin.read().strip().upper())
         """,
     )
-    result = CodexBackend(command=command, model="local", timeout=5).complete(
+    result = CodexBackend(command=command, model="local").complete(
         LLMRequest("hello", system="system"),
     )
 
@@ -192,14 +192,14 @@ print(sys.stdin.read())
 
 def test_codex_backend_omits_model_flag_when_none(tmp_path: Path) -> None:
     command = executable(tmp_path, "argv_dumper.py", _ARGV_DUMPER)
-    CodexBackend(command=command, model=None, timeout=5).complete(LLMRequest("hi"))
+    CodexBackend(command=command, model=None).complete(LLMRequest("hi"))
     argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
     assert "--model" not in argv
 
 
 def test_codex_backend_passes_model_flag_when_set(tmp_path: Path) -> None:
     command = executable(tmp_path, "argv_dumper.py", _ARGV_DUMPER)
-    CodexBackend(command=command, model="gpt-x", timeout=5).complete(LLMRequest("hi"))
+    CodexBackend(command=command, model="gpt-x").complete(LLMRequest("hi"))
     argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
     assert "--model" in argv
     assert argv[argv.index("--model") + 1] == "gpt-x"
@@ -226,7 +226,7 @@ def test_codex_backend_reads_schema_output_from_local_command(
         print("ignored stdout")
         """,
     )
-    result = CodexBackend(command=command, model="local", timeout=5).complete(
+    result = CodexBackend(command=command, model="local").complete(
         LLMRequest("return json", json_schema={"type": "object"}),
     )
 
@@ -262,15 +262,15 @@ def test_codex_backend_reports_process_failures(tmp_path: Path) -> None:
     )
 
     with pytest.raises(LLMBackendError, match="boom") as stderr_error:
-        CodexBackend(command=stderr_command, model="local", timeout=5).complete(
+        CodexBackend(command=stderr_command, model="local").complete(
             LLMRequest("hello"),
         )
     with pytest.raises(LLMBackendError, match="bad stdout"):
-        CodexBackend(command=stdout_command, model="local", timeout=5).complete(
+        CodexBackend(command=stdout_command, model="local").complete(
             LLMRequest("hello"),
         )
     with pytest.raises(LLMBackendError, match="no output"):
-        CodexBackend(command=silent_command, model="local", timeout=5).complete(
+        CodexBackend(command=silent_command, model="local").complete(
             LLMRequest("hello"),
         )
 
@@ -289,7 +289,7 @@ def test_codex_backend_requires_schema_output_file(tmp_path: Path) -> None:
     )
 
     with pytest.raises(LLMBackendError, match="did not write"):
-        CodexBackend(command=command, model="local", timeout=5).complete(
+        CodexBackend(command=command, model="local").complete(
             LLMRequest("return json", json_schema={"type": "object"}),
         )
 
