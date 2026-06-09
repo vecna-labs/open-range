@@ -11,14 +11,16 @@ the ``EpisodeContext`` accessors are exercised on their own.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 from cyber_webapp.families.build.reference import api_list_reference
-from openrange_pack_sdk import Snapshot, TaskSpec
+from openrange_pack_sdk import Backing, Snapshot, TaskSpec
 
 from openrange.core.episode import AgentTurn, EpisodeError
+from openrange.core.errors import EpisodeRuntimeError
 from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig
 
 MANIFEST = {
@@ -169,3 +171,123 @@ class TestRunEpisode:
 
         ep = run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
         assert ep.report.agent_summary.startswith("http://")
+
+
+def _backing_manifest(backing: str | None) -> dict[str, object]:
+    manifest: dict[str, object] = {
+        "world": {"goal": "backing selection"},
+        "pack": {"id": "webapp"},
+        "runtime": {"tick": {"mode": "off"}},
+        "npc": [],
+    }
+    if backing is not None:
+        manifest["runtime"] = {"tick": {"mode": "off"}, "backing": backing}
+    return manifest
+
+
+class TestBackingSelection:
+    """`RunConfig.backing` and `manifest.runtime.backing` reach
+    `pack.realize`. Only `PROCESS` is wired today, so selecting any other
+    backing is expected to surface the realizer's `NotImplementedError` —
+    which is exactly what proves the selector is connected end to end."""
+
+    def test_runconfig_backing_process_runs(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        run = OpenRangeRun(
+            RunConfig(tmp_path, dashboard=False, backing=Backing.PROCESS)
+        )
+
+        def solve(ctx: EpisodeContext) -> AgentTurn:
+            _write_reference(ctx)
+            return AgentTurn(message="ok")
+
+        ep = run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
+        assert ep.success is True, ep.report.episode_result.reason
+
+    def test_runconfig_backing_container_reaches_realizer(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        run = OpenRangeRun(
+            RunConfig(tmp_path, dashboard=False, backing=Backing.CONTAINER)
+        )
+
+        def solve(ctx: EpisodeContext) -> None:
+            return None  # never runs: realize() raises first
+
+        with pytest.raises(NotImplementedError, match="Backing.CONTAINER"):
+            run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
+
+    def test_manifest_backing_selects_process(self, tmp_path: Path) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+        snap = run.build(_backing_manifest("process"))
+
+        def solve(ctx: EpisodeContext) -> AgentTurn:
+            _write_reference(ctx)
+            return AgentTurn(message="ok")
+
+        ep = run.run_episode(snap, solve, task_id=_build_task_id(snap))
+        assert ep.success is True, ep.report.episode_result.reason
+
+    def test_runconfig_backing_overrides_manifest(self, tmp_path: Path) -> None:
+        # Manifest asks for container; the explicit RunConfig.backing=PROCESS
+        # wins, so the episode runs instead of raising.
+        run = OpenRangeRun(
+            RunConfig(tmp_path, dashboard=False, backing=Backing.PROCESS)
+        )
+        snap = run.build(_backing_manifest("container"))
+
+        def solve(ctx: EpisodeContext) -> AgentTurn:
+            _write_reference(ctx)
+            return AgentTurn(message="ok")
+
+        ep = run.run_episode(snap, solve, task_id=_build_task_id(snap))
+        assert ep.success is True, ep.report.episode_result.reason
+
+    def test_invalid_manifest_backing_raises(self, tmp_path: Path) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+        snap = run.build(_backing_manifest("kubernetes"))
+        with pytest.raises(EpisodeRuntimeError, match="not a valid backing"):
+            run.episode_service(snap)
+
+    def test_non_string_manifest_backing_raises(self, tmp_path: Path) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+        manifest = {
+            "world": {"goal": "backing selection"},
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}, "backing": ["container"]},
+            "npc": [],
+        }
+        snap = run.build(manifest)
+        with pytest.raises(EpisodeRuntimeError, match="must be a string"):
+            run.episode_service(snap)
+
+    def test_snapshot_without_manifest_falls_back_to_process(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        # A snapshot whose lineage carries no usable manifest (e.g. a
+        # minimally-reconstructed one) still resolves to PROCESS and runs.
+        stripped = dataclasses.replace(
+            snapshot, lineage={**snapshot.lineage, "manifest": None}
+        )
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+
+        def solve(ctx: EpisodeContext) -> AgentTurn:
+            _write_reference(ctx)
+            return AgentTurn(message="ok")
+
+        ep = run.run_episode(stripped, solve, task_id=_build_task_id(stripped))
+        assert ep.success is True, ep.report.episode_result.reason
+
+    def test_manifest_without_runtime_key_falls_back_to_process(
+        self, tmp_path: Path
+    ) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+        snap = run.build({"world": {"goal": "x"}, "pack": {"id": "webapp"}, "npc": []})
+
+        def solve(ctx: EpisodeContext) -> AgentTurn:
+            _write_reference(ctx)
+            return AgentTurn(message="ok")
+
+        ep = run.run_episode(snap, solve, task_id=_build_task_id(snap))
+        assert ep.success is True, ep.report.episode_result.reason

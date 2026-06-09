@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openrange_pack_sdk import AgentBackend, Pack, Snapshot, TaskSpec
+from openrange_pack_sdk import (
+    AgentBackend,
+    Backing,
+    Pack,
+    PackPrior,
+    Snapshot,
+    TaskSpec,
+)
 
 from openrange.core.admit import AdmissionFailure, admit
 from openrange.core.episode import AgentTurn, EpisodeError, EpisodeService
@@ -31,6 +38,8 @@ class RunConfig:
     dashboard_port: int | None = None
     npc_agent_backend: AgentBackend | None = None
     npc_llm_model: str | None = None
+    # None resolves to manifest.runtime.backing, then Backing.PROCESS.
+    backing: Backing | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.root, Path):
@@ -123,10 +132,11 @@ class OpenRangeRun:
         self,
         manifest: Mapping[str, Any],
         *,
+        prior: PackPrior | None = None,
         max_repairs: int = 2,
     ) -> Snapshot:
         pack = _resolve_pack(manifest)
-        result = admit(pack, manifest, max_repairs=max_repairs)
+        result = admit(pack, manifest, prior=prior, max_repairs=max_repairs)
         if isinstance(result, AdmissionFailure):
             raise EpisodeRuntimeError(
                 f"admission failed after {result.attempts} attempt(s): "
@@ -166,6 +176,9 @@ class OpenRangeRun:
             dashboard=view,
             npc_agent_backend=self.config.npc_agent_backend,
             npc_llm_model=self.config.npc_llm_model,
+            backing=self.config.backing
+            or _manifest_backing(snapshot)
+            or Backing.PROCESS,
         )
 
     def run_episode(
@@ -223,6 +236,32 @@ def _normalize_turns(
     if isinstance(raw, AgentTurn):
         return [raw]
     return list(raw)
+
+
+def _manifest_backing(snapshot: Snapshot) -> Backing | None:
+    # Core may read runtime.backing for the same reason it reads
+    # runtime.tick: it's an SDK enum, not a domain field.
+    manifest = snapshot.lineage.get("manifest")
+    if not isinstance(manifest, Mapping):
+        return None
+    runtime_cfg = manifest.get("runtime")
+    if not isinstance(runtime_cfg, Mapping):
+        return None
+    raw = runtime_cfg.get("backing")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise EpisodeRuntimeError(
+            f"manifest runtime.backing must be a string, got {type(raw).__name__}",
+        )
+    try:
+        return Backing(raw)
+    except ValueError:
+        valid = ", ".join(b.value for b in Backing)
+        raise EpisodeRuntimeError(
+            f"manifest runtime.backing={raw!r} is not a valid backing; "
+            f"expected one of: {valid}",
+        ) from None
 
 
 def _resolve_pack(manifest: Mapping[str, Any]) -> Pack:

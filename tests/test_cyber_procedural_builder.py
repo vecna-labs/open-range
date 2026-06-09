@@ -201,6 +201,71 @@ def test_admission_yields_both_task_families() -> None:
     assert entrypoint_kinds == {"service", "endpoint"}
 
 
+# A manifest scale override that widens the sampler's count ranges well
+# past the default 2-5 service band.
+SCALE_UP = {
+    "service_count": {"min": 8, "max": 10},
+    "vuln_count": {"min": 4, "max": 6},
+}
+
+
+def _service_count(result: BuildResult) -> int:
+    return sum(1 for n in result.graph.nodes.values() if n.kind == "service")
+
+
+def test_manifest_scale_grows_the_world() -> None:
+    """``manifest["scale"]`` widens the sampler count ranges, so the world
+    carries more services than the default 2-5 band — scale from the
+    manifest, no hand-built ``PackPrior``."""
+    default = WebappBuilder(default_prior()).build({"seed": 5})
+    scaled = WebappBuilder(default_prior()).build({"seed": 5, "scale": SCALE_UP})
+    assert _service_count(scaled) > _service_count(default)
+    assert _service_count(scaled) >= 8
+
+
+def test_manifest_scale_preserves_determinism() -> None:
+    """Same scale + same seed → identical content hash; a scaled world
+    diverges from the default-scale world. Scaling stays reproducible."""
+    a = WebappBuilder(default_prior()).build({"seed": 5, "scale": SCALE_UP})
+    b = WebappBuilder(default_prior()).build({"seed": 5, "scale": SCALE_UP})
+    base = WebappBuilder(default_prior()).build({"seed": 5})
+    assert a.graph.content_hash() == b.graph.content_hash()
+    assert a.graph.content_hash() != base.graph.content_hash()
+
+
+def test_absent_scale_is_a_noop() -> None:
+    """Omitting ``scale`` (or passing an empty mapping) leaves the world
+    byte-identical to a build that never mentioned scale."""
+    plain = WebappBuilder(default_prior()).build({"seed": 7}).graph.content_hash()
+    empty = (
+        WebappBuilder(default_prior())
+        .build({"seed": 7, "scale": {}})
+        .graph.content_hash()
+    )
+    assert plain == empty
+
+
+def test_scale_ignores_non_mapping_entries() -> None:
+    """A non-mapping ``scale`` value is skipped, not crashed on — the
+    world falls back to the default range for that key."""
+    plain = WebappBuilder(default_prior()).build({"seed": 7}).graph.content_hash()
+    junk = (
+        WebappBuilder(default_prior())
+        .build({"seed": 7, "scale": {"service_count": "lots"}})
+        .graph.content_hash()
+    )
+    assert plain == junk
+
+
+def test_scaled_world_still_admits() -> None:
+    """A scaled-up world passes all five admission layers — solvable by
+    construction holds at larger scale, not just the default band."""
+    snap = admit(WebappPack(), manifest={"seed": 5, "scale": SCALE_UP}, max_repairs=3)
+    assert isinstance(snap, Snapshot), snap
+    services = sum(1 for n in snap.graph.nodes.values() if n.kind == "service")
+    assert services >= 8
+
+
 def test_admission_snapshot_id_is_deterministic() -> None:
     """Same seed → same snapshot id (content-addressed identity)."""
     pack = WebappPack()
