@@ -285,9 +285,10 @@ def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:
         def read(path: str) -> str:
             url = f"{base}{url_path}?{param}={urllib.parse.quote(path)}"
             try:
-                return urllib.request.urlopen(url, timeout=10).read().decode()
+                body: str = urllib.request.urlopen(url, timeout=10).read().decode()
             except urllib.error.HTTPError:
                 return ""
+            return body
 
         # A real agent probes conventional config locations.
         disclosed = ""
