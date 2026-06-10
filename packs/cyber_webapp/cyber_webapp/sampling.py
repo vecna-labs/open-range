@@ -198,10 +198,14 @@ _PATH_TRAVERSAL_PARAMS: tuple[str, ...] = (
 )
 # Base dir the handler confines to (the confinement it fails to enforce);
 # distinct from the loot's private dirs so '../' or an absolute path escapes.
+# Varied DEPTHS (2-5) so the relative-traversal payload's "../" count is
+# build-specific structure the agent must read off the world, not a constant.
 _PATH_TRAVERSAL_BASE_DIRS: tuple[str, ...] = (
+    "/var/data",
     "/srv/app/public",
-    "/var/www/static",
     "/opt/app/assets",
+    "/srv/www/app/static",
+    "/srv/app/v1/public/static",
 )
 
 _COMMAND_INJECTION_PARAMS: tuple[str, ...] = (

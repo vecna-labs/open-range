@@ -44,4 +44,9 @@ def handle(query, state):
         rendered = SandboxedEnvironment().from_string(source).render(config=config)
     except Exception as exc:
         rendered = "render error: " + type(exc).__name__
+    # Feedback: a template-injection attempt that this sink swallowed (empty
+    # render but the input carried template syntax) gets a distinct marker, vs a
+    # benign string that simply renders to itself. No flag either way.
+    if not rendered and {% raw %}any(t in expr for t in ("{{", "}}", "{#", "#}")){% endraw %}:
+        rendered = "template directive ignored"
     return 200, {"Content-Type": "text/plain"}, rendered.encode()

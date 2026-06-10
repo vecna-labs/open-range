@@ -392,27 +392,77 @@ def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:
         svc.close()
 
 
-def test_path_traversal_wrong_path_recovers_nothing(tmp_path: Path) -> None:
+def test_path_traversal_feedback_distinguishes_attempt_from_benign(
+    tmp_path: Path,
+) -> None:
+    # Wrong-context feedback: a neutralized traversal attempt returns 403 (right
+    # vuln class, wrong technique) while a benign filename miss returns 404 — so
+    # the agent gets a learnable signal. Neither recovers the flag.
     snap = _admit("file", vuln_kinds={"path_traversal": 1})
     url_path, param, _ = _path_traversal_target(snap.graph)
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
     svc = EpisodeService(WebappPack(), tmp_path)
-    status = None
+    codes: dict[str, int] = {}
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = svc.surface(handle)["base_url"]
-        miss = f"{base}{url_path}?{param}={urllib.parse.quote('/no/such/file')}"
-        try:
-            urllib.request.urlopen(miss, timeout=10)
-        except urllib.error.HTTPError as exc:
-            status = exc.code
-        # The handler 404s on a non-existent path; the solver submits nothing.
+        for label, value in (("benign", "missing.txt"), ("attack", "../../../nope")):
+            url = f"{base}{url_path}?{param}={urllib.parse.quote(value)}"
+            try:
+                urllib.request.urlopen(url, timeout=10)
+                codes[label] = 200
+            except urllib.error.HTTPError as exc:
+                codes[label] = exc.code
         report = svc.stop_episode(handle)
     finally:
         svc.close()
-    assert status == 404
+    assert codes["benign"] == 404
+    assert codes["attack"] == 403
     assert not report.passed
+
+
+def test_command_injection_feedback_distinguishes_attempt_from_benign(
+    tmp_path: Path,
+) -> None:
+    # A neutralized injection attempt (metacharacters the sampled context strips)
+    # returns a response distinct from the benign diagnostic echo, no flag leak.
+    snap = _admit("file", vuln_kinds={"command_injection": 1})
+    vuln = next(
+        n
+        for n in snap.graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "command_injection"
+    )
+    params = vuln.attrs["params"]
+    assert isinstance(params, Mapping)
+    flag_path = _flag_record_key(snap.graph)
+    endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
+    url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
+    expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    # An injection vector the sampled context neutralizes (use the other one).
+    if params.get("inj_context") == "substitution":
+        wrong = f"x; cat {flag_path}"
+    else:
+        wrong = f"$(cat {flag_path})"
+
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = svc.surface(handle)["base_url"]
+
+        def get(value: str) -> str:
+            payload = urllib.parse.quote(value)
+            url = f"{base}{url_path}?{params['target_param']}={payload}"
+            body: str = urllib.request.urlopen(url, timeout=10).read().decode()
+            return body
+
+        benign = get("8.8.8.8")
+        rejected = get(wrong)
+    finally:
+        svc.close()
+    assert expected not in rejected
+    assert benign != rejected
 
 
 def test_context_payload_builders_cover_every_branch() -> None:

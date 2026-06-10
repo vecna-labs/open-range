@@ -158,12 +158,25 @@ per-*class*.
   `wrapped_root` nests the entity a level deeper — distinct positions, not a
   collapsed root-name swap.)
 
-  *Threat to validity (documented, not yet addressed):* for `sql_injection`,
-  `idor`, and `weak_credentials` the three contexts are disjoint *serializations*
-  of one skill (a quote/encoding swap), not three distinct competencies — they
-  defeat replay but don't broaden the skill the way cmdi / path / ssti / xxe /
-  ssrf / broken-authz do. Richer *structural* variety and natural-language realism
-  remain the later LLM layer.
+  *Wrong-context feedback.* A neutralized but attack-shaped attempt returns a
+  response distinct from a benign miss (path traversal `403` vs `404`; cmdi
+  `"input rejected"` vs the diagnostic echo; ssti `"template directive ignored"`
+  vs a plain render) — so the agent learns it's hitting the right vuln class with
+  the wrong technique. These reshape only the *non-leak* responses, so the
+  replay matrix is unchanged.
+
+  *Structural variety, honestly.* Path traversal samples base dirs of **varied
+  depth (2–5)**, so the `../` count is build-specific structure the agent reads
+  off the world. But the asymmetry is partly intrinsic: SQLi embeds world state
+  (table + column) in the payload (≈108 distinct structures), while a file-read /
+  cmd-exec payload embeds only the discovered path (a handful) — those classes
+  carry their diversity in *three distinct techniques* per build, not in payload
+  structure. *Threat to validity (documented):* for `sql_injection`, `idor`, and
+  `weak_credentials` the three contexts are disjoint *serializations* of one skill
+  (a quote/encoding swap), not three distinct competencies — they defeat replay
+  but don't broaden the skill the way cmdi / path / ssti / xxe / ssrf /
+  broken-authz do. Richer structural variety and natural-language realism remain
+  the later LLM layer.
 
 ---
 

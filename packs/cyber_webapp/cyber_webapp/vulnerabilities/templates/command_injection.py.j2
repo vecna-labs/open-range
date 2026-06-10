@@ -82,5 +82,11 @@ def handle(query, state):
             if value is not None:
                 leaked.append(str(value))
 
-    body = "\n".join(leaked) if leaked else "PING " + target + ": 1 packets"
-    return 200, {"Content-Type": "text/plain"}, body.encode()
+    if leaked:
+        return 200, {"Content-Type": "text/plain"}, "\n".join(leaked).encode()
+    # Feedback: an injection-shaped attempt (shell metacharacters) that this
+    # context neutralized gets a distinct response, vs a benign diagnostic echo.
+    # No flag either way, so the mutual-exclusivity matrix is unchanged.
+    if any(ch in target for ch in ";|&$`"):
+        return 200, {"Content-Type": "text/plain"}, b"diagnostic: input rejected"
+    return 200, {"Content-Type": "text/plain"}, ("PING " + target + ": 1 packets").encode()

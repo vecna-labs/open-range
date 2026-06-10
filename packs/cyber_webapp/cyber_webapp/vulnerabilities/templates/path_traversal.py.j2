@@ -5,6 +5,7 @@ import posixpath
 def handle(query, state):
     requested = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
     base_dir = {{ base_dir | tojson }}
+    original = requested  # keep the raw input to classify a failed attempt
     # Confinement context, sampled per build. The three contexts are MUTUALLY
     # EXCLUSIVE: each accepts exactly ONE traversal technique and rejects the
     # other two, so a payload that leaks under one build 404s under the others.
@@ -52,4 +53,10 @@ def handle(query, state):
     if resolved in files:
         body = str(files[resolved]).encode()
         return 200, {"Content-Type": "text/plain"}, body
+    # Feedback signal: a traversal-shaped attempt that this context neutralized
+    # gets a distinct 403 (so the agent learns it's the right vuln class, wrong
+    # technique), while a benign filename miss stays 404. Neither leaks the flag,
+    # so the mutual-exclusivity matrix is unchanged.
+    if ".." in original or original.startswith("/"):
+        return 403, {"Content-Type": "application/json"}, b'{"error": "path not permitted"}'
     return 404, {"Content-Type": "application/json"}, b'{"error": "file not found"}'
