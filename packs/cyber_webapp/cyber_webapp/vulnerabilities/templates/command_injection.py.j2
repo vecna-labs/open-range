@@ -3,12 +3,12 @@
 
 def handle(query, state):
     target = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
-    quote = {{ quote | tojson }}
+    quote = {{ (quote | default("")) | tojson }}
     command = {{ base_command | tojson }} + " " + quote + target + quote
     files = state.get("files", {})
     readers = {"cat", "head", "tail", "more", "less", "nl", "strings", "xxd", "od"}
 
-    # BUG: input is concatenated into a shell command in a {{ quote | tojson }}
+    # BUG: input is concatenated into a shell command in a sampled quoting
     # context. A real shlex tokenizer (quote-aware) splits on UNQUOTED ; | & , so
     # the agent must break out of whatever quoting the input lands in; command
     # substitution ($()/backticks) fires except inside single quotes — exactly

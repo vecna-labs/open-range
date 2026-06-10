@@ -137,12 +137,19 @@ per-*class*.
 - **Was: 3 vuln classes, 1 shape.** `sql_injection`, `ssrf`, `broken_authz` —
   all `family=code_web`, all targeting `endpoint`, all response-leak. The staged
   pipeline took this to 9 classes across 3 shapes (see Status, §7).
-- **Structurally fixed templates.** The SQLi template is always
-  `SELECT key, {col} FROM {table} WHERE key = '{input}'` — only names vary. An
-  agent can learn *the template*, not "SQL injection." This is a transfer-study
-  confound (a gap may reflect template-overfitting, not a real capability gap), so
-  intra-class diversity matters for *validity*, not just polish — procedural
-  parameterization first, the LLM layer later.
+- **Was: structurally fixed templates → now payload-context diversity.** The
+  SQLi template used to be always `... WHERE key = '{input}'` — only names varied,
+  so an agent learns *the template*, not "SQL injection." Because the agent only
+  sees the HTTP surface (never server code), the fix is to vary the **injection
+  context** the exploit must adapt to, sampled per build: each class samples a
+  context where the *correct payload differs* and a mismatched-context payload
+  fails. SQLi single/numeric/double quoting; cmdi unquoted/single/double (a
+  quote-aware tokenizer); path traversal absolute/`../`/`....//`-past-a-naive-
+  filter; SSTI raw/comment/expr sink; XXE element/wrapped-root/scheme-prefix; SSRF
+  no-filter/scheme-block/host-allowlist-bypass; IDOR direct/base64/prefixed ref;
+  broken-authz single/dual-factor/encoded; weak-creds pair/combined/basic. This
+  removes the template-overfitting confound for H2. Richer *structural* variety
+  (and natural-language realism) is still the later LLM layer.
 
 ---
 
@@ -190,7 +197,11 @@ classes**, each proven end to end by a real HTTP exploit that recovers the flag
 
 Loot shape and vuln-class mix are manifest-configurable (`loot_shapes` /
 `vuln_kinds`); decoy files are sampled into the content-addressed graph (not
-hardcoded), so they vary by seed. This tracks
+hardcoded), so they vary by seed. Every class also samples a **payload-context
+axis** per build (§6) so the correct exploit differs build-to-build, the flag
+path is **discovered via a planted config** rather than guessed (and randomized
+so brute force doesn't pay), and the 4 once-toy classes run **real engines**
+(Jinja / `xml.sax` / `shlex`). This tracks
 [#190](https://github.com/vecna-labs/open-range/issues/190) and lays the staging
 groundwork for [#212](https://github.com/vecna-labs/open-range/issues/212).
 

@@ -3,14 +3,35 @@
 
 def handle(query, state):
     expr = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
-    # BUG: untrusted input is rendered as a Jinja template with the app's
+    {% raw %}# BUG: untrusted input is rendered as a Jinja template with the app's
     # config in scope. So an injected expression is evaluated by the real
     # engine ({{ 7*7 }} -> 49) and can dump the config that holds the data.
     # (Sandboxed here, so no Python-object escape; a container backing runs it
     # unsandboxed for full RCE fidelity.)
+    #
+    # The render SINK varies per build, so the SAME engine demands a DIFFERENT
+    # break-out (the input never lands in the same template position twice):
+    #   - raw:     the input IS the whole template, so a bare ``{{ ... }}``
+    #              print is evaluated as-is.
+    #   - comment: the handler wraps the input inside a Jinja comment
+    #              ``{# ... #}``, which the engine discards -- a naive
+    #              ``{{ ... }}`` produces no output, so the agent must close
+    #              the comment (``#} ... {#``) to reach print context.
+    #   - expr:    the handler splices the input INTO an existing print
+    #              expression around a string literal, so the input is already
+    #              between ``{{`` and ``}}``; a nested ``{{`` is a syntax error
+    #              and the agent must inject a bare expression joined with the
+    #              surrounding template via the ``~`` operator (continuation).{% endraw %}
     config = state.get("files", {})
+    sink = {{ (render_sink | default("raw")) | tojson }}
+    {% raw %}if sink == "comment":
+        source = "{# " + expr + " #}"
+    elif sink == "expr":
+        source = "{{ '[' ~ " + expr + " ~ ']' }}"
+    else:
+        source = expr{% endraw %}
     try:
-        rendered = SandboxedEnvironment().from_string(expr).render(config=config)
+        rendered = SandboxedEnvironment().from_string(source).render(config=config)
     except Exception as exc:
         rendered = "render error: " + type(exc).__name__
     return 200, {"Content-Type": "text/plain"}, rendered.encode()

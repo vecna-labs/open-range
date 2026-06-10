@@ -2,7 +2,22 @@
 
 
 def handle(query, state):
-    rid = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
+    raw = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
+    context = {{ (ref_context | default("direct")) | tojson }}
+    prefix = {{ (ref_prefix | default("user-")) | tojson }}
+    # Reference-encoding context: how the client-supplied id maps to the real
+    # db key. The lookup is a real parametrized query either way — only the
+    # decoding of the reference changes, so the agent must supply the id in the
+    # form this handler expects (raw key, base64 of the key, or a prefixed ref).
+    if context == "base64":
+        try:
+            rid = base64.b64decode(raw).decode("utf-8")
+        except Exception:
+            rid = ""
+    elif context == "prefixed":
+        rid = raw[len(prefix):] if raw.startswith(prefix) else ""
+    else:
+        rid = raw
     schema = state["schema"]
     table = schema["table"]
     key_col = schema["key_column"]

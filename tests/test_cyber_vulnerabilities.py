@@ -11,7 +11,6 @@ Four concerns:
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -176,7 +175,10 @@ def test_sql_injection_actually_exfiltrates() -> None:
         ("admin", "EXFIL_TOKEN_42"),
     )
     db.commit()
-    state = {"db": db}
+    state = {
+        "db": db,
+        "schema": {"table": "rows", "key_column": "key", "value_column": "secret_col"},
+    }
 
     # Benign request: returns the public row.
     status, _, body = handle({"q": ["public"]}, state)
@@ -190,31 +192,31 @@ def test_sql_injection_actually_exfiltrates() -> None:
     assert b"EXFIL_TOKEN_42" in body, body
 
 
-def test_ssrf_actually_fetches_internal(tmp_path: Path) -> None:
-    """SSRF should fetch a file:// URL even though allowlist intends http only."""
-    secret_file = tmp_path / "internal_secret.txt"
-    secret_file.write_text("ORANGE{ssrf_leaked}", encoding="utf-8")
-
+def test_ssrf_reaches_internal_host_and_leaks() -> None:
+    """SSRF that resolves to the internal host exposes the protected secret."""
     src = render_vulnerability(
         SSRF,
-        {"target_param": "url", "allowlist_pattern": r"^http://internal\."},
+        {
+            "target_param": "url",
+            "internal_host": "169.254.169.254",
+            "allowed_host": "ok.example.com",
+            "ssrf_filter": "no_filter",
+        },
     )
     handle = _exec_handler(src)
+    state = {"secrets": {"flag": "ORANGE{ssrf_leaked}"}}
 
-    # The agent supplies a file:// URL. The bug: fetch fires before
-    # allowlist check. By the time the post-hoc check runs, the body
-    # is already in our hands — but the handler returns 403 because
-    # the URL doesn't match. Test: even the 403 path doesn't *prevent*
-    # the side effect (here we test that the fetch reaches the file).
-    status, _, body = handle({"url": [f"file://{secret_file}"]}, {})
-    # Allowlist rejects → 403, but in a real exploit the agent would use
-    # an http URL; we verify the fetch path with file://.
-    assert status == 403  # allowlist post-hoc denies file:// URL
-    # The "real" exploitability is verified by ssrf to localhost:
-    # we don't spin a server here; the SQLi + authz tests cover the
-    # functional bug-fires-end-to-end pattern. The point of THIS test
-    # is that the fetch happens (we got a non-network 403, not a
-    # "missing url" 400).
+    # A URL whose host is the internal metadata host leaks the secret.
+    status, _, body = handle(
+        {"url": ["http://169.254.169.254/latest/meta-data/"]}, state
+    )
+    assert status == 200
+    assert b"ORANGE{ssrf_leaked}" in body
+
+    # A URL that passes the filter but points elsewhere fetches nothing.
+    status, _, body = handle({"url": ["http://example.com/"]}, state)
+    assert status == 200
+    assert b"ORANGE{ssrf_leaked}" not in body
 
 
 def test_ssrf_post_hoc_allowlist_lets_through_matching_url() -> None:
