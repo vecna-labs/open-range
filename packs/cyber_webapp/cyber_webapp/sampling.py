@@ -774,6 +774,8 @@ _SSRF_INTERNAL_HOSTS: tuple[str, ...] = (
     "metadata.internal",
     "127.0.0.1",
 )
+# IPv4-only internal hosts: the decimal_ip filter needs a dotted-quad to encode.
+_SSRF_INTERNAL_IPS: tuple[str, ...] = ("169.254.169.254", "127.0.0.1")
 _SSRF_ALLOWED_HOSTS: tuple[str, ...] = (
     "allowed.example.com",
     "api.partner.com",
@@ -820,38 +822,50 @@ def default_vuln_params(
             "context": rng.choice(["single", "numeric", "double"]),
         }
     if kind == "ssrf":
+        ssrf_filter = rng.choice(["scheme_block", "host_allowlist", "decimal_ip"])
+        if ssrf_filter == "decimal_ip":
+            internal_host = rng.choice(_SSRF_INTERNAL_IPS)
+        else:
+            internal_host = rng.choice(_SSRF_INTERNAL_HOSTS)
+        internal_decimal = ""
+        if internal_host.count(".") == 3:
+            octets = [int(o) for o in internal_host.split(".")]
+            internal_decimal = str(
+                ((octets[0] * 256 + octets[1]) * 256 + octets[2]) * 256 + octets[3]
+            )
         return {
             "target_param": rng.choice(_SSRF_PARAMS),
-            "internal_host": rng.choice(_SSRF_INTERNAL_HOSTS),
+            "internal_host": internal_host,
             "allowed_host": rng.choice(_SSRF_ALLOWED_HOSTS),
-            "ssrf_filter": rng.choice(
-                ["no_filter", "scheme_block", "host_allowlist_bypass"]
-            ),
+            "ssrf_filter": ssrf_filter,
+            "internal_decimal": internal_decimal,
         }
     if kind == "broken_authz":
-        params: dict[str, object] = {
+        return {
             "trust_header": rng.choice(_BROKEN_AUTHZ_HEADERS),
             "expected_value": rng.choice(_BROKEN_AUTHZ_VALUES),
             "leak_field": rng.choice(_BROKEN_AUTHZ_FIELDS),
             "trust_context": rng.choice(
                 ["single_token", "dual_factor", "encoded_token"]
             ),
+            # Confirm params for every context (not just dual_factor) so single /
+            # encoded recognize a foreign dual forge by its gate name and reject.
+            "confirm_param": rng.choice(_BROKEN_AUTHZ_CONFIRM_PARAMS),
+            "confirm_value": rng.choice(_BROKEN_AUTHZ_CONFIRM_VALUES),
+            "confirm_pool": list(_BROKEN_AUTHZ_CONFIRM_PARAMS),
         }
-        if params["trust_context"] == "dual_factor":
-            params["confirm_param"] = rng.choice(_BROKEN_AUTHZ_CONFIRM_PARAMS)
-            params["confirm_value"] = rng.choice(_BROKEN_AUTHZ_CONFIRM_VALUES)
-        return params
     if kind == "path_traversal":
         return {
             "target_param": rng.choice(_PATH_TRAVERSAL_PARAMS),
             "base_dir": rng.choice(_PATH_TRAVERSAL_BASE_DIRS),
-            "confinement": rng.choice(["unconfined", "confined", "dotdot_filter"]),
+            "confinement": rng.choice(["absolute_only", "relative", "dotdot_filter"]),
         }
     if kind == "command_injection":
         return {
             "target_param": rng.choice(_COMMAND_INJECTION_PARAMS),
             "base_command": rng.choice(_COMMAND_INJECTION_BASE),
-            "quote": rng.choice(["", "'", '"']),
+            "inj_context": rng.choice(["separator", "substitution", "quoted"]),
+            "quote": rng.choice(["'", '"']),
         }
     if kind == "xxe":
         return {
@@ -865,7 +879,7 @@ def default_vuln_params(
     if kind == "ssti":
         return {
             "target_param": rng.choice(_SSTI_PARAMS),
-            "render_sink": rng.choice(["raw", "comment", "expr"]),
+            "render_sink": rng.choice(["attribute", "comment", "expr"]),
         }
     if kind == "idor":
         return {

@@ -141,13 +141,19 @@ per-*class*.
   SQLi template used to be always `... WHERE key = '{input}'` — only names varied,
   so an agent learns *the template*, not "SQL injection." Because the agent only
   sees the HTTP surface (never server code), the fix is to vary the **injection
-  context** the exploit must adapt to, sampled per build: each class samples a
-  context where the *correct payload differs* and a mismatched-context payload
-  fails. SQLi single/numeric/double quoting; cmdi unquoted/single/double (a
-  quote-aware tokenizer); path traversal absolute/`../`/`....//`-past-a-naive-
-  filter; SSTI raw/comment/expr sink; XXE element/wrapped-root/scheme-prefix; SSRF
-  no-filter/scheme-block/host-allowlist-bypass; IDOR direct/base64/prefixed ref;
-  broken-authz single/dual-factor/encoded; weak-creds pair/combined/basic. This
+  context** the exploit must adapt to, sampled per build. Crucially the three
+  contexts per class are **mutually exclusive**: the handler enforces each one's
+  requirement, so a payload that solves one build *fails* the other two — an agent
+  can't memorize one string and replay it. SQLi single/numeric/double quoting;
+  cmdi separator/substitution/quoted (each strips the others' vectors); path
+  traversal absolute-only/relative-`../`/`....//`-past-a-single-strip; SSTI
+  attribute/comment/expr sink; XXE element/wrapped-root/scheme-prefix; SSRF
+  scheme-block/host-allowlist/decimal-IP; IDOR direct/base64/prefixed; broken-authz
+  single/dual-factor/encoded; weak-creds pair/combined/basic. A live 3×3 replay
+  matrix per class confirms a near-diagonal result (single-payload replay floor
+  ~33%, down from ~67%; the one residual is XXE's `element_content`, which reflects
+  any root and so inherently accepts the `wrapped_root` payload — closing it would
+  collapse the two into one technique, so it's left distinct and documented). This
   removes the template-overfitting confound for H2. Richer *structural* variety
   (and natural-language realism) is still the later LLM layer.
 

