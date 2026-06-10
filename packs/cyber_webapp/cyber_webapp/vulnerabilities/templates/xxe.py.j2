@@ -1,13 +1,33 @@
-"""XML handler — external entities are resolved against the file store."""
+"""XML handler — parsed by a real SAX parser with external entities enabled."""
 
 
 def handle(query, state):
     document = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
     files = state.get("files", {})
-    # BUG: external entities are enabled, so a SYSTEM entity that references a
-    # file path is resolved and reflected back in the response.
-    match = re.search(r'SYSTEM\s+["\']file://([^"\']+)["\']', document)
-    if match is not None and match.group(1) in files:
-        body = str(files[match.group(1)]).encode()
-        return 200, {"Content-Type": "application/xml"}, body
-    return 200, {"Content-Type": "application/xml"}, b"<result>ok</result>"
+
+    # BUG: external general entities are enabled and a SYSTEM file:// entity is
+    # resolved against the store, so a well-formed DOCTYPE/ENTITY/reference
+    # expands the file into the response. A malformed document does nothing.
+    class _Resolver(xml.sax.handler.EntityResolver):
+        def resolveEntity(self, public_id, system_id):
+            path = system_id.split("file://", 1)[-1]
+            source = xml.sax.xmlreader.InputSource()
+            source.setCharacterStream(io.StringIO(files.get(path, "")))
+            return source
+
+    captured = []
+
+    class _Capture(xml.sax.handler.ContentHandler):
+        def characters(self, content):
+            captured.append(content)
+
+    try:
+        parser = xml.sax.make_parser()
+        parser.setFeature(xml.sax.handler.feature_external_ges, True)
+        parser.setContentHandler(_Capture())
+        parser.setEntityResolver(_Resolver())
+        parser.parse(io.StringIO(document))
+        body = "".join(captured)
+    except Exception as exc:
+        body = "parse error: " + type(exc).__name__
+    return 200, {"Content-Type": "application/xml"}, body.encode()

@@ -3,21 +3,33 @@
 
 def handle(query, state):
     target = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
-    # BUG: the parameter is appended to a command string and "run", so a shell
-    # metacharacter (';', '|', '&') injects an extra command. The in-process
-    # interpreter resolves a ``cat <path>`` segment against the file store —
-    # the PROCESS-backing emulation of a shell (a container makes it real).
     command = {{ base_command | tojson }} + " " + target
     files = state.get("files", {})
-    separated = command
-    for _sep in (";", "|", "&", "\n", "`"):
-        separated = separated.replace(_sep, "\x00")
+    readers = {"cat", "head", "tail", "more", "less", "nl", "strings", "xxd", "od"}
+
+    # BUG: the parameter is concatenated into a command and "run". This honors
+    # the real injection grammar — separators (; | && newline), command
+    # substitution ($(...) / backticks), and shlex quoting — over the store; a
+    # reader command on a store path leaks it. (A container backing runs a real
+    # shell; this is the PROCESS-backing emulation of one.)
+    def _read(segment):
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            return ""
+        if len(tokens) >= 2 and posixpath.basename(tokens[0]) in readers:
+            return str(files.get(tokens[-1], ""))
+        return ""
+
     leaked = []
-    for _segment in separated.split("\x00"):
-        _tokens = _segment.split()
-        if len(_tokens) >= 2 and _tokens[0] in ("cat", "head", "tail", "more", "less"):
-            _content = files.get(_tokens[1])
-            if _content is not None:
-                leaked.append(str(_content))
-    body = ("\n".join(leaked) if leaked else "PING " + target + ": 1 packets").encode()
-    return 200, {"Content-Type": "text/plain"}, body
+    for match in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", command):
+        leaked.append(_read(match[0] or match[1]))
+    stripped = re.sub(r"\$\([^()]*\)|`[^`]*`", "", command)
+    for sep in (";", "|", "&", "\n"):
+        stripped = stripped.replace(sep, "\x00")
+    for segment in stripped.split("\x00"):
+        leaked.append(_read(segment))
+
+    found = [chunk for chunk in leaked if chunk]
+    body = "\n".join(found) if found else "PING " + target + ": 1 packets"
+    return 200, {"Content-Type": "text/plain"}, body.encode()

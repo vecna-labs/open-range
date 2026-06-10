@@ -201,12 +201,19 @@ real web-exploit class — while still producing file/exec worlds out of the box
 study targets a shape or class by overriding `loot_shapes` / `vuln_kinds`. The
 default is a starting point, not a claim about the "right" distribution.
 
-At the `PROCESS` backing the file store is an in-memory map and command execution
-is an in-process interpreter that resolves an injected `cat` / template / entity
-read. The *technique* transfers (`../`, `; cat`, `{{ }}`, XXE), but the file
-system and shell are emulated — a **container backing
-([#252](https://github.com/vecna-labs/open-range/issues/252))** makes them real.
-Because exploits are emulated at `PROCESS`, there is no real shell to sandbox yet;
+At the `PROCESS` backing the loot store is an in-memory map (the flag never
+lands on disk), but the exploits run against **real engines** wherever one fits
+in-process: SQL injection hits a real sqlite engine, SSTI a real sandboxed Jinja
+environment (`{{7*7}}` → 49, context dump leaks the store), XXE a real SAX parser
+with external-entity resolution (a well-formed DOCTYPE/ENTITY/reference is
+required), path traversal a real `posixpath` resolve, and command injection a
+real `shlex` tokenizer honoring separators, `$()`/backtick substitution, quoting,
+and arbitrary readers. So the *technique* — not a magic string — is what the
+agent must produce, which is what makes it transfer. The one thing still emulated
+is a real OS shell/filesystem with RCE escalation: a **container backing
+([#252](https://github.com/vecna-labs/open-range/issues/252))** provides that.
+Because no real shell executes at `PROCESS` (the interpreters only read the
+store), there is nothing to sandbox yet;
 exec-sandbox hardening ([#202](https://github.com/vecna-labs/open-range/issues/202))
 lands with the container backing, before adversarial training traffic.
 

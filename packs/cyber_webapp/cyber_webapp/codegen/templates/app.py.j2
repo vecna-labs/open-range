@@ -9,11 +9,15 @@ requests.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import posixpath
 import re
+import shlex
 import sqlite3
+import xml.sax
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from jinja2.sandbox import SandboxedEnvironment
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
