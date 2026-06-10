@@ -660,11 +660,11 @@ def _forced_oracle(
     graph: WorldGraph,
     db_backed_services: set[str],
 ) -> tuple[str, Node] | None:
-    """Pick a vuln kind whose ``shape`` matches the loot and an oracle endpoint
-    it's eligible on — the forced first vuln that makes the flag reachable. The
-    configured (weighted) ``pool`` is preferred so a manifest can steer which
-    class is the oracle; any shape-matching catalog entry is the fallback so the
-    world stays solvable. ``None`` only if nothing eligible fits."""
+    # The forced first vuln that makes the flag reachable: a kind whose exploit
+    # shape matches the loot, on an eligible oracle endpoint. The configured
+    # (weighted) pool is preferred so a manifest can steer which class is the
+    # oracle; any shape-matching catalog entry is the fallback, so the world
+    # stays solvable.
     fallback = [
         k
         for k, v in VULN_CATALOG.items()
@@ -680,7 +680,7 @@ def _forced_oracle(
             )
             if eligible:
                 return kind, eligible[0]
-    return None
+    return None  # pragma: no cover - every loot shape has an eligible oracle vuln
 
 
 VULN_KINDS_REQUIRING_DB: frozenset[str] = frozenset({"sql_injection"})

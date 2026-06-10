@@ -84,6 +84,41 @@ def test_file_loot_keeps_flag_out_of_db_and_secrets() -> None:
     assert flag not in seed["secrets"].values()
 
 
+def test_manifest_knobs_ignore_non_mapping_values() -> None:
+    # A bad loot_shapes / vuln_kinds value is dropped, not crashed on.
+    snap = admit(
+        WebappPack(),
+        manifest={
+            "pack": {"id": "webapp"},
+            "seed": 7,
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "loot_shapes": "not-a-mapping",
+            "vuln_kinds": 5,
+        },
+        max_repairs=3,
+    )
+    assert isinstance(snap, Snapshot), snap
+
+
+def test_degenerate_loot_weights_fall_back_to_db() -> None:
+    # All-zero and non-int weights leave an empty pool, which resolves to db.
+    for weights in ({"db": 0, "file": 0}, {"db": "lots", "file": True}):
+        snap = admit(
+            WebappPack(),
+            manifest={
+                "pack": {"id": "webapp"},
+                "seed": 7,
+                "runtime": {"tick": {"mode": "off"}},
+                "npc": [],
+                "loot_shapes": weights,
+            },
+            max_repairs=3,
+        )
+        assert isinstance(snap, Snapshot), snap
+        assert _store_kinds(snap.graph) == {"kv"}
+
+
 def test_file_loot_is_deterministic() -> None:
     assert _admit("file", seed=3).snapshot_id == _admit("file", seed=3).snapshot_id
     assert _admit("file", seed=3).snapshot_id != _admit("file", seed=4).snapshot_id
