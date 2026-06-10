@@ -187,6 +187,22 @@ _BROKEN_AUTHZ_FIELDS: tuple[str, ...] = (
     "result",
 )
 
+_PATH_TRAVERSAL_PARAMS: tuple[str, ...] = (
+    "file",
+    "path",
+    "name",
+    "doc",
+    "template",
+    "page",
+)
+# Base dir the handler confines to (the confinement it fails to enforce);
+# distinct from the loot's private dirs so '../' or an absolute path escapes.
+_PATH_TRAVERSAL_BASE_DIRS: tuple[str, ...] = (
+    "/srv/app/public",
+    "/var/www/static",
+    "/opt/app/assets",
+)
+
 _SSRF_PARAMS: tuple[str, ...] = (
     "url",
     "target",
@@ -223,7 +239,61 @@ _DEFAULT_VULN_KIND_WEIGHTS: Mapping[str, int] = {
     "sql_injection": 3,
     "ssrf": 2,
     "broken_authz": 2,
+    "path_traversal": 2,
 }
+
+# Store kinds that hold the flag as queryable rows (vs a "file" store).
+_DB_STORE_KINDS: frozenset[str] = frozenset({"kv", "sql"})
+
+# Loot placement: how the flag is stored, which fixes the exploit shape the
+# oracle must take (see DESIGN.md). ``file`` loot lives in an in-memory file
+# map; the flag never lands on disk.
+_DEFAULT_LOOT_WEIGHTS: Mapping[str, int] = {"db": 7, "file": 3}
+_ORACLE_SHAPES_FOR_LOOT: Mapping[str, frozenset[str]] = {
+    "db": frozenset({"response_leak"}),
+    "file": frozenset({"file_read"}),
+}
+_LOOT_FILE_DIRS: tuple[str, ...] = (
+    "/var/lib/app/private",
+    "/etc/app/secrets",
+    "/srv/app/config",
+    "/opt/data/internal",
+)
+_LOOT_FILE_NAMES: tuple[str, ...] = (
+    "flag.txt",
+    "admin.key",
+    "secret.bak",
+    "credentials.env",
+    "token.dat",
+)
+
+
+def _sample_loot_shape(rng: random.Random, prior: PackPrior | None) -> str:
+    weights = _prior_weights(prior, "loot_shapes") or _DEFAULT_LOOT_WEIGHTS
+    pool: list[str] = []
+    for shape, weight in weights.items():
+        if shape not in _ORACLE_SHAPES_FOR_LOOT:
+            continue
+        if isinstance(weight, int) and not isinstance(weight, bool):
+            pool.extend([shape] * max(0, weight))
+    return rng.choice(pool) if pool else "db"
+
+
+def _loot_store_attrs(loot_shape: str, name: str) -> dict[str, str]:
+    if loot_shape == "file":
+        return {"name": name, "kind": "file", "engine": "fs"}
+    # The ontology's engine enum has no in-process value; the realizer treats
+    # ``redis`` as a simulated kv backend.
+    return {"name": name, "kind": "kv", "engine": "redis"}
+
+
+def _sample_loot_path(rng: random.Random) -> str:
+    return f"{rng.choice(_LOOT_FILE_DIRS)}/{rng.choice(_LOOT_FILE_NAMES)}"
+
+
+def _safe_id_fragment(key: str) -> str:
+    frag = "".join(c if c.isalnum() else "_" for c in key).strip("_")
+    return frag or "loot"
 
 
 def sample_graph(
@@ -288,18 +358,13 @@ def sample_graph(
     deepest = _pick_deepest_service(services)
     deepest_service_id = f"svc_{deepest['name']}"
 
+    loot_shape = _sample_loot_shape(rng, prior)
     data_store_id = f"ds_{deepest['name']}"
     graph.add_node(
         Node(
             id=data_store_id,
             kind="data_store",
-            attrs={
-                # The ontology's engine enum has no in-process value;
-                # the realizer treats ``redis`` as a simulated kv backend.
-                "name": deepest["name"],
-                "kind": "kv",
-                "engine": "redis",
-            },
+            attrs=_loot_store_attrs(loot_shape, str(deepest["name"])),
         )
     )
     _add_edge(
@@ -311,8 +376,14 @@ def sample_graph(
     )
 
     flag_value = generate_flag(rng)
-    record_key = rng.choice(_RECORD_KEYS)
-    record_id = f"rec_{record_key}"
+    # The loot shape fixes how the flag is reached: a "db" loot keys it by a
+    # record name (a response-leak exploit reads it); a "file" loot keys it by
+    # an absolute path (a file-read exploit reads it). This is the constraint
+    # the vuln stage consumes — see DESIGN.md.
+    record_key = (
+        _sample_loot_path(rng) if loot_shape == "file" else rng.choice(_RECORD_KEYS)
+    )
+    record_id = f"rec_{_safe_id_fragment(record_key)}"
     graph.add_node(
         Node(
             id=record_id,
@@ -349,6 +420,7 @@ def sample_graph(
         rng,
         prior,
         oracle_service_id=deepest_service_id,
+        oracle_shapes=_ORACLE_SHAPES_FOR_LOOT[loot_shape],
     )
 
     return graph
@@ -464,10 +536,12 @@ def _sample_vulnerabilities(
     prior: PackPrior | None,
     *,
     oracle_service_id: str | None = None,
+    oracle_shapes: frozenset[str] = frozenset({"response_leak"}),
 ) -> None:
-    # The first placed vuln is anchored to ``oracle_service_id`` so the
-    # pentest family's feasibility chain has a route from the entrypoint
-    # into the data chain.
+    # The first placed vuln is the oracle: forced to a kind whose exploit
+    # ``shape`` matches the loot (``oracle_shapes``) and anchored to
+    # ``oracle_service_id``, so the flag is reachable by construction. The
+    # rest are decoys drawn from the weighted pool.
     count = _sample_int(rng, prior, "vuln_count")
     pool = _weighted_pool(prior, "vuln_kinds")
     if not pool:
@@ -484,42 +558,46 @@ def _sample_vulnerabilities(
             ep = graph.nodes.get(edge.dst)
             if ep is not None:
                 oracle_endpoints.append(ep)
-    oracle_service: Node | None = None
-    if oracle_service_id is not None:
-        oracle_service = graph.nodes.get(oracle_service_id)
 
     rng.shuffle(endpoints)
 
-    db_backed_services: set[str] = {
-        e.src for e in graph.edges.values() if e.kind == "backed_by"
+    # Only kv/sql stores count as "db-backed" — a service backed solely by a
+    # file store has no table for a SQL-injection handler to query.
+    store_kind: dict[str, str] = {
+        n.id: str(n.attrs.get("kind", "")) for n in graph.by_kind("data_store")
     }
+    db_backed_services: set[str] = {
+        e.src
+        for e in graph.edges.values()
+        if e.kind == "backed_by" and store_kind.get(e.dst) in _DB_STORE_KINDS
+    }
+
+    oracle = _forced_oracle(
+        rng, oracle_shapes, pool, oracle_endpoints, graph, db_backed_services
+    )
 
     placed_vulns: list[Node] = []
     for i in range(count):
-        kind = rng.choice(pool)
-        if kind not in VULN_CATALOG:
-            continue
-        catalog_entry = VULN_CATALOG[kind]
-        target_kinds = catalog_entry.target_kinds
-        eligible_endpoints = _eligible_endpoints_for(
-            kind, endpoints, graph, db_backed_services
-        )
-        if "endpoint" in target_kinds and not eligible_endpoints:
-            continue
-        eligible_oracle = [ep for ep in oracle_endpoints if ep in eligible_endpoints]
         target_node: Node | None = None
-        if i == 0 and oracle_service_id is not None:
-            if "endpoint" in target_kinds and eligible_oracle:
-                target_node = eligible_oracle[0]
-            elif "service" in target_kinds and oracle_service is not None:
-                target_node = oracle_service
-        if target_node is None:
+        if i == 0 and oracle is not None:
+            kind, target_node = oracle
+        else:
+            kind = rng.choice(pool)
+            if kind not in VULN_CATALOG:
+                continue
+            target_kinds = VULN_CATALOG[kind].target_kinds
+            eligible_endpoints = _eligible_endpoints_for(
+                kind, endpoints, graph, db_backed_services
+            )
             if "endpoint" in target_kinds:
+                if not eligible_endpoints:
+                    continue
                 target_node = eligible_endpoints[i % len(eligible_endpoints)]
             elif "service" in target_kinds and services:
                 target_node = services[i % len(services)]
             else:
                 continue
+        catalog_entry = VULN_CATALOG[kind]
         vuln_id = f"vuln_{kind}_{i}"
         vuln_node = Node(
             id=vuln_id,
@@ -554,6 +632,37 @@ def _sample_vulnerabilities(
             target_vuln = by_kind.get(next_kind)
             if target_vuln is not None and target_vuln != vuln.id:
                 _add_edge(graph, "enables", vuln.id, target_vuln)
+
+
+def _forced_oracle(
+    rng: random.Random,
+    oracle_shapes: frozenset[str],
+    pool: list[str],
+    oracle_endpoints: list[Node],
+    graph: WorldGraph,
+    db_backed_services: set[str],
+) -> tuple[str, Node] | None:
+    """Pick a vuln kind whose ``shape`` matches the loot and an oracle endpoint
+    it's eligible on — the forced first vuln that makes the flag reachable. The
+    configured (weighted) ``pool`` is preferred so a manifest can steer which
+    class is the oracle; any shape-matching catalog entry is the fallback so the
+    world stays solvable. ``None`` only if nothing eligible fits."""
+    fallback = [
+        k
+        for k, v in VULN_CATALOG.items()
+        if v.shape in oracle_shapes and "endpoint" in v.target_kinds
+    ]
+    preferred = [k for k in pool if k in fallback]
+    for source in (preferred, fallback):
+        candidates = list(source)
+        rng.shuffle(candidates)
+        for kind in candidates:
+            eligible = _eligible_endpoints_for(
+                kind, oracle_endpoints, graph, db_backed_services
+            )
+            if eligible:
+                return kind, eligible[0]
+    return None
 
 
 VULN_KINDS_REQUIRING_DB: frozenset[str] = frozenset({"sql_injection"})
@@ -602,6 +711,11 @@ def default_vuln_params(
             "trust_header": rng.choice(_BROKEN_AUTHZ_HEADERS),
             "expected_value": rng.choice(_BROKEN_AUTHZ_VALUES),
             "leak_field": rng.choice(_BROKEN_AUTHZ_FIELDS),
+        }
+    if kind == "path_traversal":
+        return {
+            "target_param": rng.choice(_PATH_TRAVERSAL_PARAMS),
+            "base_dir": rng.choice(_PATH_TRAVERSAL_BASE_DIRS),
         }
     return {}
 

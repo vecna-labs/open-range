@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import re
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,6 +46,7 @@ def _load_seed_and_init_state(seed_path: Path) -> dict:
         "db": db,
         "secrets": payload["secrets"],
         "accounts": payload["accounts"],
+        "files": payload.get("files", {}),
         "schema": schema,
     }
 

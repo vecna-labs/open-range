@@ -47,6 +47,11 @@ _MANIFEST = {
     "runtime": {"tick": {"mode": "off"}},
     "npc": [],
     "seed": 0,
+    # These tests exploit SQL injection specifically, so pin the response-leak
+    # (db) loot shape and the sql_injection oracle rather than depend on the
+    # default shape/class mix.
+    "loot_shapes": {"db": 1, "file": 0},
+    "vuln_kinds": {"sql_injection": 1},
 }
 # A classic tautology: `... WHERE key = '' OR '1'='1'` dumps every row.
 _SQLI_PAYLOAD = "' OR '1'='1"

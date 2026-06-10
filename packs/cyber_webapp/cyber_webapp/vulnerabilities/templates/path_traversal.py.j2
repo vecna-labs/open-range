@@ -1,0 +1,14 @@
+"""File-serving handler — requested path is joined onto a base without confinement."""
+import posixpath
+
+
+def handle(query, state):
+    requested = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
+    # BUG: the resolved path is never confined under base_dir, so a '../'
+    # sequence or an absolute path escapes to any file in the store.
+    resolved = posixpath.normpath(posixpath.join({{ base_dir | tojson }}, requested))
+    files = state.get("files", {})
+    if resolved in files:
+        body = str(files[resolved]).encode()
+        return 200, {"Content-Type": "text/plain"}, body
+    return 404, {"Content-Type": "application/json"}, b'{"error": "file not found"}'

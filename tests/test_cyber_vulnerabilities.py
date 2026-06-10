@@ -39,13 +39,23 @@ def _exec_handler(source: str) -> Any:
 
 
 def test_catalog_has_starter_vulns() -> None:
-    assert set(CATALOG) == {"sql_injection", "ssrf", "broken_authz"}
+    assert set(CATALOG) == {
+        "sql_injection",
+        "ssrf",
+        "broken_authz",
+        "path_traversal",
+    }
     assert vuln("sql_injection") is SQL_INJECTION
 
 
 def test_vulns_for_kind_filters_by_target() -> None:
     endpoint_vulns = vulns_for_kind("endpoint")
-    assert {v.id for v in endpoint_vulns} == {"sql_injection", "ssrf", "broken_authz"}
+    assert {v.id for v in endpoint_vulns} == {
+        "sql_injection",
+        "ssrf",
+        "broken_authz",
+        "path_traversal",
+    }
     assert vulns_for_kind("network") == ()
 
 

@@ -41,17 +41,28 @@ class WebappBuilder(ProceduralBuilder):
         )
 
     def _effective_prior(self, manifest: Manifest) -> PackPrior:
-        # manifest["scale"] overrides the prior's count_ranges so a world
-        # scales without a hand-built PackPrior. Determinism is unchanged:
-        # the seed still selects within the (possibly widened) ranges.
+        # Manifest knobs fold into the prior so a world's scale and exploit
+        # mix are configurable without a hand-built PackPrior. Determinism is
+        # unchanged: the seed still selects within the (overridden) ranges and
+        # weights. ``scale`` -> count_ranges; ``loot_shapes`` / ``vuln_kinds``
+        # -> kind_weights (the loot shape and decoy mix — see DESIGN.md).
         base = self.prior if self.prior is not None else default_prior()
-        overrides = manifest.get("scale")
-        if not isinstance(overrides, Mapping):
+        scale = manifest.get("scale")
+        weight_keys = [k for k in ("loot_shapes", "vuln_kinds") if k in manifest]
+        if not isinstance(scale, Mapping) and not weight_keys:
             return base
         topology = dict(base.topology)
-        count_ranges = dict(topology.get("count_ranges") or {})
-        for key, spec in overrides.items():
-            if isinstance(spec, Mapping):
-                count_ranges[str(key)] = dict(spec)
-        topology["count_ranges"] = count_ranges
+        if isinstance(scale, Mapping):
+            count_ranges = dict(topology.get("count_ranges") or {})
+            for key, spec in scale.items():
+                if isinstance(spec, Mapping):
+                    count_ranges[str(key)] = dict(spec)
+            topology["count_ranges"] = count_ranges
+        if weight_keys:
+            kind_weights = dict(topology.get("kind_weights") or {})
+            for key in weight_keys:
+                spec = manifest[key]
+                if isinstance(spec, Mapping):
+                    kind_weights[key] = {str(k): v for k, v in spec.items()}
+            topology["kind_weights"] = kind_weights
         return dataclasses.replace(base, topology=topology)

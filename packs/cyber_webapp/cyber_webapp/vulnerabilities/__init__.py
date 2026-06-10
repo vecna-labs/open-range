@@ -20,6 +20,9 @@ class Vulnerability:
     description: str
     target_kinds: frozenset[str]
     template: str
+    # How the exploit reaches the flag — the unit of realizer + feasibility
+    # work; the loot stage picks a vuln whose shape matches the placed loot.
+    shape: str = "response_leak"
     requires: frozenset[str] = frozenset()
     enables: frozenset[str] = frozenset()
     attrs_schema: Mapping[str, str] = field(default_factory=dict)
@@ -31,6 +34,7 @@ class Vulnerability:
             "description": self.description,
             "target_kinds": sorted(self.target_kinds),
             "template": self.template,
+            "shape": self.shape,
             "requires": sorted(self.requires),
             "enables": sorted(self.enables),
             "attrs_schema": dict(self.attrs_schema),
@@ -56,6 +60,7 @@ class Vulnerability:
             description=str(data.get("description", "")),
             target_kinds=frozenset(str(k) for k in target_kinds_raw),
             template=str(data["template"]),
+            shape=str(data.get("shape", "response_leak")),
             requires=frozenset(str(k) for k in requires_raw),
             enables=frozenset(str(k) for k in enables_raw),
             attrs_schema={str(k): str(v) for k, v in attrs_raw.items()},
@@ -71,6 +76,7 @@ SQL_INJECTION = Vulnerability(
     ),
     target_kinds=frozenset({"endpoint"}),
     template="sql_injection.py.j2",
+    shape="response_leak",
     enables=frozenset({"data_store_dump"}),
     attrs_schema={
         "target_param": "name of the query parameter that flows into SQL",
@@ -88,6 +94,7 @@ SSRF = Vulnerability(
     ),
     target_kinds=frozenset({"endpoint"}),
     template="ssrf.py.j2",
+    shape="response_leak",
     enables=frozenset({"broken_authz", "metadata_credential_leak"}),
     attrs_schema={
         "target_param": "name of the query parameter holding the URL",
@@ -105,6 +112,7 @@ BROKEN_AUTHZ = Vulnerability(
     ),
     target_kinds=frozenset({"endpoint"}),
     template="broken_authz.py.j2",
+    shape="response_leak",
     requires=frozenset(),  # primary; chains often start here or via SSRF
     attrs_schema={
         "trust_header": "HTTP header name the endpoint trusts (e.g. X-User-Role)",
@@ -114,10 +122,29 @@ BROKEN_AUTHZ = Vulnerability(
 )
 
 
+PATH_TRAVERSAL = Vulnerability(
+    id="path_traversal",
+    family="code_web",
+    description=(
+        "Endpoint serves a file named by a client parameter, joining it onto "
+        "a base directory without confining the result — '../' or an absolute "
+        "path escapes to read any file in the store, including the flag."
+    ),
+    target_kinds=frozenset({"endpoint"}),
+    template="path_traversal.py.j2",
+    shape="file_read",
+    attrs_schema={
+        "target_param": "query parameter holding the requested file path",
+        "base_dir": "directory the path is joined onto (the unenforced confinement)",
+    },
+)
+
+
 CATALOG: Mapping[str, Vulnerability] = {
     SQL_INJECTION.id: SQL_INJECTION,
     SSRF.id: SSRF,
     BROKEN_AUTHZ.id: BROKEN_AUTHZ,
+    PATH_TRAVERSAL.id: PATH_TRAVERSAL,
 }
 
 
@@ -193,6 +220,7 @@ def merge_catalog(
 __all__ = [
     "BROKEN_AUTHZ",
     "CATALOG",
+    "PATH_TRAVERSAL",
     "SQL_INJECTION",
     "SSRF",
     "VULN_TEMPLATES_DIR",

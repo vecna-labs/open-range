@@ -20,12 +20,17 @@ _BROKEN_AUTHZ_LEAK_FIELDS = ("value", "data", "secret", "content", "result", "fl
 def project_seed(graph: WorldGraph) -> Mapping[str, object]:
     """Project the runtime seed payload.
 
-    Raises :class:`PackError` if the graph has no flag-kind secret.
+    The flag lives in exactly one place, fixed by the loot shape: a "db" loot
+    keeps it in the in-memory records/secrets (read via a response-leak
+    exploit); a "file" loot keeps it in the in-memory file map (read via a
+    file-read exploit). It never lands on disk. Raises :class:`PackError` if
+    the graph has no flag-kind secret.
     """
     flag = ""
+    flag_secret_id = ""
     accounts: dict[str, dict[str, object]] = {}
     secrets: dict[str, str] = {}
-    records: dict[str, dict[str, object]] = {}
+    raw_records: dict[str, tuple[str, dict[str, str]]] = {}
 
     creds_by_account: dict[str, str] = {}
     for edge in graph.edges.values():
@@ -38,6 +43,7 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
     for node in graph.nodes.values():
         if node.kind == "secret" and node.attrs.get("kind") == "flag":
             flag = str(node.attrs.get("value_ref", ""))
+            flag_secret_id = node.id
         elif node.kind == "secret":
             secrets[str(node.attrs.get("kind", node.id))] = str(
                 node.attrs.get("value_ref", ""),
@@ -55,29 +61,83 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
             }
         elif node.kind == "record":
             fields = node.attrs.get("fields", {})
-            if isinstance(fields, Mapping):
-                records[str(node.attrs.get("key", node.id))] = {
-                    str(k): str(v) for k, v in fields.items()
-                }
-            else:
-                records[str(node.attrs.get("key", node.id))] = {}
+            clean = (
+                {str(k): str(v) for k, v in fields.items()}
+                if isinstance(fields, Mapping)
+                else {}
+            )
+            raw_records[node.id] = (str(node.attrs.get("key", node.id)), clean)
 
     if not flag:
         raise PackError("graph has no flag-kind secret; codegen needs one")
 
+    store_kind_of_record = _store_kind_by_record(graph)
+    flag_record_id = _record_holding(graph, flag_secret_id)
+    loot_shape = store_kind_of_record.get(flag_record_id, "kv")
+
+    db_records: dict[str, dict[str, str]] = {}
+    files: dict[str, str] = {}
+    for rec_id, (key, fields) in raw_records.items():
+        if store_kind_of_record.get(rec_id) == "file":
+            files[key] = fields.get("value", "")
+        else:
+            db_records[key] = fields
+
     schema = _derive_sql_schema(graph)
-    records_for_schema = _retarget_records(records, schema, flag)
-    secrets_with_flag = _populate_secrets_with_flag(secrets, flag)
+    if loot_shape == "file":
+        # Flag is in the file map only; db records / secrets carry decoys so a
+        # stray response-leak vuln can't shortcut the file-read challenge.
+        records_for_schema = _retarget_records(db_records, schema, flag="")
+        secrets_out: dict[str, str] = dict(secrets)
+        files_out = _populate_files(files)
+    else:
+        records_for_schema = _retarget_records(db_records, schema, flag)
+        secrets_out = _populate_secrets_with_flag(secrets, flag)
+        files_out = {}
 
     return MappingProxyType(
         {
             "flag": flag,
             "accounts": accounts,
-            "secrets": secrets_with_flag,
+            "secrets": secrets_out,
             "records": records_for_schema,
+            "files": files_out,
             "schema": schema,
         },
     )
+
+
+def _store_kind_by_record(graph: WorldGraph) -> dict[str, str]:
+    contains: dict[str, str] = {
+        e.dst: e.src for e in graph.edges.values() if e.kind == "contains"
+    }
+    store_kind: dict[str, str] = {
+        n.id: str(n.attrs.get("kind", "")) for n in graph.by_kind("data_store")
+    }
+    return {rec: store_kind.get(store, "") for rec, store in contains.items()}
+
+
+def _record_holding(graph: WorldGraph, secret_id: str) -> str:
+    for edge in graph.edges.values():
+        if edge.kind == "holds" and edge.dst == secret_id:
+            return edge.src
+    return ""
+
+
+_DECOY_FILES: tuple[tuple[str, str], ...] = (
+    ("/srv/app/public/index.html", "<h1>welcome</h1>"),
+    ("/srv/app/public/robots.txt", "User-agent: *\nDisallow:"),
+    ("/etc/app/app.conf", "log_level = info\nworkers = 4"),
+)
+
+
+def _populate_files(files: Mapping[str, str]) -> dict[str, str]:
+    # Decoys so the file map isn't a single-entry giveaway, mirroring the
+    # decoy DB rows on the response-leak path.
+    out = {k: str(v) for k, v in files.items()}
+    for path, content in _DECOY_FILES:
+        out.setdefault(path, content)
+    return out
 
 
 def _derive_sql_schema(graph: WorldGraph) -> Mapping[str, str]:
