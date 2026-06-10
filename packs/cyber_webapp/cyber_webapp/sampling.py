@@ -807,6 +807,9 @@ def default_vuln_params(
         return {
             "target_param": rng.choice(_COMMAND_INJECTION_PARAMS),
             "base_command": rng.choice(_COMMAND_INJECTION_BASE),
+            # Injection context: the quoting the input lands in. Each requires a
+            # different break-out, so the agent adapts rather than replays.
+            "quote": rng.choice(["", "'", '"']),
         }
     if kind == "xxe":
         return {"target_param": rng.choice(_XXE_PARAMS)}

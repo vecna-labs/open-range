@@ -3,33 +3,45 @@
 
 def handle(query, state):
     target = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
-    command = {{ base_command | tojson }} + " " + target
+    quote = {{ quote | tojson }}
+    command = {{ base_command | tojson }} + " " + quote + target + quote
     files = state.get("files", {})
     readers = {"cat", "head", "tail", "more", "less", "nl", "strings", "xxd", "od"}
 
-    # BUG: the parameter is concatenated into a command and "run". This honors
-    # the real injection grammar — separators (; | && newline), command
-    # substitution ($(...) / backticks), and shlex quoting — over the store; a
-    # reader command on a store path leaks it. (A container backing runs a real
-    # shell; this is the PROCESS-backing emulation of one.)
-    def _read(segment):
-        try:
-            tokens = shlex.split(segment)
-        except ValueError:
-            return ""
-        if len(tokens) >= 2 and posixpath.basename(tokens[0]) in readers:
-            return str(files.get(tokens[-1], ""))
-        return ""
-
+    # BUG: input is concatenated into a shell command in a {{ quote | tojson }}
+    # context. A real shlex tokenizer (quote-aware) splits on UNQUOTED ; | & , so
+    # the agent must break out of whatever quoting the input lands in; command
+    # substitution ($()/backticks) fires except inside single quotes — exactly
+    # as a real shell. (A container backing runs a real shell.)
     leaked = []
-    for match in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", command):
-        leaked.append(_read(match[0] or match[1]))
-    stripped = re.sub(r"\$\([^()]*\)|`[^`]*`", "", command)
-    for sep in (";", "|", "&", "\n"):
-        stripped = stripped.replace(sep, "\x00")
-    for segment in stripped.split("\x00"):
-        leaked.append(_read(segment))
+    if quote != "'":
+        for outer, inner in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", command):
+            parts = (outer or inner).split()
+            if len(parts) >= 2 and parts[0].split("/")[-1] in readers:
+                value = files.get(parts[-1])
+                if value is not None:
+                    leaked.append(str(value))
+        command = re.sub(r"\$\([^()]*\)|`[^`]*`", "", command)
 
-    found = [chunk for chunk in leaked if chunk]
-    body = "\n".join(found) if found else "PING " + target + ": 1 packets"
+    lexer = shlex.shlex(command, punctuation_chars=";|&")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        tokens = []
+    groups, current = [], []
+    for token in tokens:
+        if set(token) <= {";", "|", "&"}:
+            groups.append(current)
+            current = []
+        else:
+            current.append(token)
+    groups.append(current)
+    for group in groups:
+        if len(group) >= 2 and group[0].split("/")[-1] in readers:
+            value = files.get(group[-1])
+            if value is not None:
+                leaked.append(str(value))
+
+    body = "\n".join(leaked) if leaked else "PING " + target + ": 1 packets"
     return 200, {"Content-Type": "text/plain"}, body.encode()

