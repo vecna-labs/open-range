@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 import random
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -305,6 +306,18 @@ _DECOY_FILES: tuple[tuple[str, str], ...] = (
 )
 
 
+# Conventional config locations an agent would probe. One is planted per
+# file-loot world disclosing where the data lives, so the flag path is
+# *discovered* (read a guessable config, pivot to the path it names) rather
+# than blind-guessed from a fixed pool.
+_HINT_CONFIG_PATHS: tuple[str, ...] = (
+    "/etc/app/settings.conf",
+    "/app/config.ini",
+    "/srv/app/config/app.yaml",
+    "/opt/app/conf/main.cfg",
+)
+
+
 def _add_decoy_files(
     graph: WorldGraph,
     rng: random.Random,
@@ -314,7 +327,15 @@ def _add_decoy_files(
 ) -> None:
     candidates = [(p, c) for p, c in _DECOY_FILES if p != exclude]
     rng.shuffle(candidates)
-    for path, content in candidates[:2]:
+    hint_path = rng.choice(_HINT_CONFIG_PATHS)
+    hint = (
+        f"[storage]\ndata_dir = {posixpath.dirname(exclude)}\n"
+        f"backup_file = {exclude}\nrotate_days = 7\n"
+    )
+    placed = [*candidates[:2], (hint_path, hint)]
+    for path, content in placed:
+        if path == exclude:
+            continue
         rec_id = f"rec_{_safe_id_fragment(path)}"
         graph.add_node(
             Node(

