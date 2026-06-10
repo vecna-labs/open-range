@@ -21,6 +21,7 @@ from openrange.agent_backend import (
     CodexAgentBackend,
     StrandsAgentBackend,
 )
+from openrange.benchmark import Benchmark, run_benchmark
 from openrange.core import (
     PACKS,
     ActorTurn,
@@ -82,6 +83,7 @@ __all__ = [
     "AgentTurn",
     "AttrSpec",
     "AttrType",
+    "Benchmark",
     "CodexAgentBackend",
     "CodexBackend",
     "CurriculumPolicy",
@@ -129,6 +131,7 @@ __all__ = [
     "direction_from_reports",
     "episode_reward",
     "episode_trajectory",
+    "run_benchmark",
     "snapshot_to_dict",
     "to_jsonl",
     "validate",

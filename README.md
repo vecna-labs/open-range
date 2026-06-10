@@ -164,6 +164,7 @@ Start with:
 - [Roadmap](ROADMAP.md) — direction, what we're working on, where contributors can help
 - [API lifecycle](docs/api.md)
 - [Dashboard](docs/dashboard.md)
+- [Benchmarks](docs/benchmarks.md) — external eval targets vs. the gym
 - [Contributing](CONTRIBUTING.md)
 
 ## Contributing
