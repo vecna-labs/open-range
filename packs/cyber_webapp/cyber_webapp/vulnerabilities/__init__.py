@@ -140,11 +140,30 @@ PATH_TRAVERSAL = Vulnerability(
 )
 
 
+COMMAND_INJECTION = Vulnerability(
+    id="command_injection",
+    family="code_web",
+    description=(
+        "Diagnostic endpoint concatenates a client parameter into a shell "
+        "command without sanitizing it — shell metacharacters (';', '|') "
+        "inject an extra command that reads the flag file."
+    ),
+    target_kinds=frozenset({"endpoint"}),
+    template="command_injection.py.j2",
+    shape="code_exec",
+    attrs_schema={
+        "target_param": "query parameter concatenated into the command",
+        "base_command": "the diagnostic command the input is appended to",
+    },
+)
+
+
 CATALOG: Mapping[str, Vulnerability] = {
     SQL_INJECTION.id: SQL_INJECTION,
     SSRF.id: SSRF,
     BROKEN_AUTHZ.id: BROKEN_AUTHZ,
     PATH_TRAVERSAL.id: PATH_TRAVERSAL,
+    COMMAND_INJECTION.id: COMMAND_INJECTION,
 }
 
 
@@ -220,6 +239,7 @@ def merge_catalog(
 __all__ = [
     "BROKEN_AUTHZ",
     "CATALOG",
+    "COMMAND_INJECTION",
     "PATH_TRAVERSAL",
     "SQL_INJECTION",
     "SSRF",

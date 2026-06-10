@@ -44,6 +44,7 @@ def test_catalog_has_starter_vulns() -> None:
         "ssrf",
         "broken_authz",
         "path_traversal",
+        "command_injection",
     }
     assert vuln("sql_injection") is SQL_INJECTION
 
@@ -55,6 +56,7 @@ def test_vulns_for_kind_filters_by_target() -> None:
         "ssrf",
         "broken_authz",
         "path_traversal",
+        "command_injection",
     }
     assert vulns_for_kind("network") == ()
 

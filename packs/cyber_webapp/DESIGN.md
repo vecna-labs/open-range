@@ -163,9 +163,9 @@ per-*class*.
    materializes its record as a real file on the owning service.
 3. **Shape-tagged catalog + selection.** Tag each `Vulnerability` with its shape;
    the vuln stage picks an oracle whose shape matches the placed loot.
-4. **Two new shapes, end-to-end.** `command_injection` (code-exec) first — it
-   forces the whole new pipeline — then `path_traversal` (file-read), which reuses
-   the filesystem loot for near-free.
+4. **Two new shapes, end-to-end.** `path_traversal` (file-read) first — it stands
+   up the whole file-store pipeline at lower risk — then `command_injection`
+   (code-exec), which reuses the same in-memory file store for near-free.
 5. **Feasibility per shape.** Generalize the pentest structural check to verify the
    matched loot→vuln path for each shape.
 6. **Tests + proof.** A real pentest episode recovering the flag for each new
@@ -173,6 +173,18 @@ per-*class*.
    shape → same snapshot).
 7. **Fan-out.** `ssti`, `xxe`, `weak_credentials`, `idor` as cheap additions once
    their shape's pipeline exists.
+
+### Status
+
+Items 1–6 are **done** (`feat/cyber-staged-generation`): the staged loot→vuln
+pipeline, the in-memory file store, shape-tagged catalog + shape-matched oracle
+selection, and both new shapes — `path_traversal` (file-read) and
+`command_injection` (code-exec) — each proven end to end by a real HTTP exploit
+that recovers the flag (`tests/test_cyber_staged_generation.py`). Loot shape and
+vuln-class mix are manifest-configurable (`loot_shapes` / `vuln_kinds`). The gym
+now spans **3 exploit shapes across 5 classes**; item 7 (more classes per shape)
+is the remaining fan-out. A `file` store is the in-memory PROCESS-backing
+emulation; a container backing (#252) makes the file system and shell real.
 
 This tracks [#190](https://github.com/vecna-labs/open-range/issues/190) (expand the
 vuln catalog) and lays the staging groundwork for

