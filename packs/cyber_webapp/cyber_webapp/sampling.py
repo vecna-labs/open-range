@@ -367,7 +367,12 @@ def _loot_store_attrs(loot_shape: str, name: str) -> dict[str, str]:
 
 
 def _sample_loot_path(rng: random.Random) -> str:
-    return f"{rng.choice(_LOOT_FILE_DIRS)}/{rng.choice(_LOOT_FILE_NAMES)}"
+    # A high-entropy directory segment makes the absolute flag path
+    # unenumerable, so brute-forcing the dir/name pools no longer finds it —
+    # the agent must read the disclosed config to discover the path (recon),
+    # not guess it. The config hint stays in sync because both use this key.
+    token = f"{rng.randrange(16**8):08x}"
+    return f"{rng.choice(_LOOT_FILE_DIRS)}/{token}/{rng.choice(_LOOT_FILE_NAMES)}"
 
 
 def _safe_id_fragment(key: str) -> str:
