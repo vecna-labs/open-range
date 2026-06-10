@@ -158,12 +158,85 @@ COMMAND_INJECTION = Vulnerability(
 )
 
 
+XXE = Vulnerability(
+    id="xxe",
+    family="code_web",
+    description=(
+        "Endpoint parses client XML with external entities enabled, so a "
+        "SYSTEM entity referencing a file path is resolved and reflected — "
+        "reading any file in the store, including the flag."
+    ),
+    target_kinds=frozenset({"endpoint"}),
+    template="xxe.py.j2",
+    shape="file_read",
+    attrs_schema={
+        "target_param": "query parameter holding the XML document",
+    },
+)
+
+
+SSTI = Vulnerability(
+    id="ssti",
+    family="code_web",
+    description=(
+        "Endpoint renders a client parameter as a template, so a template "
+        "expression like '{{ read(\"/path\") }}' is evaluated and reads the "
+        "flag file from the store."
+    ),
+    target_kinds=frozenset({"endpoint"}),
+    template="ssti.py.j2",
+    shape="code_exec",
+    attrs_schema={
+        "target_param": "query parameter rendered as a template",
+    },
+)
+
+
+IDOR = Vulnerability(
+    id="idor",
+    family="code_web",
+    description=(
+        "Endpoint returns a record by a client-supplied id with no ownership "
+        "or authorization check — referencing the flag record's id leaks it."
+    ),
+    target_kinds=frozenset({"endpoint"}),
+    template="idor.py.j2",
+    shape="response_leak",
+    attrs_schema={
+        "target_param": "query parameter holding the object id",
+    },
+)
+
+
+WEAK_CREDENTIALS = Vulnerability(
+    id="weak_credentials",
+    family="code_web",
+    description=(
+        "Authentication endpoint accepts a default/weak credential pair, so "
+        "guessing it (e.g. admin/admin) returns the protected secret."
+    ),
+    target_kinds=frozenset({"endpoint"}),
+    template="weak_credentials.py.j2",
+    shape="response_leak",
+    attrs_schema={
+        "user_param": "query parameter holding the username",
+        "password_param": "query parameter holding the password",
+        "weak_user": "the accepted default username",
+        "weak_password": "the accepted default password",
+    },
+)
+
+
 CATALOG: Mapping[str, Vulnerability] = {
     SQL_INJECTION.id: SQL_INJECTION,
     SSRF.id: SSRF,
     BROKEN_AUTHZ.id: BROKEN_AUTHZ,
     PATH_TRAVERSAL.id: PATH_TRAVERSAL,
     COMMAND_INJECTION.id: COMMAND_INJECTION,
+    XXE.id: XXE,
+    SSTI.id: SSTI,
+    IDOR.id: IDOR,
+    WEAK_CREDENTIALS.id: WEAK_CREDENTIALS,
 }
 
 
@@ -240,9 +313,13 @@ __all__ = [
     "BROKEN_AUTHZ",
     "CATALOG",
     "COMMAND_INJECTION",
+    "IDOR",
     "PATH_TRAVERSAL",
     "SQL_INJECTION",
     "SSRF",
+    "SSTI",
+    "WEAK_CREDENTIALS",
+    "XXE",
     "VULN_TEMPLATES_DIR",
     "Vulnerability",
     "catalog_from_yaml",

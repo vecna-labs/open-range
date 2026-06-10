@@ -1,0 +1,15 @@
+"""Record handler — returns a record by client id with no authorization check."""
+
+
+def handle(query, state):
+    rid = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
+    schema = state["schema"]
+    table = schema["table"]
+    key_col = schema["key_column"]
+    value_col = schema["value_column"]
+    cursor = state["db"].cursor()
+    # BUG: any id is returned — no ownership / authorization check, so
+    # referencing the flag record's id leaks it.
+    sql = f"SELECT {key_col}, {value_col} FROM {table} WHERE {key_col} = ?"
+    rows = [dict(r) for r in cursor.execute(sql, (rid,)).fetchall()]
+    return 200, {"Content-Type": "application/json"}, json.dumps({"record": rows}).encode()

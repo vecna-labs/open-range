@@ -1,0 +1,13 @@
+"""XML handler — external entities are resolved against the file store."""
+
+
+def handle(query, state):
+    document = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
+    files = state.get("files", {})
+    # BUG: external entities are enabled, so a SYSTEM entity that references a
+    # file path is resolved and reflected back in the response.
+    match = re.search(r'SYSTEM\s+["\']file://([^"\']+)["\']', document)
+    if match is not None and match.group(1) in files:
+        body = str(files[match.group(1)]).encode()
+        return 200, {"Content-Type": "application/xml"}, body
+    return 200, {"Content-Type": "application/xml"}, b"<result>ok</result>"

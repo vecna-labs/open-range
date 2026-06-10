@@ -124,20 +124,9 @@ def _record_holding(graph: WorldGraph, secret_id: str) -> str:
     return ""
 
 
-_DECOY_FILES: tuple[tuple[str, str], ...] = (
-    ("/srv/app/public/index.html", "<h1>welcome</h1>"),
-    ("/srv/app/public/robots.txt", "User-agent: *\nDisallow:"),
-    ("/etc/app/app.conf", "log_level = info\nworkers = 4"),
-)
-
-
 def _populate_files(files: Mapping[str, str]) -> dict[str, str]:
-    # Decoys so the file map isn't a single-entry giveaway, mirroring the
-    # decoy DB rows on the response-leak path.
-    out = {k: str(v) for k, v in files.items()}
-    for path, content in _DECOY_FILES:
-        out.setdefault(path, content)
-    return out
+    # The flag file plus the decoy files the sampler placed in the store.
+    return {k: str(v) for k, v in files.items()}
 
 
 def _derive_sql_schema(graph: WorldGraph) -> Mapping[str, str]:

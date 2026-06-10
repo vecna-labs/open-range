@@ -132,11 +132,11 @@ per-*class*.
 
 ---
 
-## 6. The narrowness today, precisely
+## 6. The narrowness this addressed (the starting point)
 
-- **3 vuln classes, 1 shape.** `sql_injection`, `ssrf`, `broken_authz`
-  (`vulnerabilities/__init__.py`) — all `family=code_web`, all targeting
-  `endpoint`, all response-leak.
+- **Was: 3 vuln classes, 1 shape.** `sql_injection`, `ssrf`, `broken_authz` —
+  all `family=code_web`, all targeting `endpoint`, all response-leak. The staged
+  pipeline took this to 9 classes across 3 shapes (see Status, §7).
 - **Structurally fixed templates.** The SQLi template is always
   `SELECT key, {col} FROM {table} WHERE key = '{input}'` — only names vary. An
   agent can learn *the template*, not "SQL injection." This is a transfer-study
@@ -176,22 +176,42 @@ per-*class*.
 
 ### Status
 
-Items 1–6 are **done** (`feat/cyber-staged-generation`): the staged loot→vuln
+Items 1–7 are **done** (`feat/cyber-staged-generation`): the staged loot→vuln
 pipeline, the in-memory file store, shape-tagged catalog + shape-matched oracle
-selection, and both new shapes — `path_traversal` (file-read) and
-`command_injection` (code-exec) — each proven end to end by a real HTTP exploit
-that recovers the flag (`tests/test_cyber_staged_generation.py`). Loot shape and
-vuln-class mix are manifest-configurable (`loot_shapes` / `vuln_kinds`). The gym
-now spans **3 exploit shapes across 5 classes**; item 7 (more classes per shape)
-is the remaining fan-out. A `file` store is the in-memory PROCESS-backing
-emulation; a container backing (#252) makes the file system and shell real.
+selection, and the fan-out. The gym now spans **3 exploit shapes across 9
+classes**, each proven end to end by a real HTTP exploit that recovers the flag
+(`tests/test_cyber_staged_generation.py`):
 
-This tracks [#190](https://github.com/vecna-labs/open-range/issues/190) (expand the
-vuln catalog) and lays the staging groundwork for
-[#212](https://github.com/vecna-labs/open-range/issues/212) (enterprise scale).
+| shape | classes |
+| --- | --- |
+| response-leak | `sql_injection`, `ssrf`, `broken_authz`, `idor`, `weak_credentials` |
+| file-read | `path_traversal`, `xxe` |
+| code-exec | `command_injection`, `ssti` |
+
+Loot shape and vuln-class mix are manifest-configurable (`loot_shapes` /
+`vuln_kinds`); decoy files are sampled into the content-addressed graph (not
+hardcoded), so they vary by seed. This tracks
+[#190](https://github.com/vecna-labs/open-range/issues/190) and lays the staging
+groundwork for [#212](https://github.com/vecna-labs/open-range/issues/212).
+
+### Default loot mix, and what stays an emulation
+
+The default weights the response-leak shape (`db: 7`, `file: 3`) — the most common
+real web-exploit class — while still producing file/exec worlds out of the box; a
+study targets a shape or class by overriding `loot_shapes` / `vuln_kinds`. The
+default is a starting point, not a claim about the "right" distribution.
+
+At the `PROCESS` backing the file store is an in-memory map and command execution
+is an in-process interpreter that resolves an injected `cat` / template / entity
+read. The *technique* transfers (`../`, `; cat`, `{{ }}`, XXE), but the file
+system and shell are emulated — a **container backing
+([#252](https://github.com/vecna-labs/open-range/issues/252))** makes them real.
+Because exploits are emulated at `PROCESS`, there is no real shell to sandbox yet;
+exec-sandbox hardening ([#202](https://github.com/vecna-labs/open-range/issues/202))
+lands with the container backing, before adversarial training traffic.
 
 ### Out of scope here
 
-Client-side shapes (XSS, CSRF) need a victim NPC and wait. The LLM diversity layer
-(§2) waits. Sandbox hardening of exec'd exploit code at training scale is
-[#202](https://github.com/vecna-labs/open-range/issues/202).
+Client-side shapes (XSS, CSRF) need a victim NPC and wait. The LLM intra-class
+diversity layer (§2) waits — params vary per build today, but the code *shape*
+per class is fixed; richer structural variety is the documented next step.

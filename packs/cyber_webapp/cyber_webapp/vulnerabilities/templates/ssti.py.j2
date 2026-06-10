@@ -1,0 +1,13 @@
+"""Template handler — the parameter is rendered, so expressions are evaluated."""
+
+
+def handle(query, state):
+    expr = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
+    files = state.get("files", {})
+    # BUG: the input is rendered as a template, so a read("/path") expression
+    # in double braces is evaluated and reads a file from the store.
+    match = re.search(r'read\(\s*["\']([^"\']+)["\']\s*\)', expr)
+    if match is not None and match.group(1) in files:
+        body = str(files[match.group(1)]).encode()
+        return 200, {"Content-Type": "text/plain"}, body
+    return 200, {"Content-Type": "text/plain"}, ("rendered: " + expr).encode()

