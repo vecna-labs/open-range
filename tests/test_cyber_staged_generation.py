@@ -551,3 +551,183 @@ def test_broken_authz_samples_all_trust_contexts() -> None:
         seen.add(params["trust_context"])
         assert "confirm_param" in params and "confirm_value" in params
     assert seen == {"single_token", "dual_factor", "encoded_token"}
+
+
+def test_easy_tier_instruction_names_class_and_gives_recipe() -> None:
+    # The easy/guided tier turns each world into a one-step exploit: the
+    # instruction names the vuln class and gives the flag location + a concrete
+    # payload, so a real agent can solve it (live-validated). Standard stays thin.
+    expect = {
+        "command_injection": "command injection",
+        "ssti": "template injection",
+        "path_traversal": "path traversal",
+        "xxe": "xxe",
+        "sql_injection": "sql injection",
+        "ssrf": "server-side request forgery",
+        "broken_authz": "broken authorization",
+        "idor": "insecure direct object reference",
+        "weak_credentials": "default credentials",
+    }
+    db = {"sql_injection", "ssrf", "broken_authz", "idor", "weak_credentials"}
+    for kind, label in expect.items():
+        loot = "db" if kind in db else "file"
+        snap = _admit(loot, vuln_kinds={kind: 1}, difficulty="easy")
+        task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+        assert task.meta.get("tier") == "easy"
+        assert label in task.instruction.lower(), (kind, task.instruction)
+        assert "`" in task.instruction  # a concrete payload/recipe code span
+
+
+def test_standard_tier_stays_thin_and_aliases_map_to_easy() -> None:
+    std = _admit("db", vuln_kinds={"sql_injection": 1})  # default = standard
+    task = next(t for t in std.tasks if t.meta.get("family") == "webapp.pentest")
+    assert task.meta.get("tier") == "standard"
+    assert "guided" not in task.instruction.lower()
+    for alias in ("guided", "bootstrap", "tutorial"):
+        snap = _admit("db", vuln_kinds={"sql_injection": 1}, difficulty=alias)
+        t = next(x for x in snap.tasks if x.meta.get("family") == "webapp.pentest")
+        assert t.meta.get("tier") == "easy"
+
+
+def test_exploit_hint_covers_every_context_branch() -> None:
+    # A built world samples one context per class, so exercise every per-context
+    # guidance branch here (the easy tier's payload recipe).
+    from cyber_webapp.families.pentest import _exploit_hint
+
+    loc = "/x/secret.bak"
+    assert "$(cat" in _exploit_hint(
+        "command_injection", {"inj_context": "substitution", "target_param": "q"}, loc
+    )
+    assert "echo" in _exploit_hint(
+        "command_injection",
+        {"inj_context": "quoted", "quote": '"', "target_param": "q"},
+        loc,
+    )
+    assert "; cat" in _exploit_hint(
+        "command_injection", {"inj_context": "separator", "target_param": "q"}, loc
+    )
+
+    sqli = {"table": "t", "leak_column": "c", "target_param": "q"}
+    assert "UNION" in _exploit_hint(
+        "sql_injection", {**sqli, "context": "numeric"}, loc
+    )
+    assert _exploit_hint("sql_injection", {**sqli, "context": "double"}, loc)
+    assert _exploit_hint("sql_injection", {**sqli, "context": "single"}, loc)
+
+    pt = {"base_dir": "/a/b", "target_param": "f"}
+    assert "../" in _exploit_hint(
+        "path_traversal", {**pt, "confinement": "relative"}, loc
+    )
+    assert "....//" in _exploit_hint(
+        "path_traversal", {**pt, "confinement": "dotdot_filter"}, loc
+    )
+    assert "absolute" in _exploit_hint(
+        "path_traversal", {**pt, "confinement": "absolute_only"}, loc
+    )
+
+    assert "#}" in _exploit_hint(
+        "ssti", {"render_sink": "comment", "target_param": "x"}, loc
+    )
+    assert "config[" in _exploit_hint(
+        "ssti", {"render_sink": "expr", "target_param": "x"}, loc
+    )
+    assert "{{" in _exploit_hint(
+        "ssti", {"render_sink": "attribute", "target_param": "x"}, loc
+    )
+
+    assert "wrapper" in _exploit_hint(
+        "xxe",
+        {"entity_context": "wrapped_root", "root_element": "feed", "target_param": "d"},
+        loc,
+    )
+    assert "vault" in _exploit_hint(
+        "xxe",
+        {
+            "entity_context": "scheme_prefix",
+            "uri_scheme": "vault://",
+            "target_param": "d",
+        },
+        loc,
+    )
+    assert "file://" in _exploit_hint(
+        "xxe", {"entity_context": "element_content", "target_param": "d"}, loc
+    )
+
+    assert "base64" in _exploit_hint(
+        "idor", {"ref_context": "base64", "target_param": "id"}, loc
+    )
+    assert "prefix" in _exploit_hint(
+        "idor",
+        {"ref_context": "prefixed", "ref_prefix": "u-", "target_param": "id"},
+        loc,
+    )
+    assert _exploit_hint("idor", {"ref_context": "direct", "target_param": "id"}, loc)
+
+    wc = {
+        "weak_user": "a",
+        "weak_password": "b",
+        "password_param": "p",
+        "user_param": "u",
+    }
+    assert _exploit_hint("weak_credentials", {**wc, "cred_format": "combined"}, loc)
+    assert "base64" in _exploit_hint(
+        "weak_credentials", {**wc, "cred_format": "basic"}, loc
+    )
+    assert _exploit_hint("weak_credentials", {**wc, "cred_format": "pair"}, loc)
+
+    ba = {"trust_header": "H", "expected_value": "v"}
+    assert "Confirm" in _exploit_hint(
+        "broken_authz",
+        {
+            **ba,
+            "trust_context": "dual_factor",
+            "confirm_param": "X-Confirm",
+            "confirm_value": "1",
+        },
+        loc,
+    )
+    assert "hex" in _exploit_hint(
+        "broken_authz", {**ba, "trust_context": "encoded_token"}, loc
+    )
+    assert _exploit_hint("broken_authz", {**ba, "trust_context": "single_token"}, loc)
+
+    ss = {"internal_host": "h", "target_param": "u"}
+    assert "gopher" in _exploit_hint("ssrf", {**ss, "ssrf_filter": "scheme_block"}, loc)
+    assert "@" in _exploit_hint(
+        "ssrf", {**ss, "ssrf_filter": "host_allowlist", "allowed_host": "ok"}, loc
+    )
+    assert _exploit_hint(
+        "ssrf", {**ss, "ssrf_filter": "decimal_ip", "internal_decimal": "1"}, loc
+    )
+
+    assert _exploit_hint("unknown_kind", {}, loc)
+
+
+def test_guided_helpers_handle_degenerate_graphs() -> None:
+    # Defensive fallbacks in the guided-instruction helpers (the family only
+    # builds a guided task when the chain exists, but cover the guards anyway).
+    from cyber_webapp.families.pentest import _flag_location, _oracle_vuln
+    from cyber_webapp.ontology import ONTOLOGY_ID
+    from graphschema import Edge, Node
+
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+    graph.add_node(Node(id="ep", kind="endpoint", attrs={}))
+    graph.add_node(Node(id="flag", kind="secret", attrs={}))
+    assert _oracle_vuln(graph, "ep") is None  # no vuln at all
+    assert _flag_location(graph, "flag") == ""  # no holding record
+
+    # A vuln that affects a different node is not the oracle for ``ep``.
+    graph.add_node(Node(id="other", kind="endpoint", attrs={}))
+    graph.add_node(Node(id="v", kind="vulnerability", attrs={"kind": "sql_injection"}))
+    graph.add_edge(Edge(id="a1", kind="affects", src="v", dst="other", attrs={}))
+    assert _oracle_vuln(graph, "ep") is None
+
+    # ...but a vuln affecting the SERVICE that exposes ``ep`` is found.
+    graph.add_node(Node(id="svc", kind="service", attrs={}))
+    graph.add_edge(Edge(id="x1", kind="exposes", src="svc", dst="ep", attrs={}))
+    graph.add_edge(Edge(id="a2", kind="affects", src="v", dst="svc", attrs={}))
+    assert _oracle_vuln(graph, "ep") is not None
+
+    # A holds edge pointing at a missing record node falls through to "".
+    graph.add_edge(Edge(id="h1", kind="holds", src="ghost", dst="flag", attrs={}))
+    assert _flag_location(graph, "flag") == ""
