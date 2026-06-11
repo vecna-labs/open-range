@@ -5,30 +5,27 @@ def handle(query, state):
     document = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
     files = state.get("files", {})
 
-    # Entity context, sampled per build. The flag is always exfiltrated by a
-    # SYSTEM ``file://`` external general entity expanded by the REAL parser, but
-    # the surrounding DTD/document must be STRUCTURED differently per context, so
-    # the agent adapts the document shape instead of replaying one payload. A
-    # document built for the wrong context yields no leak:
+    # The flag is exfiltrated by a SYSTEM external general entity expanded by the
+    # parser, but the document shape that triggers a leak differs per context; a
+    # document built for the wrong context yields nothing:
     #   element_content -> the entity is reflected from element text under any
     #                      root: ``<!DOCTYPE x [<!ENTITY e SYSTEM
     #                      "file://PATH">]><x>&e;</x>``.
-    #   wrapped_root    -> the handler only reflects text inside a specific root
-    #                      element, so the SAME entity must be wrapped in
-    #                      ``<ROOT>&e;</ROOT>``; any other root reflects nothing.
+    #   wrapped_root    -> only text inside a specific root element is reflected,
+    #                      so the entity must be wrapped in ``<ROOT>&e;</ROOT>``;
+    #                      any other root reflects nothing.
     #   scheme_prefix   -> the resolver only honors a SYSTEM id carrying a
-    #                      specific URI scheme, so the agent must build the
-    #                      SYSTEM literal with that wrapper (``SCHEME + PATH``)
-    #                      instead of ``file://``; a ``file://`` id resolves to
-    #                      empty. (Mirrors real XXE wrapper-matching, e.g.
-    #                      ``php://filter/...resource=``.)
+    #                      specific URI scheme, so the SYSTEM literal needs that
+    #                      wrapper (``SCHEME + PATH``) instead of ``file://``; a
+    #                      ``file://`` id resolves to empty. (Mirrors real XXE
+    #                      wrapper-matching, e.g. ``php://filter/...resource=``.)
     context = {{ (entity_context | default("element_content")) | tojson }}
     root_element = {{ (root_element | default("data")) | tojson }}
     uri_scheme = {{ (uri_scheme | default("file://")) | tojson }}
 
-    # BUG: external general entities are enabled and a SYSTEM entity is resolved
-    # against the store, so a well-formed DOCTYPE/ENTITY/reference expands the
-    # file into the response. A malformed document does nothing.
+    # External general entities are enabled and a SYSTEM entity is resolved
+    # against the file store, so a well-formed DOCTYPE/ENTITY/reference expands
+    # the file into the response.
     class _Resolver(xml.sax.handler.EntityResolver):
         def resolveEntity(self, public_id, system_id):
             # element_content/wrapped_root accept the classic ``file://``; the
@@ -48,13 +45,13 @@ def handle(query, state):
 
     class _Capture(xml.sax.handler.ContentHandler):
         def __init__(self):
-            # Three DISJOINT positions, so no payload rides across contexts:
+            # Each context reflects at a disjoint position:
             #   scheme_prefix   -> reflect anywhere (its gate is the URI scheme).
-            #   element_content -> reflect ONLY the document root's DIRECT text
+            #   element_content -> reflect only the document root's direct text
             #                      (depth 1), so a nested entity is ignored.
-            #   wrapped_root    -> reflect ONLY inside the sampled child element,
-            #                      where the entity must be NESTED (depth >= 2) --
-            #                      which element_content (depth 1 only) rejects.
+            #   wrapped_root    -> reflect only inside the sampled child element,
+            #                      where the entity is nested (depth >= 2), which
+            #                      element_content's depth-1 check rejects.
             self._depth = 0
             self._reflecting = context == "scheme_prefix"
 

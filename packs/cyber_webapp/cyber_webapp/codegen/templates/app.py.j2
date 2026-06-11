@@ -67,7 +67,6 @@ _DISCOVERY = {{ discovery | tojson }}
 
 
 def _index(query, state):
-    """Public landing page — always available so probes have a route."""
     del query, state
     return 200, {"Content-Type": "text/html"}, _index_html()
 
@@ -82,7 +81,6 @@ def _index_html() -> bytes:
 
 
 def _openapi(query, state):
-    """Public OpenAPI-ish discovery endpoint."""
     del query, state
     return (
         200,

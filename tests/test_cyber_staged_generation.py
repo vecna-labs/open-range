@@ -316,8 +316,8 @@ def _exploit_url(kind: str, graph: WorldGraph, base: str) -> str:
 def test_fanout_class_episode_recovers_flag(
     loot: str, kind: str, tmp_path: Path
 ) -> None:
-    # Every class is forced as the oracle and solved by its own real,
-    # context-appropriate exploit through the live episode harness.
+    # Each class is forced as the oracle and solved by its own
+    # context-appropriate exploit; the recovered body must contain the flag.
     snap = _admit(loot, vuln_kinds={kind: 1})
     expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
@@ -373,7 +373,7 @@ def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:
                 return ""
             return body
 
-        # A real agent probes conventional config locations.
+        # The config sits at one of several conventional paths; probe each.
         disclosed = ""
         for conf in (
             "/etc/app/settings.conf",
@@ -395,9 +395,8 @@ def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:
 def test_path_traversal_feedback_distinguishes_attempt_from_benign(
     tmp_path: Path,
 ) -> None:
-    # Wrong-context feedback: a neutralized traversal attempt returns 403 (right
-    # vuln class, wrong technique) while a benign filename miss returns 404 — so
-    # the agent gets a learnable signal. Neither recovers the flag.
+    # A neutralized traversal attempt returns 403 (right vuln class, wrong
+    # technique); a benign filename miss returns 404. Neither recovers the flag.
     snap = _admit("file", vuln_kinds={"path_traversal": 1})
     url_path, param, _ = _path_traversal_target(snap.graph)
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
@@ -554,9 +553,8 @@ def test_broken_authz_samples_all_trust_contexts() -> None:
 
 
 def test_easy_tier_instruction_names_class_and_gives_recipe() -> None:
-    # The easy/guided tier turns each world into a one-step exploit: the
-    # instruction names the vuln class and gives the flag location + a concrete
-    # payload, so a real agent can solve it (live-validated). Standard stays thin.
+    # The easy tier's instruction names the vuln class and includes a concrete
+    # payload recipe (a backtick code span), not just an abstract goal.
     expect = {
         "command_injection": "command injection",
         "ssti": "template injection",

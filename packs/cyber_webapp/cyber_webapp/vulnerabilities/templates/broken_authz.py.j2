@@ -1,40 +1,26 @@
 """Role-gated handler — trusts a client-supplied value as the role assertion.
 
-Note: the runtime delivers only the parsed query string to ``handle`` (see
-codegen/templates/app.py.j2 — ``query = parse_qs(...)``; request headers are
-never read). So the "trusted" value the agent forges is a QUERY PARAMETER whose
-name is header-styled (e.g. ``X-User-Role``); the mechanic is unchanged — a
-client-controlled value is trusted with no real provenance check.
+The runtime only passes the parsed query string to ``handle`` (request headers
+are never read), so the trusted value is a QUERY PARAMETER with a header-styled
+name (e.g. ``X-User-Role``): a client-controlled value trusted with no real
+provenance check.
 """
 import json
 
 
 def handle(query, state):
-    # Trust context, sampled per build. Each grants on a DIFFERENT forged
-    # request and REJECTS the other contexts' forges, so no single payload
-    # replays across builds (the contexts are mutually exclusive, not a
-    # permissiveness ladder):
-    #   single_token -> the role param must equal the expected value AND the
-    #                   build's confirm param must be ABSENT. A request that
-    #                   also carries the confirm param (the dual_factor forge)
-    #                   is rejected, so the dual payload does not solve here.
-    #   dual_factor  -> the role param must equal the expected value AND the
-    #                   confirm param must equal its on-value. A lone role param
-    #                   (the single_token forge) is rejected, so the agent must
-    #                   supply both.
-    #   encoded_token-> the role param must carry the expected value HEX-encoded
-    #                   AND the confirm param must be ABSENT. The plaintext value
-    #                   (the single_token forge) no longer matches and a confirm
-    #                   param (the dual_factor forge) is rejected, so neither
-    #                   other payload solves here.
+    # The three contexts are mutually exclusive: each grants on a different
+    # request shape and rejects the others'.
+    #   single_token  -> role param equals expected AND no confirm param present.
+    #   dual_factor   -> role param equals expected AND confirm param equals its
+    #                    on-value.
+    #   encoded_token -> role param carries expected HEX-encoded AND no confirm
+    #                    param present.
     trust_context = {{ (trust_context | default("single_token")) | tojson }}
     confirm_param = {{ (confirm_param | default("X-Confirm")) | tojson }}
     confirm_value = {{ (confirm_value | default("1")) | tojson }}
-    # The pool of confirm-style elevation params. single_token and encoded_token
-    # reject a request carrying ANY of them (not just this build's own
-    # ``confirm_param``), so a dual_factor forge memorized on one build cannot be
-    # replayed onto a single/encoded build that happens to share the same role
-    # header+value — closing the cross-build replay hole, not just the 3x3 one.
+    # single_token and encoded_token reject a request carrying ANY of these
+    # params, not just this build's own ``confirm_param``.
     confirm_pool = {{ (confirm_pool | default(["X-Confirm", "X-Internal", "X-Verified", "X-Elevated"])) | tojson }}
 
     def _param(name):
@@ -43,24 +29,20 @@ def handle(query, state):
 
     role = _param({{ trust_header | tojson }})
     expected = {{ expected_value | tojson }}
-    # Presence (not value) of any confirm-style param is what distinguishes a
-    # dual_factor forge from a single/encoded one, so single_token and
-    # encoded_token reject any request carrying one.
+    # Presence, not value, of any confirm param distinguishes a dual_factor
+    # request from a single/encoded one.
     confirm_present = any(name in query for name in confirm_pool)
 
     if trust_context == "encoded_token":
-        # The handler decodes the trusted param before comparing, so the wire
-        # value is the hex encoding of the expected role, not the plain string;
-        # a stray confirm param marks a foreign (dual) forge and is rejected.
+        # Compares against the hex encoding of the expected role, so the wire
+        # value is the encoding, not the plain string.
         authorized = role == expected.encode().hex() and not confirm_present
     elif trust_context == "dual_factor":
-        # A second client-controlled gate must also be toggled on. Both are
-        # trusted with no real check, but a single forged param is insufficient.
+        # A second client-controlled gate must also be toggled on; both are
+        # trusted with no real check.
         gate = _param(confirm_param)
         authorized = role == expected and gate == confirm_value
     else:  # single_token
-        # The classic one-param forge, but tightened: a confirm param present
-        # means this is a dual_factor forge aimed at the wrong build, so reject.
         authorized = role == expected and not confirm_present
 
     if not authorized:

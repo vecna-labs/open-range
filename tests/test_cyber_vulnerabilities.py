@@ -31,7 +31,6 @@ from graphschema import Node, Visibility
 
 
 def _exec_handler(source: str) -> Any:
-    """Compile rendered source and return the ``handle`` function."""
     namespace: dict[str, Any] = {}
     exec(compile(source, "<rendered>", "exec"), namespace)
     return namespace["handle"]
@@ -69,7 +68,7 @@ def test_vulns_for_kind_filters_by_target() -> None:
 
 
 def test_chain_metadata() -> None:
-    """SSRF enables broken_authz (per Marinade-style chain modeling)."""
+    """SSRF enables broken_authz; SQL injection enables a data-store dump."""
     assert "broken_authz" in SSRF.enables
     assert "data_store_dump" in SQL_INJECTION.enables
 
@@ -103,7 +102,6 @@ def test_merge_catalog_overrides() -> None:
     )
     merged = merge_catalog(CATALOG, {custom.id: custom})
     assert merged["sql_injection"].family == "custom"
-    # Other entries preserved.
     assert merged["ssrf"] is SSRF
 
 
@@ -114,7 +112,6 @@ def test_sql_injection_template_renders() -> None:
     )
     assert "def handle(query, state):" in src
     assert "execute(sql)" in src
-    # Compiles.
     compile(src, "<test>", "exec")
 
 
@@ -284,12 +281,9 @@ def test_catalog_entry_drives_hidden_vulnerability_node() -> None:
 
 
 def test_every_catalog_entry_targets_a_real_ontology_kind() -> None:
-    """Every catalog entry's ``target_kinds`` are kinds the new ontology declares.
-
-    The ``affects`` edge in the new ontology accepts
-    ``(vulnerability, endpoint)`` and ``(vulnerability, service)``; the
-    catalog must restrict ``target_kinds`` to that domain or the
-    sampler would emit an edge the conformance check would reject.
+    """The ``affects`` edge only accepts ``(vulnerability, endpoint)`` and
+    ``(vulnerability, service)``, so ``target_kinds`` must stay within that
+    domain or the sampler emits an edge that fails conformance.
     """
     allowed = {"endpoint", "service"}
     for vid, v in CATALOG.items():

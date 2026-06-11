@@ -20,8 +20,8 @@ class Vulnerability:
     description: str
     target_kinds: frozenset[str]
     template: str
-    # How the exploit reaches the flag — the unit of realizer + feasibility
-    # work; the loot stage picks a vuln whose shape matches the placed loot.
+    # How the exploit reaches the flag; the loot stage picks a vuln whose
+    # shape matches the placed loot.
     shape: str = "response_leak"
     requires: frozenset[str] = frozenset()
     enables: frozenset[str] = frozenset()
@@ -113,7 +113,7 @@ BROKEN_AUTHZ = Vulnerability(
     target_kinds=frozenset({"endpoint"}),
     template="broken_authz.py.j2",
     shape="response_leak",
-    requires=frozenset(),  # primary; chains often start here or via SSRF
+    requires=frozenset(),
     attrs_schema={
         "trust_header": "HTTP header name the endpoint trusts (e.g. X-User-Role)",
         "expected_value": "value that grants admin access (e.g. 'admin')",
@@ -251,12 +251,8 @@ def vulns_for_kind(kind: str) -> tuple[Vulnerability, ...]:
 
 
 def _jinja_env() -> Environment:
-    """Build a Jinja2 environment scoped to the bundled templates dir.
-
-    ``StrictUndefined`` raises on missing variables — callers must supply
-    every parameter the template references. Autoescape is disabled because
-    we're rendering Python source, not HTML.
-    """
+    # StrictUndefined makes a missing template parameter fail fast; autoescape
+    # is off because the output is Python source, not HTML.
     return Environment(
         loader=FileSystemLoader(str(VULN_TEMPLATES_DIR)),
         undefined=StrictUndefined,

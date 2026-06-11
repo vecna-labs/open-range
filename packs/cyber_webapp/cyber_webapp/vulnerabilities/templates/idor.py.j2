@@ -5,10 +5,9 @@ def handle(query, state):
     raw = (query.get({{ target_param | tojson }}, [""]) or [""])[0]
     context = {{ (ref_context | default("direct")) | tojson }}
     prefix = {{ (ref_prefix | default("user-")) | tojson }}
-    # Reference-encoding context: how the client-supplied id maps to the real
-    # db key. The lookup is a real parametrized query either way — only the
-    # decoding of the reference changes, so the agent must supply the id in the
-    # form this handler expects (raw key, base64 of the key, or a prefixed ref).
+    # Decode the client-supplied reference into the real db key. The lookup
+    # below is parametrized either way; only the reference encoding differs
+    # (raw key, base64 of the key, or a prefixed ref).
     if context == "base64":
         try:
             rid = base64.b64decode(raw).decode("utf-8")

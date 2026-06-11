@@ -33,11 +33,8 @@ from openrange_pack_sdk import Backing, RuntimeHandle
 
 
 def _sample_graph(seed: int = 0) -> WorldGraph:
-    """A graph drawn the way admission draws it — same path the runtime takes.
-
-    Pinned to ``db`` loot so these response-leak realizer assertions are
-    shape-deterministic; file-loot realization is covered separately.
-    """
+    # Pinned to db loot so the response-leak realizer assertions below have a
+    # deterministic shape; file-loot realization is covered separately.
     build_result = (
         WebappPack()
         .make_builder(None)

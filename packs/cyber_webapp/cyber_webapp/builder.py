@@ -41,11 +41,11 @@ class WebappBuilder(ProceduralBuilder):
         )
 
     def _effective_prior(self, manifest: Manifest) -> PackPrior:
-        # Manifest knobs fold into the prior so a world's scale and exploit
-        # mix are configurable without a hand-built PackPrior. Determinism is
-        # unchanged: the seed still selects within the (overridden) ranges and
-        # weights. ``scale`` -> count_ranges; ``loot_shapes`` / ``vuln_kinds``
-        # -> kind_weights (the loot shape and decoy mix — see DESIGN.md).
+        # Manifest knobs override the prior's topology so a world is
+        # configurable without a hand-built PackPrior, while staying
+        # deterministic: the seed still selects within the overridden ranges
+        # and weights. ``scale`` feeds count_ranges; ``loot_shapes`` /
+        # ``vuln_kinds`` feed kind_weights.
         base = self.prior if self.prior is not None else default_prior()
         scale = manifest.get("scale")
         weight_keys = [k for k in ("loot_shapes", "vuln_kinds") if k in manifest]

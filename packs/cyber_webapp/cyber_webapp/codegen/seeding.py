@@ -85,8 +85,8 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
 
     schema = _derive_sql_schema(graph)
     if loot_shape == "file":
-        # Flag is in the file map only; db records / secrets carry decoys so a
-        # stray response-leak vuln can't shortcut the file-read challenge.
+        # Flag lives in the file map only; db records / secrets carry decoys
+        # so a stray response-leak vuln can't reach it.
         records_for_schema = _retarget_records(db_records, schema, flag="")
         secrets_out: dict[str, str] = dict(secrets)
         files_out = _populate_files(files)
@@ -125,7 +125,6 @@ def _record_holding(graph: WorldGraph, secret_id: str) -> str:
 
 
 def _populate_files(files: Mapping[str, str]) -> dict[str, str]:
-    # The flag file plus the decoy files the sampler placed in the store.
     return {k: str(v) for k, v in files.items()}
 
 

@@ -1,12 +1,11 @@
 """URL-fetching handler — a client parameter is used as a server-side fetch
 target, and an internal resource that the filter is meant to protect leaks the
-secret when the agent's URL reaches it.
+secret when the supplied URL reaches it.
 
-The flag path is kept in-process: instead of a real network fetch to an
-attacker-supplied host (nondeterministic and unsafe), the handler recognizes
-when the supplied URL resolves to the designated INTERNAL host and returns
-``state["secrets"]["flag"]`` — modeling an SSRF that reaches an internal
-metadata/admin endpoint exposing the secret.
+The fetch is kept in-process so it is deterministic: instead of opening a socket
+to the supplied host, the handler recognizes when the URL resolves to the
+designated INTERNAL host and returns ``state["secrets"]["flag"]`` — modeling an
+SSRF that reaches an internal metadata/admin endpoint exposing the secret.
 """
 import json
 from urllib.parse import urlparse
@@ -20,10 +19,9 @@ def handle(query, state):
 
     internal_host = {{ (internal_host | default("169.254.169.254")) | tojson }}
     allowed_host = {{ (allowed_host | default("allowed.example.com")) | tojson }}
-    # Filter context, sampled per build. The three filters are DISJOINT: each
-    # admits exactly ONE evasion and actively rejects the other two, so a payload
-    # that beats one build's filter is refused by the other two (no cross-build
-    # replay). All three still reach the SAME internal resource:
+    # The three filters are DISJOINT: each admits exactly ONE evasion and
+    # actively rejects the other two, while all three still reach the SAME
+    # internal resource.
     #   scheme_block   -> http/https are rejected outright, so ONLY a non-web
     #                     scheme (gopher://<internal_host>/...) reaches it; the
     #                     allowlist ``@``-trick and the decimal-IP URL are http
@@ -50,10 +48,9 @@ def handle(query, state):
     # hands to the socket layer, which is why naive string filters are bypassable.
     host = (parsed.hostname or "").lower()
 
-    # Decimal (integer) form of the internal IPv4, computed by hand so the check
-    # stays self-verifying and needs no ``socket``/``ipaddress`` import. Empty
-    # string when ``internal_host`` is not a dotted-quad (then decimal_ip can
-    # never match — sampling pairs decimal_ip only with IPv4 internal hosts).
+    # Decimal (integer) form of the internal IPv4, computed by hand to avoid a
+    # ``socket``/``ipaddress`` import. Empty string when ``internal_host`` is not
+    # a dotted-quad, in which case the decimal_ip filter can never match.
     def _ipv4_to_decimal(h):
         parts = h.split(".")
         if len(parts) != 4:

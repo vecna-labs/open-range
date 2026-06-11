@@ -6,10 +6,9 @@ def handle(query, state):
     files = state.get("files", {})
     readers = {"cat", "head", "tail", "more", "less", "nl", "strings", "xxd", "od"}
 
-    # Injection CONTEXT, sampled per build. All three concatenate input into a
-    # shell command, but each leaves open a DIFFERENT injection vector and
-    # naively closes the other two, so one memorized payload can't ride across
-    # builds (the contexts are mutually exclusive, not nested in permissiveness):
+    # All three contexts concatenate input into a shell command, but each leaves
+    # open a DIFFERENT injection vector and naively closes the other two. The
+    # contexts are mutually exclusive, not nested in permissiveness:
     #   separator     -> input is concatenated UNQUOTED, but a sanitizer strips
     #                    ``$(...)`` and backticks first, so command substitution
     #                    is dead. Only a metacharacter SEPARATOR (``;`` ``|``
@@ -18,10 +17,10 @@ def handle(query, state):
     #                    second command is dead. Only command SUBSTITUTION
     #                    (``$(reader path)`` / ``` `reader path` ```) fires.
     #   quoted        -> input is wrapped in a sampled quote AND ``$(...)`` /
-    #                    backticks are stripped, so the agent must first BREAK
-    #                    the quote and then separate. A bare ``; reader`` stays
-    #                    inside the quoted literal (one token, no split) and a
-    #                    ``$(...)`` is stripped — both fail.
+    #                    backticks are stripped, so the quote must be BROKEN
+    #                    before separating. A bare ``; reader`` stays inside the
+    #                    quoted literal (one token, no split) and a ``$(...)`` is
+    #                    stripped — both fail.
     inj_context = {{ (inj_context | default("separator")) | tojson }}
     quote = {{ (quote | default("'")) | tojson }}
 
@@ -58,10 +57,9 @@ def handle(query, state):
         command = re.sub(r"\$\([^()]*\)|`[^`]*`", "", command)
         punctuation = ";|&"
 
-    # A real, quote-aware tokenizer. Separators only split when they fall
-    # OUTSIDE quotes, so in the ``quoted`` context a bare ``; reader`` lands
-    # inside the wrapping quote as ordinary text and never becomes a separator —
-    # the agent has to close the quote first.
+    # Quote-aware tokenizer: separators only split when they fall OUTSIDE quotes,
+    # so in the ``quoted`` context a bare ``; reader`` lands inside the wrapping
+    # quote as ordinary text and never becomes a separator.
     lexer = shlex.shlex(command, punctuation_chars=punctuation)
     lexer.whitespace_split = True
     try:
@@ -84,9 +82,9 @@ def handle(query, state):
 
     if leaked:
         return 200, {"Content-Type": "text/plain"}, "\n".join(leaked).encode()
-    # Feedback: an injection-shaped attempt (shell metacharacters) that this
-    # context neutralized gets a distinct response, vs a benign diagnostic echo.
-    # No flag either way, so the mutual-exclusivity matrix is unchanged.
+    # An injection-shaped attempt (shell metacharacters) that this context
+    # neutralized gets a distinct response from a benign diagnostic echo; neither
+    # path leaks a file, so this only signals the attempt, never rewards it.
     if any(ch in target for ch in ";|&$`"):
         return 200, {"Content-Type": "text/plain"}, b"diagnostic: input rejected"
     return 200, {"Content-Type": "text/plain"}, ("PING " + target + ": 1 packets").encode()
