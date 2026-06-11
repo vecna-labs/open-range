@@ -255,6 +255,34 @@ store), there is nothing to sandbox yet;
 exec-sandbox hardening ([#202](https://github.com/vecna-labs/open-range/issues/202))
 lands with the container backing, before adversarial training traffic.
 
+### Trainability: live-agent validation and the difficulty tier
+
+Scripted-oracle tests (which exploit using the flag path read straight from the
+graph) prove a world is *solvable by construction* — they do **not** prove a real
+agent can solve it. Driving a real LLM agent through the actual episode harness
+(`run.run_episode` with a `claude -p` solver) revealed that the validity-hardened
+**standard** tier is too hard for a fresh agent: it solved only ~2 of 9 classes,
+because the thin instruction left it unable to classify the vuln and the
+discovery recon chain made file-loot a two-stage exploit it couldn't walk
+(`command_injection` failed even with rich hints and a 20-minute budget). Validity
+(replay-resistance, discovery-not-brute-force) and trainability trade off, and the
+hardening pushed past one-step real-agent solvability.
+
+So the gym carries a `difficulty` manifest knob:
+
+| tier | instruction | use |
+| --- | --- | --- |
+| `standard` (default) | thin (endpoint only); blind recon + classification, mutually-exclusive contexts | the H2 transfer **measurement** target |
+| `easy` / `guided` | names the vuln class, the flag's exact location, the sampled context, and a one-step payload recipe | **bootstrapping** — an agent learns to *execute* exploits before it has to *discover* them |
+
+The agent still crafts and executes the real exploit at `easy`; only the recon and
+classification are removed. A live-agent matrix (9 classes × 2 contexts, a real
+agent through the real harness) solves **18/18 at `easy`** versus ~3/22 at
+`standard` — the gym is real-agent-trainable via the `easy` tier and a
+manifest-driven easy→standard curriculum. (Auto-curriculum via `auto_evolve` and a
+richer default instruction are the natural next steps —
+[#258](https://github.com/vecna-labs/open-range/issues/258).)
+
 ### Out of scope here
 
 Client-side shapes (XSS, CSRF) need a victim NPC and wait. The LLM intra-class
