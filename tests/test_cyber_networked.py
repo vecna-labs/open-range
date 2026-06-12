@@ -58,34 +58,33 @@ def test_realize_services_splits_per_service_and_confines_the_flag() -> None:
     assert "/svc/" not in internal.build_files["app.py"]
 
 
-def test_todays_worlds_stay_single_container() -> None:
-    # No regression: today's generator co-locates the SSRF with the flag on one internal
-    # service, so a world isn't yet "networked-shaped" (SSRF on a public service) — it
-    # stays one container. Native networked-shape generation is the follow-up.
-    for snap in (_admit_ssrf(), _admit_cmdi()):
-        runtime = WebappPack().realize(snap.graph, Backing.CONTAINER)
-        assert isinstance(runtime, ContainerWebappRuntime)
-        assert not isinstance(runtime, NetworkedContainerWebappRuntime)
-
-
-def test_networked_shaped_world_routes_to_networked_backing() -> None:
-    # When a world IS networked-shaped (an SSRF reaches a public service's endpoint),
-    # the CONTAINER backing routes it to the networked runtime.
-    from graphschema import Edge
-
+def test_ssrf_world_is_networked_by_construction() -> None:
+    # Generation re-homes the SSRF onto a PUBLIC service's endpoint — the pivot the
+    # agent attacks — so it reaches the flag only across the network. That public-facing
+    # shape is exactly what routes the world to the networked backing.
     graph = _admit_ssrf().graph
-    public = next(
-        n for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
-    )
-    public_ep = next(e.dst for e in graph.out_edges(public.id, "exposes"))
     ssrf = next(
         n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
     )
-    graph.add_edge(
-        Edge(id="affects_ssrf_public", kind="affects", src=ssrf.id, dst=public_ep)
-    )
+    affected = {e.dst for e in graph.out_edges(ssrf.id, "affects")}
+    public_eps = {
+        e.dst
+        for svc in graph.by_kind("service")
+        if svc.attrs.get("exposure") == "public"
+        for e in graph.out_edges(svc.id, "exposes")
+    }
+    assert affected & public_eps  # the SSRF sits on a public endpoint
+
     runtime = WebappPack().realize(graph, Backing.CONTAINER)
     assert isinstance(runtime, NetworkedContainerWebappRuntime)
+
+
+def test_non_networked_world_stays_single_container() -> None:
+    # A world whose vuln sits directly on the flag's own service (no public-service
+    # pivot) isn't networked-shaped, so the CONTAINER backing runs it as one container.
+    runtime = WebappPack().realize(_admit_cmdi().graph, Backing.CONTAINER)
+    assert isinstance(runtime, ContainerWebappRuntime)
+    assert not isinstance(runtime, NetworkedContainerWebappRuntime)
 
 
 def _admit_cmdi() -> Snapshot:
@@ -121,7 +120,8 @@ def _docker_available() -> bool:
 def test_networked_runtime_isolates_internal_services() -> None:
     # The public service is reachable from the host; an internal service is reachable
     # only from inside the network, by name — real network position. (Constructed
-    # directly: today's worlds don't yet auto-route here, see the routing test above.)
+    # directly to isolate the runtime; an SSRF world also auto-routes here — see the
+    # routing test above.)
     runtime = NetworkedContainerWebappRuntime(_admit_ssrf().graph, Backing.CONTAINER)
     try:
         runtime.reset()

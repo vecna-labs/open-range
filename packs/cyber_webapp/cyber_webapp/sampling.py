@@ -507,6 +507,7 @@ def sample_graph(
         oracle_service_id=deepest_service_id,
         oracle_shapes=_ORACLE_SHAPES_FOR_LOOT[loot_shape],
     )
+    _networkize_ssrf(graph)
 
     return graph
 
@@ -904,6 +905,120 @@ def default_vuln_params(
             "cred_format": rng.choice(["pair", "combined", "basic"]),
         }
     return {}
+
+
+# The internal metadata path the SSRF pivots to (a cloud-metadata-style endpoint). Not
+# "/", which the runtime's readiness probe hits — that path must never serve the flag.
+_METADATA_PATH = "/latest/meta-data/credential"
+
+
+def _flag_service_id(graph: WorldGraph) -> str | None:
+    flag = next(
+        (n for n in graph.by_kind("secret") if n.attrs.get("kind") == "flag"), None
+    )
+    if flag is None:
+        return None
+    record = next(
+        (e.src for e in graph.edges.values() if e.kind == "holds" and e.dst == flag.id),
+        None,
+    )
+    store = next(
+        (
+            e.src
+            for e in graph.edges.values()
+            if e.kind == "contains" and e.dst == record
+        ),
+        None,
+    )
+    return next(
+        (
+            e.src
+            for e in graph.edges.values()
+            if e.kind == "backed_by" and e.dst == store
+        ),
+        None,
+    )
+
+
+def _networkize_ssrf(graph: WorldGraph) -> None:
+    """Turn an SSRF world into a real networked chain: move the SSRF onto the public web
+    service and pivot it to an internal metadata endpoint that serves the flag.
+
+    Today's sampler co-locates the SSRF with the flag on one internal service. This
+    makes the flag reachable only by pivoting across the network (SSRF on the public
+    service -> an internal ``metadata_credential_leak``), so the world is networked by
+    construction. It stays solvable in-process for the PROCESS backing (the SSRF still
+    reads the shared flag); the CONTAINER backing makes the pivot a real fetch.
+    """
+    ssrf = next(
+        (n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"),
+        None,
+    )
+    if ssrf is None:
+        return
+    public = next(
+        (n for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"),
+        None,
+    )
+    flag_service_id = _flag_service_id(graph)
+    if public is None or flag_service_id is None or flag_service_id == public.id:
+        return  # single-service / flag-on-public: nothing to pivot to
+    public_ep = next((e.dst for e in graph.out_edges(public.id, "exposes")), None)
+    if public_ep is None:
+        return
+    flag_service = graph.nodes[flag_service_id]
+    flag_name = str(flag_service.attrs.get("name", flag_service_id))
+
+    # Re-home the SSRF onto the public endpoint, aimed at the internal service by name.
+    for edge in graph.edges.values():
+        if edge.kind == "affects" and edge.src == ssrf.id:
+            edge.dst = public_ep
+            edge.attrs = {
+                "injection_site": str(
+                    graph.nodes[public_ep].attrs.get("path", "service")
+                )
+            }
+            break
+    params = dict(ssrf.attrs.get("params", {}))
+    params["internal_host"] = flag_name
+    params["internal_path"] = _METADATA_PATH
+    params["internal_decimal"] = ""  # the target is a hostname, not an IP
+    if params.get("ssrf_filter") == "decimal_ip":
+        params["ssrf_filter"] = "host_allowlist"
+    ssrf.attrs["params"] = params
+
+    # The internal half: a metadata endpoint on the flag service that serves the flag,
+    # plus the vuln that makes the flag reachable by construction (oracle_path_exists).
+    meta_ep_id = f"ep_{flag_name}_metadata"
+    graph.add_node(
+        Node(
+            id=meta_ep_id,
+            kind="endpoint",
+            attrs={
+                "path": _METADATA_PATH,
+                "public_url": _public_url(flag_service.attrs, _METADATA_PATH),
+                "method": "GET",
+                "auth_required": False,
+                "behavior_ref": "metadata.default",
+            },
+        )
+    )
+    _add_edge(graph, "exposes", flag_service_id, meta_ep_id)
+    meta_vuln_id = "vuln_metadata_credential_leak_0"
+    graph.add_node(
+        Node(
+            id=meta_vuln_id,
+            kind="vulnerability",
+            attrs={
+                "kind": "metadata_credential_leak",
+                "family": "code_web",
+                "params": {},
+            },
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    _add_edge(graph, "affects", meta_vuln_id, meta_ep_id)
+    _add_edge(graph, "enables", ssrf.id, meta_vuln_id)
 
 
 def _add_edge(
