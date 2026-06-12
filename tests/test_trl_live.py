@@ -262,7 +262,6 @@ def test_live_grpo_one_step_cyber_container(tmp_path: Path) -> None:
         if "pentest" in row["task_id"]
     ]
     dataset = datasets.Dataset.from_list(rows)
-    # The change under test: CONTAINER backing threaded through the web factory.
     factory = make_web_environment_factory(
         pack, [snapshot], tmp_path / "envs", backing=Backing.CONTAINER
     )

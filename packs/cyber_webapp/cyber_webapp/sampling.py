@@ -947,15 +947,11 @@ def _flag_service_id(graph: WorldGraph) -> str | None:
 
 
 def _networkize_ssrf(graph: WorldGraph) -> None:
-    """Turn an SSRF world into a real networked chain: move the SSRF onto the public web
-    service and pivot it to an internal metadata endpoint that serves the flag.
-
-    Today's sampler co-locates the SSRF with the flag on one internal service. This
-    makes the flag reachable only by pivoting across the network (SSRF on the public
-    service -> an internal ``metadata_credential_leak``), so the world is networked by
-    construction. It stays solvable in-process for the PROCESS backing (the SSRF still
-    reads the shared flag); the CONTAINER backing makes the pivot a real fetch.
-    """
+    # The sampler co-locates the SSRF with the flag on one internal service.
+    # Re-home it onto the public service and add an internal metadata endpoint
+    # that serves the flag, so the flag is reachable only by pivoting across the
+    # network. It stays solvable in-process for PROCESS (the SSRF reads the shared
+    # flag); CONTAINER makes the pivot a real fetch.
     ssrf = next(
         (n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"),
         None,

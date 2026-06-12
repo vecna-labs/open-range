@@ -70,9 +70,8 @@ def _solve(env: OpenRangeEnv, instance: str) -> None:
 
 
 def test_factories_thread_backing_into_each_rollout_service(tmp_path: Path) -> None:
-    # The factory's ``backing`` reaches every rollout's EpisodeService unchanged, so a
-    # GRPO run can train against the CONTAINER runtime (incl. the networked one). The
-    # default stays PROCESS. No reset here — just the constructed service, no realize.
+    # The factory builds each service before any realize, so the backing it threads
+    # through is observable without booting docker — and the default must stay PROCESS.
     snapshot = _admit("calc_sum")
     default_factory = make_environment_factory(SwePack(), [snapshot], tmp_path / "proc")
     container_factory = make_web_environment_factory(

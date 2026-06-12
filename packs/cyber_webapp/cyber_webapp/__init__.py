@@ -73,10 +73,8 @@ class WebappPack(Pack):
 
 def _is_networked(graph: WorldGraph) -> bool:
     # Networked = the flag is reachable only by pivoting: an SSRF on a PUBLIC service
-    # reaches an internal service that holds the flag. Today's generator co-locates the
-    # SSRF with the flag on one internal service (so this is False — those stay one
-    # container); producing the public-SSRF -> internal-flag shape natively is the next
-    # step (DESIGN §10), at which point those worlds route here automatically.
+    # reaches an internal service that holds the flag. A vuln co-located with the flag
+    # on one service is not networked — it stays single-container.
     public_services = {
         n.id for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
     }

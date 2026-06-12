@@ -111,8 +111,8 @@ def _admit_cmdi() -> Snapshot:
 
 
 def _ssrf_exploit(graph: WorldGraph) -> tuple[str, str, str]:
-    """The (public path, query param, payload URL) that pivots the SSRF to the
-    internal metadata host — built from the sampled filter, as an agent would."""
+    # Build the (public path, query param, payload URL) the way an agent would — from
+    # the sampled filter — so the same payload drives every backing.
     ssrf = next(
         n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
     )
