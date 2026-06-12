@@ -12,7 +12,10 @@ the flag out of the image entirely — is the follow-up.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from graphschema import WorldGraph
+from openrange_pack_sdk import PackError
 
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.codegen.entrypoint import APP_FILE_NAME, SEED_FILE_NAME
@@ -42,3 +45,132 @@ def image_files(graph: WorldGraph) -> dict[str, str]:
         APP_FILE_NAME: rendered[APP_FILE_NAME],
         SEED_FILE_NAME: rendered[SEED_FILE_NAME],
     }
+
+
+# --- Real fs/shell variant (M1 step 1) ----------------------------------------------
+#
+# At CONTAINER backing the command-injection handler runs a REAL shell against a REAL
+# flag file, so `; cat <path>` actually executes against the container filesystem —
+# genuine RCE/file-read instead of the in-memory emulation. The flag arrives via the
+# OPENRANGE_FLAG env var at run time (never an image layer) and the app writes it to
+# its real path at startup. Stdlib only, so no jinja2 and a faster build.
+#
+# Scope: command_injection only, and a plain `; cat` injection (the mutually-exclusive
+# contexts of §6 are a refinement to re-apply over the real shell). The next increment
+# wires this in as the real Backing.CONTAINER runtime for every class.
+
+_DOCKERFILE_REALFS = f"""\
+FROM {BASE_IMAGE}
+WORKDIR /app
+COPY {APP_FILE_NAME} ./
+EXPOSE {CONTAINER_PORT}
+CMD ["python", "{APP_FILE_NAME}", "--host", "0.0.0.0", "--port", "{CONTAINER_PORT}"]
+"""
+
+_REALFS_APP_HEADER = """\
+import os
+import subprocess
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+"""
+
+_REALFS_APP_BODY = """
+
+def _init_flag():
+    flag = os.environ.get("OPENRANGE_FLAG", "")
+    parent = os.path.dirname(FLAG_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(FLAG_PATH, "w", encoding="utf-8") as handle:
+        handle.write(flag)
+
+
+def _run_cmdi(target):
+    # REAL command injection: the input is concatenated into a shell command run by a
+    # real shell against the real filesystem, so `; cat <path>` actually executes.
+    command = BASE + " " + target
+    try:
+        completed = subprocess.run(
+            ["sh", "-c", command], capture_output=True, timeout=5, check=False
+        )
+    except subprocess.SubprocessError:
+        return b"error"
+    return completed.stdout + completed.stderr
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == ENDPOINT:
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            body = _run_cmdi((query.get(PARAM) or [""])[0])
+        elif parsed.path == "/":
+            body = b"ok"
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        return
+
+
+def main():
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+    _init_flag()
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(json.dumps({"host": args.host, "port": args.port}), flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
+"""
+
+
+def _flag_record_key(graph: WorldGraph) -> str:
+    for record in graph.by_kind("record"):
+        for edge in graph.out_edges(record.id, "holds"):
+            if graph.nodes[edge.dst].attrs.get("kind") == "flag":
+                return str(record.attrs["key"])
+    raise PackError("no record holds the flag")
+
+
+def realfs_cmdi_app(graph: WorldGraph) -> str:
+    """A stdlib real-shell command-injection app for the container backing, built from
+    the world's command_injection vuln (its endpoint + injected parameter) and the
+    flag's path. The flag itself is supplied at run time via OPENRANGE_FLAG."""
+    vuln = next(
+        n
+        for n in graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "command_injection"
+    )
+    params = vuln.attrs["params"]
+    if not isinstance(params, Mapping):
+        raise PackError("command_injection vuln has no params mapping")
+    endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
+    constants = (
+        f"PARAM = {str(params['target_param'])!r}\n"
+        f"ENDPOINT = {str(graph.nodes[endpoint_id].attrs['public_url'])!r}\n"
+        f"FLAG_PATH = {_flag_record_key(graph)!r}\n"
+        "BASE = 'echo pinging'\n"
+    )
+    return _REALFS_APP_HEADER + constants + _REALFS_APP_BODY
+
+
+def image_files_realfs(graph: WorldGraph) -> dict[str, str]:
+    """Build context for the real fs/shell command-injection container (no seed in the
+    image — the flag is an env var at run time)."""
+    return {"Dockerfile": _DOCKERFILE_REALFS, APP_FILE_NAME: realfs_cmdi_app(graph)}
