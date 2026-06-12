@@ -233,8 +233,8 @@ def _backing_manifest(backing: str | None) -> dict[str, object]:
 
 class TestBackingSelection:
     """`RunConfig.backing` and `manifest.runtime.backing` reach
-    `pack.realize`. Only `PROCESS` is wired today, so selecting any other
-    backing is expected to surface the realizer's `NotImplementedError` —
+    `pack.realize`. `PROCESS` and `CONTAINER` are wired; selecting a
+    still-unwired backing surfaces the realizer's `NotImplementedError`,
     which is exactly what proves the selector is connected end to end."""
 
     def test_runconfig_backing_process_runs(
@@ -251,17 +251,19 @@ class TestBackingSelection:
         ep = run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
         assert ep.success is True, ep.report.episode_result.reason
 
-    def test_runconfig_backing_container_reaches_realizer(
+    def test_runconfig_unwired_backing_reaches_realizer(
         self, snapshot: Snapshot, tmp_path: Path
     ) -> None:
+        # An unwired backing (SIMULATOR) surfaces the realizer's NotImplementedError,
+        # proving the selector reaches pack.realize. (PROCESS and CONTAINER are wired.)
         run = OpenRangeRun(
-            RunConfig(tmp_path, dashboard=False, backing=Backing.CONTAINER)
+            RunConfig(tmp_path, dashboard=False, backing=Backing.SIMULATOR)
         )
 
         def solve(ctx: EpisodeContext) -> None:
             return None  # never runs: realize() raises first
 
-        with pytest.raises(NotImplementedError, match="Backing.CONTAINER"):
+        with pytest.raises(NotImplementedError, match="SIMULATOR"):
             run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
 
     def test_manifest_backing_selects_process(self, tmp_path: Path) -> None:
