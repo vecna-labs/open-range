@@ -42,7 +42,12 @@ from openrange.dashboard import (
 from openrange.dashboard import (
     read_dashboard_events as read_dashboard_artifact_events,
 )
-from openrange.llm import CodexBackend, parse_json_object, run_codex
+from openrange.llm import (
+    ClaudeBackend,
+    CodexBackend,
+    parse_json_object,
+    run_codex,
+)
 from openrange.runtime import OpenRangeRun, RunConfig
 
 MANIFEST = {
@@ -292,6 +297,126 @@ def test_codex_backend_requires_schema_output_file(tmp_path: Path) -> None:
         CodexBackend(command=command, model="local").complete(
             LLMRequest("return json", json_schema={"type": "object"}),
         )
+
+
+_CLAUDE_OK = """
+import json
+
+print(json.dumps({"type": "result", "result": json.dumps({"handler": "ok"})}))
+"""
+
+_CLAUDE_TEXT = """
+import json
+
+print(json.dumps({"type": "result", "result": "plain reply text"}))
+"""
+
+_CLAUDE_FENCED = """
+import json
+
+reply = "prose\\n```json\\n" + json.dumps({"handler": "fenced"}) + "\\n```"
+print(json.dumps({"type": "result", "result": reply}))
+"""
+
+_CLAUDE_NOJSON = """
+import json
+
+print(json.dumps({"type": "result", "result": "I refuse, no json here"}))
+"""
+
+_CLAUDE_ARGV = """
+import json
+import sys
+from pathlib import Path
+
+(Path(__file__).parent / "argv.json").write_text(json.dumps(sys.argv))
+print(json.dumps({"type": "result", "result": "ok"}))
+"""
+
+
+def test_claude_backend_parses_structured_reply(tmp_path: Path) -> None:
+    command = executable(tmp_path, "claude_ok.py", _CLAUDE_OK)
+    result = ClaudeBackend(command=command, model="sonnet").complete(
+        LLMRequest("write json", json_schema={"type": "object"}),
+    )
+    assert result.parsed_json == {"handler": "ok"}
+
+
+def test_claude_backend_without_schema_returns_text(tmp_path: Path) -> None:
+    command = executable(tmp_path, "claude_text.py", _CLAUDE_TEXT)
+    assert ClaudeBackend(command=command).complete(LLMRequest("hi")) == LLMResult(
+        "plain reply text"
+    )
+
+
+def test_claude_backend_extracts_fenced_json(tmp_path: Path) -> None:
+    command = executable(tmp_path, "claude_fenced.py", _CLAUDE_FENCED)
+    result = ClaudeBackend(command=command).complete(
+        LLMRequest("hi", json_schema={"type": "object"}),
+    )
+    assert result.parsed_json == {"handler": "fenced"}
+
+
+def test_claude_backend_rejects_a_reply_with_no_json(tmp_path: Path) -> None:
+    command = executable(tmp_path, "claude_nojson.py", _CLAUDE_NOJSON)
+    with pytest.raises(LLMBackendError, match="invalid JSON"):
+        ClaudeBackend(command=command).complete(
+            LLMRequest("hi", json_schema={"type": "object"}),
+        )
+
+
+def test_claude_backend_passes_prompt_and_model_flags(tmp_path: Path) -> None:
+    command = executable(tmp_path, "claude_argv.py", _CLAUDE_ARGV)
+    ClaudeBackend(command=command, model="opus").complete(LLMRequest("hi"))
+    argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
+    assert "-p" in argv
+    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--model") + 1] == "opus"
+
+
+def test_claude_backend_reports_process_failure(tmp_path: Path) -> None:
+    command = executable(
+        tmp_path,
+        "claude_fail.py",
+        """
+        import sys
+
+        print("claude boom", file=sys.stderr)
+        raise SystemExit(2)
+        """,
+    )
+    with pytest.raises(LLMBackendError, match="claude boom"):
+        ClaudeBackend(command=command).complete(LLMRequest("hi"))
+
+
+def test_claude_backend_preflight_checks_the_binary(tmp_path: Path) -> None:
+    ClaudeBackend(command=executable(tmp_path, "claude_ok.py", _CLAUDE_OK)).preflight()
+    with pytest.raises(LLMBackendError, match="not found on PATH"):
+        ClaudeBackend(command=tmp_path / "missing").preflight()
+
+
+def test_claude_backend_reports_os_errors_and_timeouts(tmp_path: Path) -> None:
+    with pytest.raises(LLMBackendError):
+        ClaudeBackend(command=tmp_path / "nonexistent").complete(LLMRequest("hi"))
+    sleeper = executable(
+        tmp_path,
+        "claude_sleep.py",
+        """
+        import time
+
+        time.sleep(5)
+        """,
+    )
+    with pytest.raises(LLMBackendError, match="timed out"):
+        ClaudeBackend(command=sleeper, timeout=0.3).complete(LLMRequest("hi"))
+
+
+def test_claude_result_helpers_handle_non_envelope_replies() -> None:
+    from openrange.llm import _claude_result_text, _first_json_object
+
+    assert _claude_result_text("not json at all") == "not json at all"
+    assert _claude_result_text('{"type": "x"}') == '{"type": "x"}'
+    assert _first_json_object("no braces here") == "no braces here"
 
 
 def test_run_codex_reports_os_errors_and_timeouts(tmp_path: Path) -> None:

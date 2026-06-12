@@ -24,11 +24,11 @@ from cyber_webapp.realize_admit import (
     cmdi_exploit_and_benign,
 )
 from graphschema import Node, WorldGraph
-from openrange_pack_sdk import LLMRequest, Snapshot
+from openrange_pack_sdk import LLMBackend, LLMRequest, Snapshot
 
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
-from openrange.llm import CodexBackend
+from openrange.llm import ClaudeBackend, CodexBackend
 
 _MANIFEST: dict[str, object] = {
     "pack": {"id": "webapp"},
@@ -84,7 +84,7 @@ def _prompt(param: str, flag_path: str) -> str:
     )
 
 
-def _generate(backend: CodexBackend, param: str, flag_path: str) -> str:
+def _generate(backend: LLMBackend, param: str, flag_path: str) -> str:
     result = backend.complete(
         LLMRequest(
             prompt=_prompt(param, flag_path),
@@ -120,9 +120,10 @@ def _gate(snap: Snapshot, handler: str, tmp_path: Path) -> AdmissionVerdict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--backend", choices=("claude", "codex"), default="claude")
     args = parser.parse_args(argv)
 
-    backend = CodexBackend()
+    backend = ClaudeBackend() if args.backend == "claude" else CodexBackend()
     backend.preflight()
     snap = admit(WebappPack(), manifest=_MANIFEST, max_repairs=3)
     assert isinstance(snap, Snapshot), snap

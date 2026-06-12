@@ -1,13 +1,14 @@
-"""Codex CLI LLM backend implementation.
+"""CLI LLM backends.
 
-The ``LLMBackend`` Protocol and ``LLMRequest`` / ``LLMResult`` value types
-live in ``openrange_pack_sdk``. This module ships the concrete CodexBackend
-plus the impl-specific exceptions it raises.
+The ``LLMBackend`` Protocol and ``LLMRequest`` / ``LLMResult`` value types live in
+``openrange_pack_sdk``. This module ships the concrete CLI backends — ``CodexBackend``
+and ``ClaudeBackend`` — plus the impl-specific exceptions they raise.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -133,3 +134,93 @@ def parse_json_object(raw: str) -> Mapping[str, object]:
     if not isinstance(data, dict):
         raise LLMBackendError("backend returned JSON that is not an object")
     return cast(Mapping[str, object], data)
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeBackend:
+    """An ``LLMBackend`` that drives the ``claude`` CLI in print mode (``-p``).
+
+    Claude has no output-schema flag, so a structured request asks for a JSON object in
+    the prompt and parses it out of the model's reply. Useful where codex is
+    unavailable, or declines a task it flags as risky.
+    """
+
+    command: str | Path = "claude"
+    model: str | None = None
+    cwd: Path | None = None
+    timeout: float = 180.0
+
+    def preflight(self) -> None:
+        """Verify the claude binary is reachable on PATH."""
+        import shutil
+
+        if shutil.which(str(self.command)) is None:
+            raise LLMBackendError(
+                f"claude CLI not found on PATH ({str(self.command)!r}). "
+                "Install claude or override the 'command' field.",
+            )
+
+    def complete(self, request: LLMRequest) -> LLMResult:
+        prompt = request.as_prompt()
+        if request.json_schema is not None:
+            prompt += (
+                "\n\nReturn ONLY a JSON object matching this schema — no prose, no "
+                "code fences:\n" + json.dumps(request.json_schema)
+            )
+        command = [str(self.command), "-p", prompt, "--output-format", "json"]
+        if self.model is not None:
+            command += ["--model", self.model]
+        completed = _run_cli(
+            command, cwd=self.cwd, timeout=self.timeout, label="claude"
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise LLMBackendError(
+                f"claude exit status {completed.returncode}: {detail or 'no output'}",
+                returncode=completed.returncode,
+            )
+        text = _claude_result_text(completed.stdout)
+        if request.json_schema is None:
+            return LLMResult(text)
+        return LLMResult(text, parse_json_object(_first_json_object(text)))
+
+
+def _run_cli(
+    command: Sequence[str], *, cwd: Path | None, timeout: float, label: str
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LLMBackendError(f"{label} timed out after {timeout} seconds") from exc
+    except OSError as exc:
+        raise LLMBackendError(str(exc)) from exc
+
+
+def _claude_result_text(stdout: str) -> str:
+    # `claude -p --output-format json` prints a result envelope whose `result` field is
+    # the model's reply; fall back to raw stdout if it isn't that envelope.
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError:
+        return stdout.strip()
+    if isinstance(envelope, dict) and isinstance(envelope.get("result"), str):
+        return cast(str, envelope["result"])
+    return stdout.strip()
+
+
+def _first_json_object(text: str) -> str:
+    # The reply may wrap JSON in ``` fences or add prose; pull out the object.
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    if fenced:
+        return fenced.group(1)
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        return text[start : end + 1]
+    return text
