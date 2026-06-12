@@ -64,6 +64,27 @@ def test_build_handlers_filters_to_one_service() -> None:
     assert all(h["name"].startswith(f"handle__{name}__") for h in one_handlers)
 
 
+def test_per_service_seed_confines_the_flag() -> None:
+    # The per-service split keeps the flag in exactly the service that owns it, so the
+    # public service never holds (or even watches for) the internal flag.
+    from cyber_webapp.codegen.seeding import project_seed
+
+    graph = _multi_service_graph()
+    flag = next(
+        str(n.attrs["value_ref"])
+        for n in graph.nodes.values()
+        if n.kind == "secret" and n.attrs.get("kind") == "flag"
+    )
+    services = [n.id for n in graph.nodes.values() if n.kind == "service"]
+    owners = [
+        sid
+        for sid in services
+        if flag in json.dumps(dict(project_seed(graph, frozenset({sid}))), default=str)
+    ]
+    assert len(owners) == 1  # the flag lives in exactly one service
+    assert flag in json.dumps(dict(project_seed(graph)), default=str)  # unscoped has it
+
+
 def test_realize_graph_emits_app_and_seed_files() -> None:
     """The codegen returns a plain mapping containing both required files."""
     files = _realize_graph(_sample_graph())

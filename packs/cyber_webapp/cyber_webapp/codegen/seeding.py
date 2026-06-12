@@ -19,7 +19,9 @@ _DEFAULT_VALUE_COLUMN = "value"
 _BROKEN_AUTHZ_LEAK_FIELDS = ("value", "data", "secret", "content", "result", "flag")
 
 
-def project_seed(graph: WorldGraph) -> Mapping[str, object]:
+def project_seed(
+    graph: WorldGraph, only_services: frozenset[str] | None = None
+) -> Mapping[str, object]:
     """Project the runtime seed payload.
 
     The flag lives in exactly one place, fixed by the loot shape: a "db" loot
@@ -27,6 +29,11 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
     exploit); a "file" loot keeps it in the in-memory file map (read via a
     file-read exploit). It never lands on disk. Raises :class:`PackError` if
     the graph has no flag-kind secret.
+
+    ``only_services`` scopes the seed to the given services' own stores — the
+    per-service split the networked backing realizes (one container per service).
+    Each service then carries only the secrets/records/files of the data_stores it
+    is ``backed_by``, so the flag stays confined to the one service that owns it.
     """
     flag = ""
     flag_secret_id = ""
@@ -42,11 +49,21 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
         n.id: n for n in graph.nodes.values() if n.kind == "credential"
     }
 
+    service_of_record, service_of_secret = _service_ownership(graph)
+
+    def _owned(service_id: str | None) -> bool:
+        # Unscoped → everything; scoped → only the targeted services' own state.
+        return only_services is None or service_id in only_services
+
     for node in graph.nodes.values():
         if node.kind == "secret" and node.attrs.get("kind") == "flag":
+            if not _owned(service_of_secret.get(node.id)):
+                continue
             flag = str(node.attrs.get("value_ref", ""))
             flag_secret_id = node.id
         elif node.kind == "secret":
+            if not _owned(service_of_secret.get(node.id)):
+                continue
             secrets[str(node.attrs.get("kind", node.id))] = str(
                 node.attrs.get("value_ref", ""),
             )
@@ -62,6 +79,8 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
                 "password": password,
             }
         elif node.kind == "record":
+            if not _owned(service_of_record.get(node.id)):
+                continue
             fields = node.attrs.get("fields", {})
             clean = (
                 {str(k): str(v) for k, v in fields.items()}
@@ -70,12 +89,17 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
             )
             raw_records[node.id] = (str(node.attrs.get("key", node.id)), clean)
 
-    if not flag:
+    # Unscoped: a world must have a flag. Scoped: a service that doesn't own the
+    # flag legitimately has none — it carries only its own (decoy) state.
+    if only_services is None and not flag:
         raise PackError("graph has no flag-kind secret; codegen needs one")
 
     store_kind_of_record = _store_kind_by_record(graph)
-    flag_record_id = _record_holding(graph, flag_secret_id)
-    loot_shape = store_kind_of_record.get(flag_record_id, "kv")
+    if flag:
+        flag_record_id = _record_holding(graph, flag_secret_id)
+        loot_shape = store_kind_of_record.get(flag_record_id, "kv")
+    else:
+        loot_shape = "file"  # no flag in this slice → no flag injected into db/secrets
 
     db_records: dict[str, dict[str, str]] = {}
     files: dict[str, str] = {}
@@ -108,9 +132,36 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
             # The values the runtime watches for at the response boundary — every
             # HIDDEN node's value_ref, by node id. Same source the offline verifier
             # (consequence.detect_leak) reads, so live and test agree by construction.
-            "guarded": dict(guarded_values(graph)),
+            # Scoped to this slice's own secrets so the public service never holds
+            # (or watches for) the internal flag.
+            "guarded": {
+                k: v
+                for k, v in guarded_values(graph).items()
+                if _owned(service_of_secret.get(k))
+            },
         },
     )
+
+
+def _service_ownership(
+    graph: WorldGraph,
+) -> tuple[dict[str, str | None], dict[str, str | None]]:
+    # Which service owns each record / secret, via service -backed_by-> store
+    # -contains-> record -holds-> secret. Used to split the seed per service.
+    service_of_store = {
+        e.dst: e.src for e in graph.edges.values() if e.kind == "backed_by"
+    }
+    store_of_record = {
+        e.dst: e.src for e in graph.edges.values() if e.kind == "contains"
+    }
+    record_of_secret = {e.dst: e.src for e in graph.edges.values() if e.kind == "holds"}
+    service_of_record: dict[str, str | None] = {
+        rec: service_of_store.get(store) for rec, store in store_of_record.items()
+    }
+    service_of_secret: dict[str, str | None] = {
+        sec: service_of_record.get(rec) for sec, rec in record_of_secret.items()
+    }
+    return service_of_record, service_of_secret
 
 
 def _store_kind_by_record(graph: WorldGraph) -> dict[str, str]:
