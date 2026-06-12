@@ -540,3 +540,43 @@ number — which is the independent verifier's job.
 | report ↔ graph check (rung 2) | designed, unbuilt |
 | execution-effect consequences (rung 4) | **blocked** on container ([#252](https://github.com/vecna-labs/open-range/issues/252) / [#202](https://github.com/vecna-labs/open-range/issues/202)) |
 | novel-class discovery | far-future, human-seeded (8.7) |
+
+---
+
+## 9. Emergent mode at scale: the realization ladder
+
+§8 built the *verifier*. This is what it unlocks: stop templating worlds and let an
+LLM **realize** them — keeping procedural as the architect and the verifier as the
+gate, at rising fidelity.
+
+The invariant at every rung: **procedural architects the graph** (topology, flag
+placement, the solvability skeleton — the controllable, scalable, solvable-by-
+construction part that is OpenRange's differentiator); **the LLM realizes each node**
+into a real, varied service; **admission verifies** (the consequence oracle + the
+shortcut/faithfulness probes of §8.10) that the realization is still solvable and not
+*trivially* so; **the result freezes** to a content-addressed snapshot, so the study
+stays reproducible even with an LLM in the build path.
+
+Why the mix, not pure-LLM: an LLM asked for "a vulnerable world" gives *one* world,
+low controllability, and — §8.10 measured this — mostly *broken* ones. The procedural
+engine is the controllable variation source; the LLM is realism *per node, behind
+admission*. The LLM never architects correctness.
+
+The ladder (each rung an existing issue except M0):
+
+| rung | the LLM realizes | runtime | issue |
+| --- | --- | --- | --- |
+| **M0** | a vuln *handler* — varied implementations within a class, dynamically admission-gated by run-the-exploit | `PROCESS` (today) | *new* |
+| **M1** | a node as a real **container** image — real fs/shell ⇒ real RCE/file-read | `Backing.CONTAINER` | [#252](https://github.com/vecna-labs/open-range/issues/252) |
+| **M2** | **multiple** networked services; graph edges become real links — SSRF→internal, pivot, credential reuse | containers + net | [#212](https://github.com/vecna-labs/open-range/issues/212), [#235](https://github.com/vecna-labs/open-range/issues/235) |
+| **M3** | a **k8s** topology — pods/services/network-policies/RBAC; lateral movement + k8s-native classes (RBAC escalation, SA-token theft, netpol bypass, pod escape) | Kind | [#189](https://github.com/vecna-labs/open-range/issues/189) |
+
+M0 is the realization *primitive* every rung is built from: the **dynamic admission
+gate** — render the LLM's realization, run the intended exploit, confirm the flag
+leaks via `consequence.detect_leak`, confirm a benign request does *not* — is what
+makes letting an LLM write the world safe. (Today's admission is *structural* — a
+graph-path check; an LLM realization needs *dynamic* admission, because the code
+might be wrong.) Exec-effect faithfulness rides the container
+([#202](https://github.com/vecna-labs/open-range/issues/202) sandbox). This is also
+the sim-to-real fidelity ladder (`PROCESS` → `CONTAINER` → cluster) the H2 study
+measures on.

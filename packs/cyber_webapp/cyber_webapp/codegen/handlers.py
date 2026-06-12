@@ -65,6 +65,12 @@ def build_handlers_and_routes(
 
 
 def _render_vuln_body(vuln_node: Node) -> str:
+    # An LLM-realized handler (M0, DESIGN.md §9) stands in for the template — it has
+    # passed the dynamic admission gate (cyber_webapp.realize_admit) before reaching
+    # codegen, so it is treated like any rendered handler from here on.
+    realized = vuln_node.attrs.get("realized_handler")
+    if isinstance(realized, str) and realized.strip():
+        return _extract_handle_body(realized)
     kind = str(vuln_node.attrs.get("kind", ""))
     catalog_entry = VULN_CATALOG.get(kind)
     if catalog_entry is None:
