@@ -11,6 +11,7 @@ command_injection runs a real `sh -c` — both with the §6 / confinement contex
 from __future__ import annotations
 
 import contextlib
+import json
 import posixpath
 import shutil
 import subprocess
@@ -24,7 +25,12 @@ from urllib.parse import quote
 import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.codegen import _realize_graph
-from cyber_webapp.container import BASE_IMAGE, image_files, required_apt_packages
+from cyber_webapp.container import (
+    BASE_IMAGE,
+    hardening_run_args,
+    image_files,
+    required_apt_packages,
+)
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Snapshot
@@ -145,7 +151,7 @@ def _container(
     context.mkdir()
     for name, content in build_files.items():
         (context / name).write_text(content, encoding="utf-8")
-    run_cmd = ["docker", "run", "-d", "-p", "0:8000"]
+    run_cmd = ["docker", "run", "-d", "-p", "0:8000", *hardening_run_args()]
     for key, value in env:
         run_cmd += ["-e", f"{key}={value}"]
     run_cmd.append(tag)
@@ -211,6 +217,53 @@ def test_world_runs_in_a_container_and_is_exploited(tmp_path: Path) -> None:
         expected = str(graph.nodes["secret_flag"].attrs["value_ref"])
         body = urllib.request.urlopen(base + exploit_path, timeout=10).read().decode()
     assert expected in body, body[:200]
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_world_container_is_hardened(tmp_path: Path) -> None:
+    # The world runs attacker-controlled code, so it is contained: all capabilities
+    # dropped, no privilege escalation, and memory / pid caps set — verified both on the
+    # run config and behaviourally inside the container. It stays exploitable over HTTP
+    # under these flags (every other docker test here runs with the same _container).
+    snap = _admit_cmdi()
+    graph = snap.graph
+    tag = f"openrange-m1-harden-{snap.snapshot_id[:8]}"
+    with _container(image_files(graph), tmp_path, tag) as base:
+        cid = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"ancestor={tag}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.split()[0]
+        host = json.loads(
+            subprocess.run(
+                ["docker", "inspect", cid],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout
+        )[0]["HostConfig"]
+        assert host["CapDrop"] == ["ALL"], host["CapDrop"]
+        assert any("no-new-privileges" in opt for opt in host.get("SecurityOpt") or [])
+        assert host["Memory"] > 0 and host["PidsLimit"] and host["PidsLimit"] > 0
+
+        # Behavioural: effective capabilities are actually all-zero in the container.
+        status = subprocess.run(
+            ["docker", "exec", cid, "cat", "/proc/self/status"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        cap_eff = next(ln for ln in status.splitlines() if ln.startswith("CapEff:"))
+        assert cap_eff.split()[1].strip("0") == "", cap_eff
+
+        # Still exploitable under the hardening — containment doesn't break the vuln.
+        exploit_path, _benign = cmdi_exploit_and_benign(graph)
+        body = _http_get(base + exploit_path)
+    assert str(graph.nodes["secret_flag"].attrs["value_ref"]) in body, body[:200]
 
 
 def test_generated_app_has_a_real_shell_cmdi_branch() -> None:

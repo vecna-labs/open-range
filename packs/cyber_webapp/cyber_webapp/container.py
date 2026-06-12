@@ -15,7 +15,7 @@ tooling lives in a separate sandbox the harness brings, not in here.
 
 Caveat: the seed (with the flag) is COPYed into the image, so it lives in an image layer
 until the app unlinks it at startup. Mounting it at run time — keeping the flag out of
-the image entirely — is the follow-up (the isolation increment, #202).
+the image entirely — is part of the world-container hardening follow-up (#265).
 """
 
 from __future__ import annotations
@@ -60,6 +60,30 @@ def required_apt_packages(graph: WorldGraph) -> set[str]:
         if package is not None:
             packages.add(package)
     return packages
+
+
+def hardening_run_args() -> list[str]:
+    """``docker run`` flags that contain a world running attacker-controlled code:
+    drop every Linux capability, forbid gaining privileges (setuid), and cap memory /
+    CPU / pid count, so an exploit can't escalate, fork-bomb, or exhaust the host. The
+    world stays reachable over its published HTTP port (networking kept simple here);
+    blocking egress is the network rung. The #252 CONTAINER runtime runs with these.
+
+    Not read-only-root yet: the app writes the materialized files + request log and
+    unlinks the seed at startup, so that needs the writable-path rework — tracked with
+    the rest in #265."""
+    return [
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--memory",
+        "512m",
+        "--cpus",
+        "1.0",
+        "--pids-limit",
+        "256",
+    ]
 
 
 def _dockerfile(apt_packages: set[str]) -> str:
