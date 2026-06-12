@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
-from cyber_webapp import WebappPack
+from cyber_webapp import ContainerWebappRuntime, WebappPack
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.container import (
     BASE_IMAGE,
@@ -34,9 +34,10 @@ from cyber_webapp.container import (
 )
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from graphschema import Node, WorldGraph
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import Backing, EpisodeResult, Snapshot
 
 from openrange.core.admit import admit
+from openrange.core.episode import EpisodeService
 
 
 def _admit_cmdi() -> Snapshot:
@@ -348,6 +349,91 @@ def test_real_shell_contexts_are_mutually_exclusive(
         miss = urllib.request.urlopen(base + mismatched, timeout=10).read().decode()
     assert flag in hit, hit[:200]  # the matching context's exploit lands
     assert flag not in miss  # a wrong-context exploit is filtered out
+
+
+# --- CONTAINER backing wired as a runtime: it grades identically to PROCESS -----------
+
+
+def _run_pentest_episode(
+    snapshot: Snapshot,
+    task_id: str,
+    backing: Backing,
+    root: Path,
+    exploit_path: str,
+    flag: str,
+) -> EpisodeResult:
+    # Drive one pentest episode end to end on the given backing: start it, run the
+    # exploit over its live HTTP surface, submit the recovered flag, return the result.
+    service = EpisodeService(WebappPack(), root, backing=backing)
+    try:
+        handle = service.start_episode(snapshot, task_id)
+        surface = service.surface(handle)
+        base_url = str(surface["base_url"])
+        solver_root = Path(str(surface["solver_root"]))
+        body = (
+            urllib.request.urlopen(base_url + exploit_path, timeout=20).read().decode()
+        )
+        assert flag in body, f"{backing}: {body[:200]}"
+        (solver_root / "result.json").write_text(
+            json.dumps({"flag": flag}), encoding="utf-8"
+        )
+        report = service.stop_episode(handle)
+    finally:
+        service.close()
+    return report.episode_result
+
+
+def test_container_runtime_rejects_non_container_backing() -> None:
+    with pytest.raises(NotImplementedError):
+        ContainerWebappRuntime(_admit_cmdi().graph, Backing.PROCESS)
+
+
+def test_container_runtime_is_inert_before_reset() -> None:
+    # No container yet (no docker touched): the log read is None and stop() is a clean
+    # no-op — nothing built or running to tear down.
+    runtime = ContainerWebappRuntime(_admit_cmdi().graph, Backing.CONTAINER)
+    assert runtime._read_log_bytes() is None
+    runtime.stop()  # must not raise with nothing built/running
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_container_runtime_reuses_the_image_across_resets() -> None:
+    # The image builds once and is reused on later resets; each reset brings up a fresh
+    # container on a fresh published port.
+    runtime = ContainerWebappRuntime(_admit_cmdi().graph, Backing.CONTAINER)
+    try:
+        runtime.reset()
+        first = str(runtime.surface()["base_url"])
+        runtime.reset()  # image already built → rebuild is skipped
+        second = str(runtime.surface()["base_url"])
+        assert first.startswith("http://127.0.0.1:")
+        assert second.startswith("http://127.0.0.1:")
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_container_and_process_backings_grade_identically(tmp_path: Path) -> None:
+    # The load-bearing parity check: the SAME snapshot + SAME exploit grades identically
+    # on PROCESS (in-memory emulation) and CONTAINER (a real shell in a container).
+    # Only fidelity changes between the backings, not the task surface.
+    snap = _admit_cmdi()
+    graph = snap.graph
+    _pin_context(graph, "separator")
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    exploit_path, _benign = cmdi_exploit_and_benign(graph)
+
+    process = _run_pentest_episode(
+        snap, task.id, Backing.PROCESS, tmp_path / "proc", exploit_path, flag
+    )
+    container = _run_pentest_episode(
+        snap, task.id, Backing.CONTAINER, tmp_path / "cont", exploit_path, flag
+    )
+
+    assert process.success is True  # the exploit really solves the world
+    assert container.success == process.success
+    assert container.subgoals == process.subgoals  # identical grade across backings
 
 
 # --- file_read shape over a real filesystem (generalize past command_injection) ------

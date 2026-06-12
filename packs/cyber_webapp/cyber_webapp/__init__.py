@@ -22,7 +22,11 @@ from cyber_webapp.invariants import (
     sqli_targets_db_backed_service,
 )
 from cyber_webapp.ontology import ONTOLOGY_ID, webapp_ontology
-from cyber_webapp.realize import WebappRuntime, WebappRuntimeError
+from cyber_webapp.realize import (
+    ContainerWebappRuntime,
+    WebappRuntime,
+    WebappRuntimeError,
+)
 
 
 class WebappPack(Pack):
@@ -53,6 +57,8 @@ class WebappPack(Pack):
         graph: WorldGraph,
         backing: Backing,
     ) -> RuntimeHandle:
+        if backing is Backing.CONTAINER:
+            return ContainerWebappRuntime(graph, backing)
         return WebappRuntime(graph, backing)
 
     def task_families(self) -> list[TaskFamily]:
@@ -61,6 +67,7 @@ class WebappPack(Pack):
 
 __all__ = [
     "ONTOLOGY_ID",
+    "ContainerWebappRuntime",
     "WebappBuild",
     "WebappBuilder",
     "WebappPack",

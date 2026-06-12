@@ -117,11 +117,13 @@ def test_pack_realize_satisfies_runtime_handle_protocol() -> None:
     assert isinstance(handle, RuntimeHandle)
 
 
-def test_pack_realize_rejects_non_process_backings() -> None:
-    """Only Backing.PROCESS is wired today; the others must raise."""
+def test_pack_realize_routes_backings() -> None:
+    """PROCESS and CONTAINER are wired (constructing CONTAINER needs no docker — the
+    build happens at reset); the still-unwired backings must raise."""
     graph = _sample_graph()
     pack = WebappPack()
-    for backing in (Backing.CONTAINER, Backing.SIMULATOR, Backing.HYBRID):
+    assert isinstance(pack.realize(graph, Backing.CONTAINER), RuntimeHandle)
+    for backing in (Backing.SIMULATOR, Backing.HYBRID):
         with pytest.raises(NotImplementedError):
             pack.realize(graph, backing)
 

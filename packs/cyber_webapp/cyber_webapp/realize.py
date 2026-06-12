@@ -1,9 +1,11 @@
-"""WebappRuntime. Only ``Backing.PROCESS`` is wired."""
+"""WebappRuntime (PROCESS backing) and ContainerWebappRuntime (CONTAINER backing)."""
 
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -23,6 +25,11 @@ from cyber_webapp.codegen.entrypoint import (
     REQUEST_LOG_NAME,
     RESULT_FILE_NAME,
 )
+from cyber_webapp.container import hardening_run_args, image_files
+
+# Where the container's app writes its request log (the image CMD's --log path).
+_CONTAINER_LOG_PATH = "/app/requests.jsonl"
+_CONTAINER_PORT = "8000"
 
 
 class WebappRuntimeError(OpenRangeError):
@@ -108,12 +115,8 @@ class WebappRuntime(SubprocessRuntime):
         return {"http_get": http_get, "http_get_json": http_get_json}
 
     def poll_events(self) -> tuple[Mapping[str, Any], ...]:
-        log = self._request_log_path()
-        if log is None or not log.exists():
-            return ()
-        try:
-            raw = log.read_bytes()
-        except OSError:
+        raw = self._read_log_bytes()
+        if raw is None:
             return ()
         new_bytes = raw[self._log_offset :]
         if not new_bytes:
@@ -188,15 +191,23 @@ class WebappRuntime(SubprocessRuntime):
             return None
         return self.pack_root / REQUEST_LOG_NAME
 
-    def _all_requests(self) -> list[Mapping[str, Any]]:
+    def _read_log_bytes(self) -> bytes | None:
+        # The request log as raw bytes, or None if it isn't there yet. The seam the
+        # CONTAINER backing overrides to read the log out of the running container.
         log = self._request_log_path()
         if log is None or not log.exists():
+            return None
+        try:
+            return log.read_bytes()
+        except OSError:
+            return None
+
+    def _all_requests(self) -> list[Mapping[str, Any]]:
+        raw_bytes = self._read_log_bytes()
+        if raw_bytes is None:
             return []
         rows: list[Mapping[str, Any]] = []
-        try:
-            raw = log.read_text(encoding="utf-8")
-        except OSError:
-            return []
+        raw = raw_bytes.decode("utf-8", errors="replace")
         for line in raw.splitlines():
             line = line.strip()
             if not line:
@@ -217,3 +228,96 @@ class WebappRuntime(SubprocessRuntime):
                 return bool(getattr(resp, "status", 0) == 200)
         except URLError, TimeoutError, OSError:
             return False
+
+
+class ContainerWebappRuntime(WebappRuntime):
+    """WebappRuntime that runs the world as a real Docker container.
+
+    ``docker run`` (foreground) is the supervised child: the container's app prints the
+    same startup line a local subprocess would, so the SubprocessRuntime handshake still
+    works; the published host port is resolved with ``docker port`` (the app only sees
+    its in-container port). The request log is read out of the running container, and
+    the image sets ``OPENRANGE_REALFS`` so the file and shell surfaces are real.
+    """
+
+    def __init__(self, graph: WorldGraph, backing: Backing) -> None:
+        if backing is not Backing.CONTAINER:
+            raise NotImplementedError(
+                f"ContainerWebappRuntime is the CONTAINER backing, got {backing!r}",
+            )
+        # WebappRuntime.__init__ guards PROCESS-only; the container runtime shares its
+        # log/surface/collect logic but its own lifecycle, so init the subprocess base.
+        SubprocessRuntime.__init__(self, graph)
+        self._files: dict[str, str] = {}
+        self._base_url: str | None = None
+        self._log_offset = 0
+        self._build_files = image_files(graph)
+        self._tag = f"openrange-cyber-{uuid.uuid4().hex[:12]}"
+        self._cname: str | None = None
+        self._image_built = False
+
+    def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+        del graph
+        # The image carries app.py + seed.json; pack_root is just the build context.
+        return dict(self._build_files)
+
+    def subprocess_command(self, env_root: Path, solver_root: Path) -> list[str]:
+        del solver_root
+        if not self._image_built:
+            subprocess.run(
+                ["docker", "build", "-q", "-t", self._tag, str(env_root / "pack")],
+                check=True,
+                capture_output=True,
+                timeout=600,
+            )
+            self._image_built = True
+        self._cname = f"{self._tag}-{uuid.uuid4().hex[:8]}"
+        return [
+            "docker",
+            "run",
+            "--rm",
+            "--name",
+            self._cname,
+            "-p",
+            f"127.0.0.1:0:{_CONTAINER_PORT}",
+            *hardening_run_args(),
+            self._tag,
+        ]
+
+    def parse_startup(self, stdout_line: str) -> Mapping[str, Any]:
+        # A startup line means the app is up (the readiness signal); it only knows its
+        # in-container port, so resolve the published host port for the agent URL.
+        del stdout_line
+        mapping = subprocess.run(
+            ["docker", "port", str(self._cname), _CONTAINER_PORT],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        host_port = mapping.splitlines()[0].rsplit(":", 1)[-1]
+        self._base_url = f"http://127.0.0.1:{host_port}"
+        self._log_offset = 0
+        return {"base_url": self._base_url}
+
+    def _read_log_bytes(self) -> bytes | None:
+        if self._cname is None:
+            return None
+        try:
+            done = subprocess.run(
+                ["docker", "exec", self._cname, "cat", _CONTAINER_LOG_PATH],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001  # pragma: no cover - container gone mid-poll
+            return None
+        # A non-zero rc before the first request just means the log isn't written yet.
+        return done.stdout if done.returncode == 0 else b""
+
+    def stop(self) -> None:
+        super().stop()  # kills the docker-run child; --rm removes the container
+        if self._cname is not None:
+            subprocess.run(["docker", "rm", "-f", self._cname], capture_output=True)
+        if self._image_built:
+            subprocess.run(["docker", "rmi", "-f", self._tag], capture_output=True)
