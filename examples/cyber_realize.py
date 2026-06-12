@@ -1,4 +1,4 @@
-"""Close the M0 realization loop with a real LLM (the codex harness).
+"""Close the LLM-realization loop with a real LLM (the codex harness).
 
 The LLM writes a command-injection handler; we inject it into a procedurally-built
 world and run it through the dynamic admission gate (cyber_webapp.realize_admit): the

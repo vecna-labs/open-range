@@ -1,11 +1,12 @@
-"""M1 — the container backing (DESIGN.md §9, #252).
+"""The container backing for a webapp world.
 
 `image_files` packages a world's rendered app into a container build context. The
 docker-gated tests then prove the real thing: build the image, run the container, and
 recover the flag by exploiting the world over HTTP. The container sets OPENRANGE_REALFS,
-so the app's surfaces go real on the ONE generated app: the file-read shape
+so the app's surfaces go real on the one generated app: the file-read shape
 (path_traversal, xxe) does a real `open()` with real OS path resolution, and
-command_injection runs a real `sh -c` — both with the §6 / confinement contexts intact.
+command_injection runs a real `sh -c` — both with their mutually-exclusive
+injection / confinement contexts intact.
 """
 
 from __future__ import annotations
@@ -308,9 +309,9 @@ def test_real_shell_container_recovers_a_real_file_flag(tmp_path: Path) -> None:
 def test_real_shell_contexts_are_mutually_exclusive(
     live: str, wrong: str, tmp_path: Path
 ) -> None:
-    # The §6 contexts hold over a REAL shell, not just the in-memory emulation: a world
-    # built for one injection context is exploited by THAT context's payload and is NOT
-    # exploited by another context's payload (the wrong vectors are filtered before sh).
+    # The injection contexts hold over a REAL shell, not just the in-memory emulation: a
+    # world built for one context is exploited by THAT context's payload and NOT by
+    # another's (the wrong vectors are filtered before sh).
     snap = _admit_cmdi()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])

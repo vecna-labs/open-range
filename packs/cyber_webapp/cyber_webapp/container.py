@@ -1,10 +1,10 @@
-"""Container build context for a webapp world (M1 — DESIGN.md §9, #252).
+"""Container build context for a webapp world.
 
 The same rendered app the ``PROCESS`` backing runs as a subprocess, packaged to run in a
 real container. The container sets ``OPENRANGE_REALFS``, so the app's surfaces go real:
 the file-read shape (path_traversal, xxe) does a real ``open()`` and a traversal escape
 is real OS path resolution, and command_injection runs a real ``sh -c`` — genuine RCE /
-file-read across the nine classes on the ONE generated app, not a bespoke app per class.
+file-read across the nine classes on the one generated app.
 
 A world is the *target* the agent attacks, reached only over its HTTP surface — it is
 not the agent's toolbox. So it carries only what its OWN vulns run server-side: the
@@ -13,9 +13,9 @@ when the world has that vuln, and only the one its ``base_command`` names. A wor
 no command_injection installs no OS tools. The attacking agent's own recon/exploit
 tooling lives in a separate sandbox the harness brings, not in here.
 
-Caveat: the seed (with the flag) is COPYed into the image, so it lives in an image layer
-until the app unlinks it at startup. Mounting it at run time — keeping the flag out of
-the image entirely — is part of the world-container hardening follow-up (#265).
+The seed (with the flag) is COPYed into the image, so the flag lives in an image layer
+until the app unlinks it at startup; run-time mounting would keep it out of the image
+entirely.
 """
 
 from __future__ import annotations
@@ -66,12 +66,12 @@ def hardening_run_args() -> list[str]:
     """``docker run`` flags that contain a world running attacker-controlled code:
     drop every Linux capability, forbid gaining privileges (setuid), and cap memory /
     CPU / pid count, so an exploit can't escalate, fork-bomb, or exhaust the host. The
-    world stays reachable over its published HTTP port (networking kept simple here);
-    blocking egress is the network rung. The #252 CONTAINER runtime runs with these.
+    world stays reachable over its published HTTP port; blocking outbound egress is a
+    separate concern.
 
-    Not read-only-root yet: the app writes the materialized files + request log and
-    unlinks the seed at startup, so that needs the writable-path rework — tracked with
-    the rest in #265."""
+    Not read-only-root: the app writes the materialized files + request log and unlinks
+    the seed at startup, so a read-only rootfs would need those writes redirected to a
+    writable mount first."""
     return [
         "--cap-drop",
         "ALL",

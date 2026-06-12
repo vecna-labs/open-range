@@ -1,4 +1,4 @@
-"""Dynamic admission for LLM-realized handlers (M0 — DESIGN.md §9), pack-side pieces.
+"""Dynamic admission for LLM-realized handlers, pack-side pieces.
 
 Today's admission is *structural* (`check_feasibility`: a graph path exists). An
 LLM-realized handler can be wrong, so it is admitted *dynamically*: run the intended

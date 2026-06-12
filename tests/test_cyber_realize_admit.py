@@ -1,4 +1,4 @@
-"""M0 — the dynamic admission gate for LLM-realized handlers (DESIGN.md §9).
+"""The dynamic admission gate for LLM-realized handlers.
 
 The gate renders + runs a world, exploits it, and lets the consequence verifier
 decide: the exploit must leak the flag, a benign request must not. These drive the
