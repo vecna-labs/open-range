@@ -68,6 +68,26 @@ def test_todays_worlds_stay_single_container() -> None:
         assert not isinstance(runtime, NetworkedContainerWebappRuntime)
 
 
+def test_networked_shaped_world_routes_to_networked_backing() -> None:
+    # When a world IS networked-shaped (an SSRF reaches a public service's endpoint),
+    # the CONTAINER backing routes it to the networked runtime.
+    from graphschema import Edge
+
+    graph = _admit_ssrf().graph
+    public = next(
+        n for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
+    )
+    public_ep = next(e.dst for e in graph.out_edges(public.id, "exposes"))
+    ssrf = next(
+        n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
+    )
+    graph.add_edge(
+        Edge(id="affects_ssrf_public", kind="affects", src=ssrf.id, dst=public_ep)
+    )
+    runtime = WebappPack().realize(graph, Backing.CONTAINER)
+    assert isinstance(runtime, NetworkedContainerWebappRuntime)
+
+
 def _admit_cmdi() -> Snapshot:
     snap = admit(
         WebappPack(),
@@ -105,6 +125,7 @@ def test_networked_runtime_isolates_internal_services() -> None:
     runtime = NetworkedContainerWebappRuntime(_admit_ssrf().graph, Backing.CONTAINER)
     try:
         runtime.reset()
+        assert runtime.poll_events() == ()  # networked verdict comes from collect()
         base_url = str(runtime.surface()["base_url"])
         with urllib.request.urlopen(base_url + "/", timeout=10) as resp:
             assert resp.status == 200  # public service reachable from the host
@@ -122,5 +143,11 @@ def test_networked_runtime_isolates_internal_services() -> None:
         )
         # The public container reaches the internal service by name over the network.
         assert out.returncode == 0 and "200" in out.stdout, out.stderr
+
+        # collect() aggregates every service's request log; a benign request leaks
+        # nothing (the public service never holds the flag).
+        final = runtime.collect()
+        assert final["leaked_secret_ids"] == []
+        assert "/" in final["requests_made"]
     finally:
         runtime.stop()

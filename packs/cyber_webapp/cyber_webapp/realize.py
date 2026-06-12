@@ -370,7 +370,7 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
         return cmd
 
     def _create_network(self) -> None:
-        if self._network_created:
+        if self._network_created:  # pragma: no cover - idempotent across resets
             return
         subprocess.run(
             ["docker", "network", "create", self._network],
@@ -381,7 +381,7 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
         self._network_created = True
 
     def _start_internals(self) -> None:
-        if self._internal_runs:
+        if self._internal_runs:  # pragma: no cover - idempotent across resets
             return
         for service in self._internals:
             tag = f"openrange-cyber-{service.name}-{uuid.uuid4().hex[:8]}"
@@ -440,7 +440,9 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
             )
             if done.returncode == 0:
                 return
-        raise WebappRuntimeError(f"internal service {cname} did not become ready")
+        raise WebappRuntimeError(  # pragma: no cover - an internal that never starts
+            f"internal service {cname} did not become ready"
+        )
 
     def _read_log_bytes(self) -> bytes | None:
         # Aggregate the public child's log with every internal service's log, so the
@@ -462,7 +464,9 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
                 chunks.append(done.stdout)
         if chunks:
             return b"".join(chunks)
-        return b"" if self._cname is not None else None
+        # In practice every internal service has at least its readiness-probe request
+        # logged, so this empty fallback is only the pre-reset / no-container state.
+        return b"" if self._cname is not None else None  # pragma: no cover
 
     def poll_events(self) -> tuple[Mapping[str, Any], ...]:
         return ()  # verdict comes from collect()'s full aggregated read, not offsets

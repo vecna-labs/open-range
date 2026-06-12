@@ -658,3 +658,18 @@ which returns the flag. That is genuine networked exploitation, not a path looku
 Later: real lateral movement / credential reuse / `metadata_credential_leak` (currently
 referenced but undefined), then enterprise scale (#212) + lazy realization (#235) on top
 of this runtime, then k8s (#189).
+
+**Status.** Increments 1–2 are **done and proven**: `realize_services` splits a world
+into per-service build contexts (the flag confined to its owning internal service);
+`NetworkedContainerWebappRuntime` runs one container per service on a real docker network
+and a docker-gated test shows real network position — the public service is reachable from
+the host, an internal service only from inside the network, by name. `WebappPack.realize`
+routes a world here only when it is genuinely networked-shaped (`_is_networked`: an SSRF on
+a *public* service).
+
+Increments 3–4 need one generation change first, and that's the next step: today's sampler
+co-locates the SSRF with the flag on a single internal service, so no world is yet
+networked-shaped. Making the SSRF land on the public service, feeding an internal service
+that *serves* the flag (a metadata-style leak) with `internal_host` wired to that service,
+turns on the real cross-container SSRF (the handler gains a gated `urlopen` mode) and the
+cross-backing parity check — and makes real worlds auto-route to this runtime.
