@@ -58,12 +58,18 @@ def test_realize_services_splits_per_service_and_confines_the_flag() -> None:
     assert "/svc/" not in internal.build_files["app.py"]
 
 
-def test_ssrf_world_routes_to_networked_backing() -> None:
-    # The CONTAINER backing runs an SSRF world networked (per-service); a non-SSRF
-    # multi-service world stays a single container.
-    ssrf = WebappPack().realize(_admit_ssrf().graph, Backing.CONTAINER)
-    assert isinstance(ssrf, NetworkedContainerWebappRuntime)
-    cmdi = admit(
+def test_todays_worlds_stay_single_container() -> None:
+    # No regression: today's generator co-locates the SSRF with the flag on one internal
+    # service, so a world isn't yet "networked-shaped" (SSRF on a public service) — it
+    # stays one container. Native networked-shape generation is the follow-up.
+    for snap in (_admit_ssrf(), _admit_cmdi()):
+        runtime = WebappPack().realize(snap.graph, Backing.CONTAINER)
+        assert isinstance(runtime, ContainerWebappRuntime)
+        assert not isinstance(runtime, NetworkedContainerWebappRuntime)
+
+
+def _admit_cmdi() -> Snapshot:
+    snap = admit(
         WebappPack(),
         manifest={
             "pack": {"id": "webapp"},
@@ -75,10 +81,8 @@ def test_ssrf_world_routes_to_networked_backing() -> None:
         },
         max_repairs=3,
     )
-    assert isinstance(cmdi, Snapshot)
-    single = WebappPack().realize(cmdi.graph, Backing.CONTAINER)
-    assert isinstance(single, ContainerWebappRuntime)
-    assert not isinstance(single, NetworkedContainerWebappRuntime)
+    assert isinstance(snap, Snapshot), snap
+    return snap
 
 
 def _docker_available() -> bool:
@@ -96,9 +100,9 @@ def _docker_available() -> bool:
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_networked_runtime_isolates_internal_services() -> None:
     # The public service is reachable from the host; an internal service is reachable
-    # only from inside the network, by name — real network position.
-    runtime = WebappPack().realize(_admit_ssrf().graph, Backing.CONTAINER)
-    assert isinstance(runtime, NetworkedContainerWebappRuntime)
+    # only from inside the network, by name — real network position. (Constructed
+    # directly: today's worlds don't yet auto-route here, see the routing test above.)
+    runtime = NetworkedContainerWebappRuntime(_admit_ssrf().graph, Backing.CONTAINER)
     try:
         runtime.reset()
         base_url = str(runtime.surface()["base_url"])

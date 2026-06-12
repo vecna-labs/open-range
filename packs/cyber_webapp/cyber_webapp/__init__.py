@@ -59,18 +59,36 @@ class WebappPack(Pack):
         backing: Backing,
     ) -> RuntimeHandle:
         if backing is Backing.CONTAINER:
-            # A world with an SSRF needs real network position (fetch an internal
-            # service) — run it as one container per service on a network. Single-host
-            # worlds stay one container.
-            if any(
-                v.attrs.get("kind") == "ssrf" for v in graph.by_kind("vulnerability")
-            ):
+            # A *networked* world — one whose flag is reachable only by pivoting from
+            # the public service to an internal one — runs as one container per service
+            # on a network. Single-host worlds stay one container.
+            if _is_networked(graph):
                 return NetworkedContainerWebappRuntime(graph, backing)
             return ContainerWebappRuntime(graph, backing)
         return WebappRuntime(graph, backing)
 
     def task_families(self) -> list[TaskFamily]:
         return [WebappBuild(), WebappPentest()]
+
+
+def _is_networked(graph: WorldGraph) -> bool:
+    # Networked = the flag is reachable only by pivoting: an SSRF on a PUBLIC service
+    # reaches an internal service that holds the flag. Today's generator co-locates the
+    # SSRF with the flag on one internal service (so this is False — those stay one
+    # container); producing the public-SSRF -> internal-flag shape natively is the next
+    # step (DESIGN §10), at which point those worlds route here automatically.
+    public_services = {
+        n.id for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
+    }
+    service_of_endpoint = {
+        e.dst: e.src for e in graph.edges.values() if e.kind == "exposes"
+    }
+    return any(
+        service_of_endpoint.get(edge.dst) in public_services
+        for vuln in graph.by_kind("vulnerability")
+        if vuln.attrs.get("kind") == "ssrf"
+        for edge in graph.out_edges(vuln.id, "affects")
+    )
 
 
 __all__ = [
