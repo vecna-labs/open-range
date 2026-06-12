@@ -589,12 +589,13 @@ with zero handler changes — the `files` surface is a real filesystem (`_RealFi
 `open()` per path), so a traversal escape is real OS path resolution. **code_exec**
 command_injection runs a real `sh -c` (the §6 mutually-exclusive contexts preserved by the
 same naive per-context filter, now over a real shell). Both are proven live by docker-gated,
-context-parametrized tests. Remaining M1 is tracked in
-[#265](https://github.com/vecna-labs/open-range/issues/265): world-container hardening
-(resource/privilege limits, egress policy, flag-out-of-image) and ssti real (unsandboxed
-eval), then wiring the `Backing.CONTAINER` runtime
-([#252](https://github.com/vecna-labs/open-range/issues/252), which reads the leak signal
-from the app's request log).
+context-parametrized tests. The world container — which now runs real RCE — is contained
+with dropped capabilities + no-new-privileges + memory/cpu/pid caps (`hardening_run_args`,
+verified live: `CapEff` all-zero inside, still exploitable under the flags). Remaining M1
+is tracked in [#265](https://github.com/vecna-labs/open-range/issues/265): read-only-rootfs,
+egress policy, flag-out-of-image, and ssti real (unsandboxed eval), then wiring the
+`Backing.CONTAINER` runtime ([#252](https://github.com/vecna-labs/open-range/issues/252),
+which reads the leak signal from the app's request log).
 
 **Two environments, not one (the world vs. the agent).** A generated world is the
 *target* the agent attacks, reached only over its HTTP surface (`base_url`); the agent
