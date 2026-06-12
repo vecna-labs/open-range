@@ -591,11 +591,20 @@ command_injection runs a real `sh -c` (the §6 mutually-exclusive contexts prese
 same naive per-context filter, now over a real shell). Both are proven live by docker-gated,
 context-parametrized tests. The world container — which now runs real RCE — is contained
 with dropped capabilities + no-new-privileges + memory/cpu/pid caps (`hardening_run_args`,
-verified live: `CapEff` all-zero inside, still exploitable under the flags). The rest is
-tracked in [#265](https://github.com/vecna-labs/open-range/issues/265): read-only-rootfs,
-egress policy, flag-out-of-image, and ssti real (unsandboxed eval), then wiring the
-`Backing.CONTAINER` runtime ([#252](https://github.com/vecna-labs/open-range/issues/252),
-which reads the leak signal from the app's request log).
+verified live: `CapEff` all-zero inside, still exploitable under the flags).
+
+This is wired as a real runtime: `ContainerWebappRuntime` runs the world as a container
+that episodes actually use, selected by `Backing.CONTAINER`. It reuses the subprocess
+runtime (`docker run` is the supervised child), resolves the published host port with
+`docker port`, and reads the leak signal out of the running container. The load-bearing
+check is **cross-backing parity**: the same snapshot + same exploit grades *identically*
+on `PROCESS` and `CONTAINER` — only fidelity changes, not the task surface. Scope: one
+container for the whole world; many per-service containers on a real network is the
+networked-services work ([#212](https://github.com/vecna-labs/open-range/issues/212) /
+[#235](https://github.com/vecna-labs/open-range/issues/235)).
+
+The rest is tracked in [#265](https://github.com/vecna-labs/open-range/issues/265):
+read-only-rootfs, egress policy, flag-out-of-image, and ssti real (unsandboxed eval).
 
 **Two environments, not one (the world vs. the agent).** A generated world is the
 *target* the agent attacks, reached only over its HTTP surface (`base_url`); the agent
