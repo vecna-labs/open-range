@@ -6,12 +6,21 @@ the file-read shape (path_traversal, xxe) does a real ``open()`` and a traversal
 is real OS path resolution, and command_injection runs a real ``sh -c`` — genuine RCE /
 file-read across the nine classes on the ONE generated app, not a bespoke app per class.
 
+A world is the *target* the agent attacks, reached only over its HTTP surface — it is
+not the agent's toolbox. So it carries only what its OWN vulns run server-side: the
+diagnostic tool command_injection shells out to (ping / nslookup / …) is installed ONLY
+when the world has that vuln, and only the one its ``base_command`` names. A world with
+no command_injection installs no OS tools. The attacking agent's own recon/exploit
+tooling lives in a separate sandbox the harness brings, not in here.
+
 Caveat: the seed (with the flag) is COPYed into the image, so it lives in an image layer
 until the app unlinks it at startup. Mounting it at run time — keeping the flag out of
 the image entirely — is the follow-up (the isolation increment, #202).
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 from graphschema import WorldGraph
 
@@ -23,37 +32,71 @@ from cyber_webapp.codegen.entrypoint import APP_FILE_NAME, SEED_FILE_NAME
 CONTAINER_PORT = 8000
 BASE_IMAGE = "python:3.13-slim"
 
-# OPENRANGE_REALFS flips the rendered app's surfaces to the real container: the file map
-# becomes a real filesystem (real open() / traversal) and command_injection a real
-# `sh -c`. The PROCESS backing never sets it and stays the in-memory emulation.
-#
-# The diagnostic tools command_injection's base_command samples from (ping / nslookup /
-# dig / host / traceroute) are installed so the real shell acts like a real vulnerable
-# endpoint: a chained `; cat` reads the flag, and `$(cat flag)` leaks it too since each
-# tool echoes the (flag-as-)hostname in its resolver error. jinja2 is the one pip dep.
-_DOCKERFILE = f"""\
-FROM {BASE_IMAGE}
-WORKDIR /app
-ENV OPENRANGE_REALFS=1
-RUN apt-get update \
-&& apt-get install -y --no-install-recommends iputils-ping dnsutils traceroute \
-&& rm -rf /var/lib/apt/lists/* \
-&& pip install --no-cache-dir jinja2
-COPY {APP_FILE_NAME} {SEED_FILE_NAME} ./
-EXPOSE {CONTAINER_PORT}
-CMD ["python", "{APP_FILE_NAME}", "--host", "0.0.0.0", \
-"--port", "{CONTAINER_PORT}", "--log", "/app/requests.jsonl"]
-"""
+# command_injection's base_command (sampling._COMMAND_INJECTION_BASE) → the apt package
+# that puts that diagnostic tool in the image, so the real `sh -c` endpoint can run it.
+# Each tool echoes the (flag-as-)hostname back in its resolver error, so a `$(cat flag)`
+# substitution leaks too — confirmed empirically on python:3.13-slim for all five.
+_CMDI_APT_PACKAGES: dict[str, str] = {
+    "ping": "iputils-ping",
+    "nslookup": "dnsutils",
+    "dig": "dnsutils",
+    "host": "dnsutils",
+    "traceroute": "traceroute",
+}
+
+
+def required_apt_packages(graph: WorldGraph) -> set[str]:
+    """The apt packages this world's container actually needs, based ONLY on its
+    command_injection vulns and each one's base_command (union across vulns). A world
+    with no command_injection returns an empty set — its image installs no OS tools."""
+    packages: set[str] = set()
+    for vuln in graph.by_kind("vulnerability"):
+        if vuln.attrs.get("kind") != "command_injection":
+            continue
+        params = vuln.attrs.get("params")
+        if not isinstance(params, Mapping):
+            continue
+        package = _CMDI_APT_PACKAGES.get(str(params.get("base_command")))
+        if package is not None:
+            packages.add(package)
+    return packages
+
+
+def _dockerfile(apt_packages: set[str]) -> str:
+    # OPENRANGE_REALFS flips the app's surfaces to the real container. jinja2 is the one
+    # pip dep (the ssti handler imports it); OS tools are added only when a
+    # command_injection vuln needs them, else the apt layer is skipped entirely.
+    if apt_packages:
+        names = " ".join(sorted(apt_packages))
+        run = (
+            "RUN apt-get update \\\n"
+            f"&& apt-get install -y --no-install-recommends {names} \\\n"
+            "&& rm -rf /var/lib/apt/lists/* \\\n"
+            "&& pip install --no-cache-dir jinja2\n"
+        )
+    else:
+        run = "RUN pip install --no-cache-dir jinja2\n"
+    return (
+        f"FROM {BASE_IMAGE}\n"
+        "WORKDIR /app\n"
+        "ENV OPENRANGE_REALFS=1\n"
+        f"{run}"
+        f"COPY {APP_FILE_NAME} {SEED_FILE_NAME} ./\n"
+        f"EXPOSE {CONTAINER_PORT}\n"
+        f'CMD ["python", "{APP_FILE_NAME}", "--host", "0.0.0.0", '
+        f'"--port", "{CONTAINER_PORT}", "--log", "/app/requests.jsonl"]\n'
+    )
 
 
 def image_files(graph: WorldGraph) -> dict[str, str]:
     """The build context for the world's container: the Dockerfile + the rendered app
     + its seed. Same rendered app the PROCESS backing runs, but the container sets
     OPENRANGE_REALFS so its surfaces are real (real open() / traversal, real `sh -c`),
-    not the in-memory emulation."""
+    not the in-memory emulation. The Dockerfile installs only the OS tools this world's
+    own vulns run server-side (see :func:`required_apt_packages`)."""
     rendered = _realize_graph(graph)
     return {
-        "Dockerfile": _DOCKERFILE,
+        "Dockerfile": _dockerfile(required_apt_packages(graph)),
         APP_FILE_NAME: rendered[APP_FILE_NAME],
         SEED_FILE_NAME: rendered[SEED_FILE_NAME],
     }

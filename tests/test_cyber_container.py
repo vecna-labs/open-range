@@ -24,7 +24,7 @@ from urllib.parse import quote
 import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.codegen import _realize_graph
-from cyber_webapp.container import BASE_IMAGE, image_files
+from cyber_webapp.container import BASE_IMAGE, image_files, required_apt_packages
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Snapshot
@@ -55,6 +55,47 @@ def test_image_files_packages_the_world() -> None:
     assert BASE_IMAGE in files["Dockerfile"]
     assert "def handle" in files["app.py"]
     assert '"--port", "8000"' in files["Dockerfile"]
+
+
+_BASE_COMMAND_PACKAGE = {
+    "ping": "iputils-ping",
+    "nslookup": "dnsutils",
+    "dig": "dnsutils",
+    "host": "dnsutils",
+    "traceroute": "traceroute",
+}
+
+
+def test_required_apt_packages_scopes_to_the_worlds_cmdi_tool() -> None:
+    cmdi = _admit_cmdi().graph
+    vuln = next(
+        n
+        for n in cmdi.by_kind("vulnerability")
+        if n.attrs.get("kind") == "command_injection"
+    )
+    params = vuln.attrs["params"]
+    assert isinstance(params, dict)
+    expected = _BASE_COMMAND_PACKAGE[str(params["base_command"])]
+    assert required_apt_packages(cmdi) == {expected}
+    # a file-read world runs no server-side OS command → its image installs none
+    assert required_apt_packages(_admit_path_traversal().graph) == set()
+
+
+def test_dockerfile_installs_os_tools_only_when_a_vuln_needs_them() -> None:
+    cmdi_df = image_files(_admit_cmdi().graph)["Dockerfile"]
+    pt_df = image_files(_admit_path_traversal().graph)["Dockerfile"]
+    assert "apt-get install" in cmdi_df  # cmdi world needs its diagnostic tool
+    assert "apt-get" not in pt_df  # a file-read world stays lean — no OS tools
+    assert "pip install --no-cache-dir jinja2" in pt_df  # the app's one structural dep
+
+
+def test_every_sampled_base_command_has_an_apt_package() -> None:
+    # Lockstep guard: every base_command the sampler picks must map to a package, or a
+    # cmdi world ships without the tool its real `sh -c` needs.
+    from cyber_webapp.container import _CMDI_APT_PACKAGES
+    from cyber_webapp.sampling import _COMMAND_INJECTION_BASE
+
+    assert set(_COMMAND_INJECTION_BASE) <= set(_CMDI_APT_PACKAGES)
 
 
 def _docker_available() -> bool:

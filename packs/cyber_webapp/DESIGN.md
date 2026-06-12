@@ -593,3 +593,16 @@ context-parametrized tests. Remaining M1: ssti real (unsandboxed eval), then iso
 ([#202](https://github.com/vecna-labs/open-range/issues/202) — `--network none`, rlimits,
 and keeping the flag out of the image layer) and wiring the `Backing.CONTAINER` runtime
 (which reads the leak signal from the app's request log).
+
+**Two environments, not one (the world vs. the agent).** A generated world is the
+*target* the agent attacks, reached only over its HTTP surface (`base_url`); the agent
+never runs inside it. So the world image carries only what its OWN behavior needs: when a
+vuln runs a real OS command server-side — command_injection shelling out to a diagnostic
+tool like `ping`/`nslookup` — that tool is installed in the target container *because the
+server runs it*, and only in worlds that actually have that vuln (`required_apt_packages`
+in `container.py`; a file-read-only world installs nothing). A world is not a toolbox: we
+do not preinstall recon/exploit tooling "for the agent." The attacking agent is a separate
+environment the harness brings — its own sandbox (workspace = `solver_root`, its own
+tools), hitting the world only over the network — which is also where exploit-execution
+isolation belongs ([#202](https://github.com/vecna-labs/open-range/issues/202)), not in the
+world image.
