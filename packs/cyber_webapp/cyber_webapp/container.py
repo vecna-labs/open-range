@@ -69,6 +69,7 @@ CMD ["python", "{APP_FILE_NAME}", "--host", "0.0.0.0", "--port", "{CONTAINER_POR
 
 _REALFS_APP_HEADER = """\
 import os
+import re
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -87,9 +88,17 @@ def _init_flag():
 
 
 def _run_cmdi(target):
-    # REAL command injection: the input is concatenated into a shell command run by a
-    # real shell against the real filesystem, so `; cat <path>` actually executes.
-    command = BASE + " " + target
+    # REAL command injection over a real shell. The same naive, context-specific filter
+    # the in-memory emulation uses keeps the mutually-exclusive contexts: each strips
+    # the OTHER vectors, leaving exactly one live, then a REAL shell runs the result.
+    if INJ_CONTEXT == "quoted":
+        command = BASE + " " + QUOTE + target + QUOTE
+    else:
+        command = BASE + " " + target
+    if INJ_CONTEXT == "substitution":
+        command = command.translate(str.maketrans(";|&\\n", "    "))
+    else:
+        command = re.sub(r"\\$\\([^()]*\\)|`[^`]*`", "", command)
     try:
         completed = subprocess.run(
             ["sh", "-c", command], capture_output=True, timeout=5, check=False
@@ -165,6 +174,8 @@ def realfs_cmdi_app(graph: WorldGraph) -> str:
         f"PARAM = {str(params['target_param'])!r}\n"
         f"ENDPOINT = {str(graph.nodes[endpoint_id].attrs['public_url'])!r}\n"
         f"FLAG_PATH = {_flag_record_key(graph)!r}\n"
+        f"INJ_CONTEXT = {str(params.get('inj_context', 'separator'))!r}\n"
+        f"QUOTE = {str(params.get('quote', chr(39)))!r}\n"
         "BASE = 'echo pinging'\n"
     )
     return _REALFS_APP_HEADER + constants + _REALFS_APP_BODY
