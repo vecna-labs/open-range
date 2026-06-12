@@ -589,10 +589,12 @@ with zero handler changes — the `files` surface is a real filesystem (`_RealFi
 `open()` per path), so a traversal escape is real OS path resolution. **code_exec**
 command_injection runs a real `sh -c` (the §6 mutually-exclusive contexts preserved by the
 same naive per-context filter, now over a real shell). Both are proven live by docker-gated,
-context-parametrized tests. Remaining M1: ssti real (unsandboxed eval), then isolation
-([#202](https://github.com/vecna-labs/open-range/issues/202) — `--network none`, rlimits,
-and keeping the flag out of the image layer) and wiring the `Backing.CONTAINER` runtime
-(which reads the leak signal from the app's request log).
+context-parametrized tests. Remaining M1 is tracked in
+[#265](https://github.com/vecna-labs/open-range/issues/265): world-container hardening
+(resource/privilege limits, egress policy, flag-out-of-image) and ssti real (unsandboxed
+eval), then wiring the `Backing.CONTAINER` runtime
+([#252](https://github.com/vecna-labs/open-range/issues/252), which reads the leak signal
+from the app's request log).
 
 **Two environments, not one (the world vs. the agent).** A generated world is the
 *target* the agent attacks, reached only over its HTTP surface (`base_url`); the agent
@@ -603,6 +605,8 @@ server runs it*, and only in worlds that actually have that vuln (`required_apt_
 in `container.py`; a file-read-only world installs nothing). A world is not a toolbox: we
 do not preinstall recon/exploit tooling "for the agent." The attacking agent is a separate
 environment the harness brings — its own sandbox (workspace = `solver_root`, its own
-tools), hitting the world only over the network — which is also where exploit-execution
-isolation belongs ([#202](https://github.com/vecna-labs/open-range/issues/202)), not in the
-world image.
+tools), hitting the world only over the network. Hardening the world container that now
+runs real RCE (resource/privilege limits, egress, flag-out-of-image) is
+[#265](https://github.com/vecna-labs/open-range/issues/265); sandboxing the `exec`'d
+*verifier source* is the separate, host-side
+[#202](https://github.com/vecna-labs/open-range/issues/202).
