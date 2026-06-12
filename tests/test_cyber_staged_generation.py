@@ -498,6 +498,91 @@ def test_detect_leak_reports_leaked_nodes_and_handles_empties() -> None:
     assert LeakVerdict(frozenset()).occurred is False
 
 
+def test_detect_leak_catches_encoded_exfil() -> None:
+    import base64
+    import urllib.parse as _url
+
+    from cyber_webapp.consequence import value_variants
+    from cyber_webapp.ontology import ONTOLOGY_ID
+    from graphschema import Node, Visibility
+
+    flag = "ORANGE{s3cr3t/v}"  # has {, /, } so the url-encoded form differs from raw
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+    graph.add_node(
+        Node(
+            id="flag",
+            kind="secret",
+            attrs={"value_ref": flag},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    b64 = base64.b64encode(flag.encode()).decode()
+    encoded = (
+        f'{{"v":"{b64}"}}',
+        f"hex={flag.encode().hex()}",
+        _url.quote(flag, safe=""),
+    )
+    for body in encoded:
+        assert detect_leak(graph, [body]).occurred, body
+    assert detect_leak(graph, [f"...{flag}..."]).occurred  # literal still caught
+    assert not detect_leak(graph, ["unrelated benign text only"]).occurred
+    assert {flag, b64}.issubset(value_variants(flag))
+
+
+def test_detect_leak_drops_contained_values() -> None:
+    from cyber_webapp.ontology import ONTOLOGY_ID
+    from graphschema import Node, Visibility
+
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+    graph.add_node(
+        Node(
+            id="short",
+            kind="secret",
+            attrs={"value_ref": "SHORTSECRET"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    graph.add_node(
+        Node(
+            id="long",
+            kind="secret",
+            attrs={"value_ref": "SHORTSECRET_EXTENDED"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    # Leaking only the longer value reports just it — the shorter is a substring
+    # artifact, not a distinct leak.
+    long_only = detect_leak(graph, ["x SHORTSECRET_EXTENDED y"]).leaked
+    assert long_only == frozenset({"long"})
+    # Leaking the shorter value on its own still reports it.
+    assert detect_leak(graph, ["x SHORTSECRET y"]).leaked == frozenset({"short"})
+
+
+def test_rendered_app_scanner_agrees_with_consequence() -> None:
+    import base64
+    import urllib.parse as _url
+
+    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    graph = snap.graph
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    namespace: dict[str, object] = {}
+    exec(compile(_realize_graph(graph)["app.py"], "<app>", "exec"), namespace)
+    app_scan = namespace["_scan_leaks"]
+    guarded = dict(guarded_values(graph))
+    b64 = base64.b64encode(flag.encode()).decode()
+    bodies = [
+        flag,
+        f"x{b64}y",
+        f"h={flag.encode().hex()}",
+        f"q={_url.quote(flag, safe='')}",
+        "clean nothing here",
+    ]
+    for body in bodies:
+        assert app_scan(body.encode(), guarded) == sorted(
+            detect_leak(graph, [body]).leaked
+        ), body
+
+
 def test_seed_carries_guarded_map_from_graph() -> None:
     # Convergence: the values the runtime watches for are exactly what the offline
     # verifier reads — both come from consequence.guarded_values(graph).

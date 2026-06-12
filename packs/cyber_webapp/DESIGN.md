@@ -382,12 +382,13 @@ exfil of a planted canary. Instrument the consequence and a mechanism that reach
 it is confirmed regardless of how it got there — including one the generator never
 intended. That is how the gym exceeds the model that builds it.
 
-The honest qualifier: the live oracle (`consequence.py`) matches the `HIDDEN` value
-by **raw substring**, so it confirms a leak only when the value reaches output *in
-recoverable form*. An exfil that base64/hex/url-encodes or otherwise transforms the
-value slips past it — a known false-negative (documented in `consequence.py`).
-Canonicalizing response bodies before the scan would widen coverage; it is deferred
-until emergent mode, where many/encoded leaks actually arise, lands.
+The honest qualifier: the oracle matches by substring, but it searches for the value
+**and its cheap reversible encodings** — base64, hex, percent-encoding — by encoding
+the *needle*, so a base64/hex/url-encoded exfil is caught, not only the literal form.
+Still out (these would need decoding the body, not encoding the needle): gzip/binary
+transforms, multibyte splits, bespoke schemes. The live per-response signal is raw and
+un-de-duplicated; the offline verifier and the grader (which hold the graph) apply
+containment de-duplication when multiple guarded values overlap.
 
 How far this reaches is gated by backing (§"what stays an emulation"):
 

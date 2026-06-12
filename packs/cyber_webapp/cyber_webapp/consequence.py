@@ -11,19 +11,24 @@ In a planted world the guarded set is just the flag, so this agrees with the
 planted-flag verdict by construction; the generalization earns its keep when a world
 holds secrets beyond the one designated goal.
 
-Limitations (a raw-substring oracle, honest about what it does NOT catch — these are
-safe today because the sole guarded value is the long, random flag, but each must be
-addressed before many/short HIDDEN values land):
-  - Encoded exfil: a value returned base64/hex/url-encoded/gzipped does not contain
-    its literal form, so it reads as no-leak. Canonicalizing bodies would widen this.
-  - Containment: two guarded values in a substring relationship over-report (leaking
-    the longer flags both); there is no containment de-duplication.
-A length floor (below) removes the worst false-positive — a short value colliding
-with benign text.
+It catches a value returned literally or under a cheap reversible text encoding
+(base64, hex, percent-encoding) — by searching for those *encodings of the value*,
+which finds it even as a substring of a larger body. Still out (would need decoding
+the body, not encoding the needle): gzip/binary transforms, multibyte splits, bespoke
+schemes. Containment: when several guarded values leak and one is a substring of
+another, only the maximal value is reported. A length floor excludes a short value_ref
+that would otherwise collide with benign text.
+
+Note the live runtime signal (``final_state["leaked_secret_ids"]``) is per-response
+and does not apply containment — the scanner logs node ids, not values, so it cannot
+compare them — so this offline verifier (and the grader, which hold the graph) is the
+de-duped verdict.
 """
 
 from __future__ import annotations
 
+import base64
+import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -59,6 +64,35 @@ def guarded_values(graph: WorldGraph) -> dict[str, str]:
     return guarded
 
 
+def value_variants(value: str) -> set[str]:
+    """The forms a value might take in a response: literal + cheap text encodings.
+
+    Encoding the *needle* (rather than decoding the body) finds the value even when
+    it is a substring of a larger response. Mirrored by the rendered app's scanner,
+    so live and offline agree — `test_rendered_app_scanner_agrees_with_consequence`
+    pins that.
+    """
+    raw = value.encode()
+    b64 = base64.b64encode(raw).decode()
+    return {value, b64, b64.rstrip("="), raw.hex(), urllib.parse.quote(value, safe="")}
+
+
+def _drop_contained(leaked: set[str], guarded: dict[str, str]) -> frozenset[str]:
+    # Only the maximal value genuinely leaked; a shorter value that is a proper
+    # substring of another leaked value is an artifact of the unanchored match.
+    # Distinct nodes sharing one value are both kept.
+    return frozenset(
+        node_id
+        for node_id in leaked
+        if not any(
+            other != node_id
+            and guarded[node_id] != guarded[other]
+            and guarded[node_id] in guarded[other]
+            for other in leaked
+        )
+    )
+
+
 def detect_leak(graph: WorldGraph, responses: Iterable[str]) -> LeakVerdict:
     """Return the guarded nodes whose value appears in any observed response."""
     guarded = guarded_values(graph)
@@ -68,6 +102,6 @@ def detect_leak(graph: WorldGraph, responses: Iterable[str]) -> LeakVerdict:
     leaked = {
         node_id
         for node_id, value in guarded.items()
-        if any(value in body for body in bodies)
+        if any(var in body for var in value_variants(value) for body in bodies)
     }
-    return LeakVerdict(frozenset(leaked))
+    return LeakVerdict(_drop_contained(leaked, guarded))
