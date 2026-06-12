@@ -1,0 +1,30 @@
+{
+  "name": "log-file-viewer",
+  "app_code": "def handle(query, state):\n    import shlex\n\n    logfile = (query.get('log') or [''])[0].strip()\n    lines_param = (query.get('lines') or ['20'])[0].strip()\n\n    if not logfile:\n        return 400, {'Content-Type': 'text/plain'}, 'Missing required parameter: log'\n\n    try:\n        n = int(lines_param)\n    except ValueError:\n        n = 20\n    n = max(1, min(n, 200))\n\n    # The server naively builds a shell command string from user input\n    # and executes it through a simulated shell interpreter.\n    # Injection point: logfile is interpolated without sanitization.\n    cmd_string = 'tail -n {} {}'.format(n, logfile)\n\n    files = state.get('files', {})\n    env = state.get('env', {})\n    output_parts = []\n\n    # Simulated shell: split on ';' for command chaining\n    for raw_cmd in cmd_string.split(';'):\n        tokens = shlex.split(raw_cmd.strip()) if raw_cmd.strip() else []\n        if not tokens:\n            continue\n        verb = tokens[0]\n\n        if verb == 'tail':\n            # tail [-n <count>] <path>\n            path = None\n            count = 10\n            i = 1\n            while i < len(tokens):\n                if tokens[i] == '-n' and i + 1 < len(tokens):\n                    try:\n                        count = int(tokens[i + 1])\n                    except ValueError:\n                        pass\n                    i += 2\n                else:\n                    path = tokens[i]\n                    i += 1\n            if path is None:\n                output_parts.append('tail: missing file operand')\n                continue\n            content = files.get(path)\n            if content is None:\n                output_parts.append('tail: {}: No such file or directory'.format(path))\n            else:\n                log_lines = content.splitlines()\n                output_parts.append('\\n'.join(log_lines[-count:]))\n\n        elif verb == 'cat':\n            if len(tokens) < 2:\n                output_parts.append('cat: missing operand')\n                continue\n            path = tokens[1]\n            content = files.get(path)\n            if content is None:\n                output_parts.append('cat: {}: No such file or directory'.format(path))\n            else:\n                output_parts.append(content)\n\n        elif verb == 'ls':\n            target = tokens[1] if len(tokens) > 1 else '/var/log'\n            matches = [k for k in files if k.startswith(target)]\n            if matches:\n                output_parts.append('\\n'.join(sorted(matches)))\n            else:\n                output_parts.append('ls: {}: No such file or directory'.format(target))\n\n        elif verb == 'printenv':\n            if len(tokens) > 1:\n                key = tokens[1]\n                output_parts.append(env.get(key, ''))\n            else:\n                output_parts.append('\\n'.join('{}={}'.format(k, v) for k, v in env.items()))\n\n        elif verb == 'id':\n            output_parts.append('uid=1000(logviewer) gid=1000(logviewer) groups=1000(logviewer)')\n\n        elif verb == 'echo':\n            output_parts.append(' '.join(tokens[1:]))\n\n        else:\n            output_parts.append('{}: command not found'.format(verb))\n\n    body = '\\n'.join(output_parts)\n    return 200, {'Content-Type': 'text/plain'}, body\n",
+  "state_template": {
+    "files": {
+      "/var/log/app.log": "2026-06-11 08:01:02 INFO  Server started on port 8080\n2026-06-11 08:05:14 INFO  GET /health 200 12ms\n2026-06-11 08:12:33 WARN  Slow query detected: 1240ms\n2026-06-11 08:17:45 INFO  GET /api/users 200 8ms\n2026-06-11 08:23:01 ERROR Connection pool exhausted\n2026-06-11 08:23:03 INFO  Connection pool recovered\n2026-06-11 08:30:55 INFO  GET /api/metrics 200 5ms",
+      "/var/log/access.log": "127.0.0.1 - - [11/Jun/2026:08:00:01 +0000] \"GET / HTTP/1.1\" 200 512\n127.0.0.1 - - [11/Jun/2026:08:00:42 +0000] \"GET /favicon.ico HTTP/1.1\" 404 0\n10.0.0.5  - - [11/Jun/2026:08:05:14 +0000] \"GET /health HTTP/1.1\" 200 12\n10.0.0.5  - - [11/Jun/2026:08:17:45 +0000] \"GET /api/users HTTP/1.1\" 200 840\n10.0.0.5  - - [11/Jun/2026:08:30:55 +0000] \"GET /api/metrics HTTP/1.1\" 200 310",
+      "/var/log/auth.log": "2026-06-11 07:58:10 sshd[1234]: Accepted publickey for admin from 10.0.0.2\n2026-06-11 08:00:00 su[5678]: session opened for user root by admin\n2026-06-11 08:00:05 su[5678]: session closed for user root",
+      "/etc/flag": "__FLAG__"
+    },
+    "env": {
+      "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin",
+      "LOGDIR": "/var/log",
+      "APP_ENV": "production"
+    }
+  },
+  "exploit": {
+    "log": ["/var/log/app.log; cat /etc/flag"],
+    "lines": ["5"]
+  },
+  "benign": {
+    "log": ["/var/log/app.log"],
+    "lines": ["5"]
+  },
+  "wrong": {
+    "log": ["/var/log/app.log && cat /etc/flag"],
+    "lines": ["5"]
+  },
+  "self_check": "flag_substring"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "sql_injection__guided_2",
+  "class": "sql_injection",
+  "app_code": "import sqlite3\n\ndef handle(query, state):\n    name = (query.get(\"name\") or [\"\"])[0]\n\n    flag = state.get(\"flag\", \"\")\n\n    con = sqlite3.connect(\":memory:\")\n    cur = con.cursor()\n\n    cur.executescript(\"\"\"\n        CREATE TABLE products (\n            id   INTEGER PRIMARY KEY,\n            name TEXT,\n            desc TEXT\n        );\n        CREATE TABLE secrets (\n            id    INTEGER PRIMARY KEY,\n            token TEXT\n        );\n    \"\"\")\n\n    cur.execute(\"INSERT INTO products (name, desc) VALUES (?, ?)\",\n                (\"Widget A\", \"A sturdy widget for everyday use.\"))\n    cur.execute(\"INSERT INTO products (name, desc) VALUES (?, ?)\",\n                (\"Widget B\", \"A lightweight variant.\"))\n    cur.execute(\"INSERT INTO secrets (token) VALUES (?)\", (flag,))\n    con.commit()\n\n    sql = \"SELECT name, desc FROM products WHERE name = '\" + name + \"'\"\n\n    try:\n        rows = cur.execute(sql).fetchall()\n    except sqlite3.OperationalError as e:\n        con.close()\n        return 400, {\"Content-Type\": \"text/plain\"}, \"DB error: \" + str(e)\n\n    con.close()\n\n    if not rows:\n        return 200, {\"Content-Type\": \"text/plain\"}, \"No results found.\"\n\n    lines = []\n    for row in rows:\n        lines.append(\"Name: \" + str(row[0]))\n        lines.append(\"Desc: \" + str(row[1]))\n        lines.append(\"\")\n    return 200, {\"Content-Type\": \"text/plain\"}, \"\\n\".join(lines).strip()\n",
+  "state_template": {
+    "flag": "__FLAG__"
+  },
+  "exploit": {
+    "name": ["' UNION SELECT token, 'x' FROM secrets--"]
+  },
+  "benign": {
+    "name": ["Widget A"]
+  },
+  "wrong": {
+    "name": ["' OR '1'='1"]
+  },
+  "control": {
+    "query": {"name": ["' UNION SELECT 6*7, 'x'--"]},
+    "expect": "42"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

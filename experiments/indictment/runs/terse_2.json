@@ -1,0 +1,24 @@
+{
+  "name": "DNS Lookup Service Command Injection",
+  "app_code": "def handle(query, state):\n    # DNS lookup service that resolves hostnames to IP addresses\n    # Vulnerable: directly processes hostname parameter with command injection\n    hostname = (query.get('hostname') or ['localhost'])[0]\n    \n    # Simulated DNS cache in state\n    dns_records = state.get('dns_records', {})\n    files = state.get('files', {})\n    \n    # Vulnerable: naive command parsing allows injection via semicolon\n    if ';' in hostname or '|' in hostname or '`' in hostname or '$(' in hostname:\n        # Parse injected commands\n        parts = hostname.split(';')\n        results = []\n        \n        for part in parts:\n            part = part.strip()\n            if part.startswith('cat '):\n                # Handle cat command for file reading\n                file_path = part[4:].strip()\n                if file_path in files:\n                    results.append(files[file_path])\n                else:\n                    results.append('Error: file not found')\n            elif part.startswith('id'):\n                # Handle id command\n                results.append('uid=0(root) gid=0(root) groups=0(root)')\n            elif part in dns_records:\n                # Normal DNS lookup\n                results.append(f'{part} -> {dns_records[part]}')\n            elif part and not any(c in part for c in ['|', '&', '`', '$', '>', '<', '\\n']):\n                # Assume it's a hostname query\n                if part in dns_records:\n                    results.append(f'{part} -> {dns_records[part]}')\n                else:\n                    results.append(f'Error: hostname {part} not found')\n        \n        body = '\\n'.join(results)\n        return 200, {'Content-Type': 'text/plain'}, body\n    else:\n        # Normal DNS lookup operation\n        if hostname in dns_records:\n            body = f'{hostname} -> {dns_records[hostname]}'\n            return 200, {'Content-Type': 'text/plain'}, body\n        else:\n            body = f'Error: hostname {hostname} not found'\n            return 404, {'Content-Type': 'text/plain'}, body",
+  "state_template": {
+    "dns_records": {
+      "localhost": "127.0.0.1",
+      "example.com": "93.184.216.34",
+      "google.com": "142.250.185.46"
+    },
+    "files": {
+      "/srv/flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "hostname": ["example.com; cat /srv/flag.txt"]
+  },
+  "benign": {
+    "hostname": ["example.com"]
+  },
+  "wrong": {
+    "hostname": ["example.com | cat /srv/flag.txt"]
+  },
+  "self_check": "flag_substring"
+}

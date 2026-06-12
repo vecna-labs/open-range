@@ -53,7 +53,16 @@ def _load_seed_and_init_state(seed_path: Path) -> dict:
         "accounts": payload["accounts"],
         "files": payload.get("files", {}),
         "schema": schema,
+        "guarded": payload.get("guarded", {}),
     }
+
+
+def _scan_leaks(body, guarded):
+    # Which guarded (HIDDEN) values reached this response. Records node IDS ONLY —
+    # never the secret value — so the request log cannot be grepped for the flag.
+    # Canonical pure form: cyber_webapp.consequence.detect_leak.
+    text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+    return sorted(nid for nid, value in guarded.items() if value and value in text)
 
 
 {% for handler in handlers %}
@@ -116,7 +125,8 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(status, headers, body)
 
     def respond(self, status, headers, body):
-        self.server.log_access(self.command, self.path, status)
+        leaked = _scan_leaks(body, self.server.state.get("guarded", {}))
+        self.server.log_access(self.command, self.path, status, leaked)
         content_type = headers.get("Content-Type", "application/octet-stream")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -138,8 +148,10 @@ class WebappServer(ThreadingHTTPServer):
         self.log_path = log_path
         self.state = state
 
-    def log_access(self, method, path, status):
+    def log_access(self, method, path, status, leaked=()):
         row = {"method": method, "path": path, "status": status}
+        if leaked:
+            row["leaked"] = list(leaked)
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
 

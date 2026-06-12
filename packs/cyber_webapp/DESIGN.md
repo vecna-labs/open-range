@@ -288,3 +288,254 @@ richer default instruction are the natural next steps —
 Client-side shapes (XSS, CSRF) need a victim NPC and wait. The LLM intra-class
 diversity layer (§2) waits — params vary per build today, but the code *shape*
 per class is fixed; richer structural variety is the documented next step.
+
+---
+
+## 8. The verifier is the ceiling — verification, reward, and the path past plant-by-construction
+
+§2 set the line: procedural owns correctness, the LLM owns variety behind
+admission. This section answers the three questions that line raises once you take
+it seriously — *what is the verifier, why does it set the agent's ceiling, and how
+does generation move to the LLM without losing the measurement* — and records the
+direction decided for the sim-to-real study.
+
+### 8.1 Two ways to prove a world solvable
+
+A generated world is training data only if it is provably solvable, and the proof
+is always the same shape: exhibit a solution a checker accepts. Two places to put
+that proof:
+
+- **Plant-by-construction** (today, §3; the LAVA / Juliet lineage). Staging plants
+  a known vuln so a known technique reaches a planted flag; `pentest.py::check_success`
+  confirms `submitted == flag.value_ref`. Deterministic, cheap, reproducible — and
+  **bounded by the catalog**: the agent can only learn the classes we plant.
+- **Generate-then-verify** (the AgentWorld lineage). An LLM writes the world *and*
+  a solver *and* a checker; admit if the solver passes the checker. General and
+  realistic — but the proof is only as trustworthy as the LLM that wrote it, and
+  **a generator and a verifier that are the same model share blind spots**: the toy
+  `{{7*7}}` engines our own audit caught (§6, since fixed) *passed their own tests*.
+  A self-checking LLM loop admits exactly those.
+
+Neither is the answer alone. Plant-by-construction is measurement-grade but capped;
+generate-then-verify scales but self-certifies. The synthesis is to **take the
+LLM's generator and refuse its verifier-as-truth** — keep an independent verifier,
+and never let the model own the flag or the checker.
+
+### 8.2 The verification ladder
+
+Order verifiers by trust, lowest ceiling to highest:
+
+| rung | verifier | judge? | ceiling |
+| --- | --- | --- | --- |
+| 1 | **planted-flag match** (`check_success` today) | none | the catalog |
+| 2 | **report ↔ graph structure** — agent's `{kind, endpoint, technique}` vs the graph's `vulnerability` node + `affects` edge | none | declared vulns |
+| 3 | **invariant violation** — a `HIDDEN` value reaches output it shouldn't | none | the invariants you state |
+| 4 | **execution effect** — a real boundary crossed in a sandbox | none | what you instrument |
+| 5 | **LLM judge** | yes | the judge |
+
+The design rule: **push verification down this ladder, reserve the judge for the
+irreducible tail.** Rungs 1–4 are mechanical and judge-free; only genuinely
+ambiguous findings (subtle logic flaws, disclosure of debatable sensitivity) need
+rung 5. So the gym is *not* fundamentally capped at a judge — it is capped by how
+much of "what counts as a violation" we can mechanize, and rungs 3–4 mechanize most
+of security.
+
+There is no `Claim` primitive in the graph (`_ir.py` has `Node`, `Edge`,
+`Visibility`, `Role`). Rung 2's "ground truth" is already present as **edges**:
+`holds` ("this record holds this secret in this field"), `affects` ("this vuln
+affects this endpoint"), and `Visibility.HIDDEN` on the secret. A report-vs-graph
+check matches against those — no new primitive, no judge.
+
+### 8.3 The spine: one change unifies the ladder
+
+The whole architecture lands on a single generalization of code that already
+exists. `check_success` today asks *did the one planted flag appear in a response*:
+
+```
+expected = flag.attrs["value_ref"]; ok = submitted == expected
+```
+
+Generalize it to *did any `HIDDEN` value reach output it should not have* — and the
+same function becomes rung 1 **and** rung 3. That one move:
+
+- **keeps planted mode** (the planted flag is a `HIDDEN` value, so the check still
+  fires);
+- **unlocks emergent mode** (a leak the generator never planted still trips it — no
+  planted flag required);
+- **is the judge-free verifiable reward** a GRPO trainer needs (a programmatic
+  check — the cyber analog of "is the math answer correct");
+- **catches novel exploits**, because it watches the *consequence* (a hidden value
+  escaped), not a *mechanism* (a specific CWE).
+
+This is the spine of everything below: a ~10-line generalization of
+`pentest.py::check_success`, validated against worlds we already trust. (Whether a
+leak came via the *intended* technique or a shortcut is a separate question — the
+mutual-exclusivity / no-shortcut probe of §6 is the validity gate; consequence
+verification supplies the *reward*, the shortcut probe supplies the *label*.)
+
+### 8.4 Instrument consequences, not mechanisms
+
+Mechanisms are infinite and evolving; you cannot enumerate them, and enumerating
+them *is* the catalog ceiling. **Consequences are few and stable** — an
+unauthenticated read of `HIDDEN` data, a write across a boundary, code execution,
+exfil of a planted canary. Instrument the consequence and a mechanism that reaches
+it is confirmed regardless of how it got there — including one the generator never
+intended. That is how the gym exceeds the model that builds it.
+
+The honest qualifier: the live oracle (`consequence.py`) matches the `HIDDEN` value
+by **raw substring**, so it confirms a leak only when the value reaches output *in
+recoverable form*. An exfil that base64/hex/url-encodes or otherwise transforms the
+value slips past it — a known false-negative (documented in `consequence.py`).
+Canonicalizing response bodies before the scan would widen coverage; it is deferred
+until emergent mode, where many/encoded leaks actually arise, lands.
+
+How far this reaches is gated by backing (§"what stays an emulation"):
+
+- **At `PROCESS` (now):** the only observable consequence is a value reaching an
+  HTTP response — response-leak. `check_success`'s `flag_from_response` is already
+  this in embryo; generalizing it to *any* `HIDDEN` value (8.3) is in reach today.
+- **At `CONTAINER` ([#252](https://github.com/vecna-labs/open-range/issues/252) /
+  [#202](https://github.com/vecna-labs/open-range/issues/202), Docker-blocked
+  locally):** real OS effects — a file read outside web root, a process spawned —
+  become observable. File-read and code-exec consequences light up only here. This
+  is the gating dependency for the upper ladder, and it is the same container the
+  benchmarks ride on.
+
+### 8.5 Generation ≠ finding — why a mediocre builder is enough
+
+Producing software with real flaws is an easier, *different* competence than
+finding them (the generator/discriminator gap GANs and self-play exploit). A
+mediocre LLM writing a webapp leaks genuine bugs it never intended; finding those
+is real skill, uncorrelated with the builder's own finding ability. **The catch:**
+this only holds for *emergent* bugs. The moment we plant a catalog class the bug is
+not emergent and the ceiling is the catalog again. So the two modes coexist by
+design:
+
+| mode | proof | reproducible? | ceiling | role |
+| --- | --- | --- | --- | --- |
+| **planted** | construction + flag-match | fully (seed) | catalog | the controlled H2 **measurement** axis |
+| **emergent** | consequence verification (8.3) | via build-time freeze | generated-software diversity | the ceiling-raising **research** axis |
+
+The consequence verifier (8.3) is what *unifies* them: planted mode checks "the
+planted value leaked," emergent mode checks "any hidden value leaked," same
+function. Emergent mode is a real departure from §3's plant-by-construction and is
+the new work; planted mode stays exactly as it is, because the study needs a
+reproducible, known-ground-truth axis to measure transfer against. An LLM in the
+build path trades pure seed-determinism for **generate-verify-freeze**: generate
+once, verify by consequence, freeze to a content-addressed snapshot — the study
+reads frozen worlds, so reproducibility holds.
+
+### 8.6 Where the reward and the trainer live — the boundary
+
+The gym builds, admits, and verifies worlds; it **never runs the agent or the RL
+loop**. So:
+
+- **Gym (this pack):** the verdict surface — `check_success` and its generalization
+  (8.3), the report-vs-graph check (rung 2), the graph-wide invariant callables
+  `Ontology.validate` already accepts. This is the verifiable reward *source*.
+- **Trainer (`openrange_trl`, the consumer):** GRPO itself. GRPO removes the *value
+  network*, not the reward — its judge-free property comes from the reward being
+  *verifiable* (DeepSeek-R1-Zero: GRPO + rule reward, no critic, no reward model).
+  The gym supplies that verifiable reward; the trainer computes group-relative
+  advantage. `test_trl_cyber.py` already wires this: the world's held-out verdict,
+  graded over HTTP, is the reward, and GRPO needs only that different actions earn
+  different grades.
+
+On reward *shape*: GRPO needs variance within a group, and a binary leak/no-leak
+signal is sparse. The pentest verdict already returns **three rungs**
+(`reached_endpoint → extracted_anything → matched_flag`, all graph-observable) —
+that graded surface is the variance GRPO learns from, and it generalizes with 8.3.
+(The exploit chain can densify further as potential-based shaping, but shaping
+toward the *planted* chain biases against novel paths — use it for the
+`easy`/bootstrapping tier, drop it when chasing emergent findings.)
+
+Keeping GRPO in the trainer and the verdict in the gym is not pedantry — putting
+rollout/eval in the gym is the category error this project has hit before.
+
+### 8.7 So who sets the ceiling
+
+Not the builder's finding ability (generation ≠ finding). Not the judge (mechanize
+below it, rungs 1–4). The ceiling is **the diversity of software the generator can
+emit × the expressiveness of the consequences and invariants we instrument** — both
+higher and more honest limits than "a mediocre LLM" or "a judge's taste." The
+co-evolution is productive because of the asymmetry: bugs are *easy to make*, *hard
+to find*, *cheap to confirm once reached*, so generator and agent climb together
+without either being a great vuln-hunter. The genuine frontier limit is a novel
+*class* — a consequence type never instrumented; you cannot confirm a violation of
+a property you never stated. That is real and far-off: consequence instrumentation
+reaches novel *instances and chains* of known property-violations (most of real
+pentesting); new categories stay human-seeded. A fine place for the wall.
+
+### 8.8 First step — the experiment that earns the design
+
+Before trusting any of this, prove the verifier is worth trusting, then use it to
+indict the naive loop:
+
+1. **Build + validate the consequence verifier on one class** (e.g.
+   `command_injection`): generalize `check_success` to "any `HIDDEN` value leaked,"
+   and confirm it against worlds we already trust — it must pass every existing
+   faithful exploit and reject every trivial/neutralized negative in
+   `test_cyber_staged_generation.py`. *The verifier is validated against known
+   ground truth before it audits anything.*
+2. **Run the indictment:** have an LLM generate world + solver + self-checker for
+   that class, N times. Grade each by (a) its own self-check and (b) the validated
+   verifier. **Measure the admit-gap** — worlds the self-check passes that the
+   independent verifier rejects as trivially-solvable or unfaithful — and let the
+   number be what it is (see §8.10).
+
+Scope honestly: this runs at `PROCESS`, so it exercises the response-leak
+consequence only; file-read / code-exec consequences wait on the container (8.4).
+One class, one figure, the whole mechanism proven small.
+
+### 8.10 The indictment runs — what they actually showed
+
+Runs 2026-06-11 (`experiments/indictment/`, full writeup in its `RESULTS.md`): 89
+LLM-generated worlds (Claude sonnet/haiku) across `command_injection`, `sql_injection`,
+`ssti`, `path_traversal`, guided and unguided, the final run carrying each generator's
+**own checker** (the real loop) plus a computed faithfulness control.
+
+| run | shipped | broken (self-caught) | admit-gap |
+| --- | --- | --- | --- |
+| A — guided cmdi (21) | 21 | 0 | 1 (trivial) |
+| B — unguided cmdi (20) | 6 | 14 | 0 |
+| C — 4 classes, real checkers (48) | 43 | 5 | 1 (faked engine) |
+
+The honest result is **narrower than this section first predicted, and consistent:**
+the admit-gap is **~2–4% of shipped worlds**, and did not widen with harder classes,
+bigger N, or real LLM checkers. Findings:
+
+1. The self-check is a **strong, necessary filter** — it catches the dominant failure,
+   *unsolvable* worlds (14/20 unguided cmdi never self-admit: faked tool output, the
+   stub reused, exploits that echo the literal marker).
+2. Two predicted amplifiers **didn't materialise.** Generated checkers were mostly
+   sound (`flag in response`), so broken worlds were self-rejected, not shipped; and
+   weak generation produces *more broken* worlds, not *more contaminated* ones.
+3. **The harder finding: an independent verifier is itself hard to get right.** The
+   harness mis-fired in both directions, each found only by hand-auditing real worlds —
+   false *negatives* (it took three probe iterations to stop passing `log-file-viewer`
+   trivial worlds) and false *positives* (judging faithfulness on the generator's own
+   "wrong" query flagged a real shell and real jinja2 as unfaithful; the fix is to judge
+   only on the computed control). The reliable signals are **triviality** and
+   **faked-engine**; the generator-supplied wrong-vector is not.
+
+So the defensible claim is not "self-verification fails" but: **its gross failures
+(broken worlds) are self-caught, the residual impurity is a small consistent tail
+(~2–4%) invisible to the self-check, and the genuinely hard part is building an
+independent verifier reliable enough to measure that tail.** That tail still matters —
+a `command_injection` set even 2% arbitrary-file-read biases a per-class transfer
+number — which is the independent verifier's job.
+
+### 8.9 Status of this direction
+
+| piece | state |
+| --- | --- |
+| planted-flag verifier (rung 1) | **done** — `check_success` |
+| graded reward rungs for GRPO variance | **done** — pentest subgoals; `test_trl_cyber.py` |
+| LLM behind admission (instruction, mutation enrichment) | **done** — `llm_generation.py`, strictly non-correctness-path |
+| any-hidden-leak verifier (rung 1+3 spine, 8.3) | **done** — `consequence.py`, validated on all 9 classes |
+| indictment: independent shortcut/faithfulness probes + run (8.8, 8.10) | **done** — `experiments/indictment/`, gap ≈3.7% |
+| wire the verifier into live `check_success` (runtime leak-capture) | **next** — needed before a training run |
+| LLM generates the *world* (emergent mode, 8.5) | partial — used in the indictment; not yet a gym mode |
+| report ↔ graph check (rung 2) | designed, unbuilt |
+| execution-effect consequences (rung 4) | **blocked** on container ([#252](https://github.com/vecna-labs/open-range/issues/252) / [#202](https://github.com/vecna-labs/open-range/issues/202)) |
+| novel-class discovery | far-future, human-seeded (8.7) |

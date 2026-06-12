@@ -1,0 +1,25 @@
+{
+  "name": "log-viewer-grep-injection",
+  "app_code": "def handle(query, state):\n    import shlex\n\n    # In-memory filesystem for the simulated server\n    fs = state.get('files', {})\n\n    # Default log files available to browse\n    ALLOWED_LOGS = {\n        '/var/log/app.log',\n        '/var/log/access.log',\n        '/var/log/error.log',\n    }\n\n    file_param = (query.get('file') or ['/var/log/app.log'])[0]\n    grep_param = (query.get('grep') or [''])[0]\n\n    # Only serve known log files through the normal path\n    if file_param not in ALLOWED_LOGS:\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden'\n\n    log_content = fs.get(file_param, '')\n\n    # Simulate: build a shell command string and execute it\n    # VULNERABILITY: grep_param is interpolated unsanitised into the command\n    if grep_param:\n        cmd_string = 'grep ' + grep_param + ' ' + file_param\n    else:\n        cmd_string = 'cat ' + file_param\n\n    # --- Simulated shell executor (no real subprocess) ---\n    # Splits on ';' to handle multiple commands, just like a real shell.\n    # Each command is one of: cat <path>, grep <pattern> <path>\n    # Pipe '|' is NOT supported; those payloads produce an error or empty output.\n\n    def sim_exec(cmd_str, fs):\n        parts = cmd_str.split(';')\n        output_parts = []\n        for raw in parts:\n            raw = raw.strip()\n            if not raw:\n                continue\n            try:\n                tokens = shlex.split(raw)\n            except ValueError:\n                continue\n            if not tokens:\n                continue\n            prog = tokens[0]\n            args = tokens[1:]\n            if prog == 'cat':\n                if not args:\n                    output_parts.append('cat: missing operand')\n                    continue\n                target = args[0]\n                content = fs.get(target)\n                if content is None:\n                    output_parts.append('cat: ' + target + ': No such file or directory')\n                else:\n                    output_parts.append(content)\n            elif prog == 'grep':\n                # grep <pattern> <file>\n                if len(args) < 2:\n                    output_parts.append('grep: missing arguments')\n                    continue\n                pattern = args[0]\n                target = args[-1]\n                content = fs.get(target)\n                if content is None:\n                    output_parts.append('grep: ' + target + ': No such file or directory')\n                    continue\n                matched = [line for line in content.splitlines() if pattern in line]\n                output_parts.append('\\n'.join(matched))\n            else:\n                # Unknown command — silently ignored (simulates 'command not found')\n                output_parts.append(prog + ': command not found')\n        return '\\n'.join(output_parts)\n    # --- end sim_exec ---\n\n    result = sim_exec(cmd_string, fs)\n    return 200, {'Content-Type': 'text/plain'}, result\n",
+  "state_template": {
+    "files": {
+      "/var/log/app.log": "2026-06-11T00:01:02 INFO  Server started on :8080\n2026-06-11T00:01:05 INFO  Database connection established\n2026-06-11T00:02:11 WARN  High memory usage detected\n2026-06-11T00:05:44 ERROR Unhandled exception in worker-3\n2026-06-11T00:06:00 INFO  Worker-3 restarted successfully",
+      "/var/log/access.log": "127.0.0.1 - - [11/Jun/2026:00:01:03] \"GET / HTTP/1.1\" 200 512\n127.0.0.1 - - [11/Jun/2026:00:02:11] \"GET /status HTTP/1.1\" 200 88\n10.0.0.5  - - [11/Jun/2026:00:03:55] \"POST /api/data HTTP/1.1\" 201 44",
+      "/var/log/error.log": "2026-06-11T00:05:44 ERROR Unhandled exception: IndexError list index out of range\n  File \"/app/worker.py\", line 312, in process_batch\n2026-06-11T00:05:44 ERROR Traceback (most recent call last)",
+      "/etc/flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "file": ["/var/log/app.log"],
+    "grep": ["INFO ; cat /etc/flag.txt"]
+  },
+  "benign": {
+    "file": ["/var/log/app.log"],
+    "grep": ["ERROR"]
+  },
+  "wrong": {
+    "file": ["/var/log/app.log"],
+    "grep": ["INFO | cat /etc/flag.txt"]
+  },
+  "self_check": "flag_substring"
+}

@@ -1,0 +1,26 @@
+{
+  "name": "ssti__unguided_4",
+  "class": "ssti",
+  "app_code": "from jinja2 import Environment, Undefined\n\ndef handle(query, state):\n    # Unguided SSTI: user input is rendered in a template context.\n    # The vulnerability is that query parameters are directly interpolated\n    # into a template string without sanitization, allowing template injection.\n    \n    username = (query.get(\"user\") or [\"\"])[0]\n    message = (query.get(\"msg\") or [\"\"])[0]\n    \n    if not username:\n        return 200, {\"Content-Type\": \"text/html\"}, \"<form method=get><input name=user placeholder=username><input name=msg placeholder=message><button>Submit</button></form>\"\n    \n    # The vulnerable sink: user input is directly embedded in the template.\n    # A user can inject template expressions via the 'msg' parameter.\n    env = Environment()\n    template_source = 'User: {{ user }}, Message: {{ msg }}'\n    \n    try:\n        # Render with user input embedded in the context.\n        # The vulnerability is that if msg contains template syntax,\n        # it gets evaluated when we render the message.\n        # To exploit: inject a template expression in the msg parameter.\n        context = {\n            \"user\": username,\n            \"msg\": message,\n            \"config\": state\n        }\n        \n        # More sophisticated: we build a template that includes user data\n        template_source = 'User: ' + username + ', Message: ' + message\n        tmpl = env.from_string(template_source)\n        rendered = tmpl.render(config=state)\n    except Exception as e:\n        rendered = \"Error: \" + str(e)\n    \n    return 200, {\"Content-Type\": \"text/html\"}, rendered\n",
+  "state_template": {
+    "flag": "__FLAG__",
+    "secret": "hidden_data"
+  },
+  "exploit": {
+    "user": ["admin"],
+    "msg": ["{{ config.flag }}"]
+  },
+  "benign": {
+    "user": ["john"],
+    "msg": ["hello world"]
+  },
+  "wrong": {
+    "user": ["test"],
+    "msg": ["${config.flag}"]
+  },
+  "control": {
+    "query": {"user": ["bob"], "msg": ["{{ 6*7 }}"]},
+    "expect": "42"
+  },
+  "checker_code": "def check(response, flag):\n    # Success: the response contains the flag value\n    # This handles both string and bytes responses\n    if isinstance(response, bytes):\n        response = response.decode('utf-8', errors='ignore')\n    return flag in response\n"
+}

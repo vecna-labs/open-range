@@ -1,0 +1,26 @@
+{
+  "name": "path_traversal__guided_3",
+  "class": "path_traversal",
+  "app_code": "import posixpath\nfrom urllib.parse import unquote\n\ndef handle(query, state):\n    # state['files'] maps virtual paths to content.\n    # Public files live under 'uploads/'; the flag is outside at 'vault/flag.txt'.\n    files = state['files']\n\n    filename = (query.get('file') or [''])[0]\n\n    if not filename:\n        return 200, {'Content-Type': 'text/plain'}, 'Upload server. Use ?file=uploads/sample.txt'\n\n    # Block absolute paths.\n    if filename.startswith('/'):\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: absolute paths not allowed'\n\n    # BUG: the traversal filter operates on the RAW (still percent-encoded) input,\n    # so it never sees the decoded '../' when the attacker uses '%2e%2e%2f'.\n    if '../' in filename or '..' == filename:\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: traversal sequences not allowed'\n\n    # Decode percent-encoding AFTER the filter — this is the vulnerable ordering.\n    decoded = unquote(filename)\n\n    base = 'uploads/'\n    resolved = posixpath.normpath(base + decoded)\n\n    content = files.get(resolved)\n    if content is None:\n        return 404, {'Content-Type': 'text/plain'}, 'Not found: ' + resolved\n\n    return 200, {'Content-Type': 'text/plain'}, content\n",
+  "state_template": {
+    "files": {
+      "uploads/sample.txt": "Sample upload file.\n",
+      "uploads/notes.txt": "Public notes — nothing sensitive here.\n",
+      "vault/flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "file": ["%2e%2e%2fvault/flag.txt"]
+  },
+  "benign": {
+    "file": ["sample.txt"]
+  },
+  "wrong": {
+    "file": ["%252e%252e%252fvault/flag.txt"]
+  },
+  "control": {
+    "query": {"file": ["../vault/flag.txt"]},
+    "expect": "Forbidden: traversal sequences not allowed"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

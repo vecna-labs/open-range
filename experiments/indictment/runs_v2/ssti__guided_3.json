@@ -1,0 +1,22 @@
+{
+  "name": "ssti__guided_3",
+  "class": "ssti",
+  "app_code": "from jinja2 import Environment\n\ndef handle(query, state):\n    secret = state['secret']\n    # A naive \"report previewer\" that lets users supply a custom report\n    # title template string via ?title=... The title is spliced directly\n    # into a Jinja2 template and rendered by the real engine with no\n    # sandbox, so any Jinja2 expression inside title is evaluated.\n    # The flag is bound in the render context as `token`, so\n    # {{token}} leaks it.  Correct arithmetic works too (control probe).\n    #\n    # Wrong technique: Mako/Cheetah-style ${...} is not Jinja2 syntax\n    # and is echoed back verbatim — it never executes.\n\n    title = (query.get('title') or ['Monthly Report'])[0]\n\n    env = Environment()\n    template_src = \"<report><title>\" + title + \"</title><body>Your report is ready.</body></report>\"\n    try:\n        tmpl = env.from_string(template_src)\n        rendered = tmpl.render(token=secret)\n    except Exception as e:\n        rendered = '[template error: {}]'.format(e)\n\n    return 200, {'Content-Type': 'text/xml'}, rendered\n",
+  "state_template": {
+    "secret": "__FLAG__"
+  },
+  "exploit": {
+    "title": ["{{token}}"]
+  },
+  "benign": {
+    "title": ["Q2 Summary"]
+  },
+  "wrong": {
+    "title": ["${token}"]
+  },
+  "control": {
+    "query": {"title": ["{{6*7}}"]},
+    "expect": "42"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

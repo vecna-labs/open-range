@@ -1,0 +1,24 @@
+{
+  "name": "ssti__unguided_1",
+  "class": "ssti",
+  "app_code": "from jinja2 import Environment\n\ndef handle(query, state):\n    message = (query.get('message') or [''])[0]\n    if not message:\n        return 200, {'Content-Type': 'text/plain'}, 'Usage: ?message=<text>'\n    \n    # Vulnerable: user input is spliced directly into a Jinja2 template\n    # and rendered by the real engine with access to the state context.\n    # The flag is available as 'data' in the render context.\n    env = Environment()\n    template_src = 'echo ' + message\n    \n    try:\n        tmpl = env.from_string(template_src)\n        output = tmpl.render(data=state['flag'])\n    except Exception as e:\n        output = 'error: {}'.format(e)\n    \n    return 200, {'Content-Type': 'text/plain'}, output\n",
+  "state_template": {
+    "flag": "__FLAG__"
+  },
+  "exploit": {
+    "message": ["{{data}}"]
+  },
+  "benign": {
+    "message": ["hello world"]
+  },
+  "wrong": {
+    "message": ["{data}"]
+  },
+  "control": {
+    "query": {
+      "message": ["{{6*7}}"]
+    },
+    "expect": "42"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

@@ -8,6 +8,8 @@ from types import MappingProxyType
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import PackError
 
+from cyber_webapp.consequence import guarded_values
+
 _DEFAULT_TABLE = "records"
 _DEFAULT_KEY_COLUMN = "key"
 _DEFAULT_VALUE_COLUMN = "value"
@@ -103,6 +105,10 @@ def project_seed(graph: WorldGraph) -> Mapping[str, object]:
             "records": records_for_schema,
             "files": files_out,
             "schema": schema,
+            # The values the runtime watches for at the response boundary — every
+            # HIDDEN node's value_ref, by node id. Same source the offline verifier
+            # (consequence.detect_leak) reads, so live and test agree by construction.
+            "guarded": dict(guarded_values(graph)),
         },
     )
 

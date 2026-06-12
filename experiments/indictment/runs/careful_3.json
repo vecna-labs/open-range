@@ -1,0 +1,22 @@
+{
+  "name": "backup-export-utility",
+  "app_code": "def handle(query, state):\n    import shlex\n\n    # A tiny in-memory shell executor that operates on state['files'].\n    # Supports: cat <path>, ls <dir>, echo <args...>\n    # Returns stdout string or an error message.\n    def run_cmd(cmd_str, files):\n        try:\n            tokens = shlex.split(cmd_str.strip())\n        except ValueError:\n            return ''\n        if not tokens:\n            return ''\n        prog = tokens[0]\n        args = tokens[1:]\n        if prog == 'cat':\n            if not args:\n                return 'cat: missing operand'\n            path = args[0]\n            return files.get(path, 'cat: ' + path + ': No such file or directory')\n        elif prog == 'ls':\n            prefix = (args[0].rstrip('/') + '/') if args else '/'\n            entries = [p[len(prefix):].split('/')[0]\n                       for p in files if p.startswith(prefix) and p != prefix]\n            seen = []\n            for e in entries:\n                if e and e not in seen:\n                    seen.append(e)\n            return '\\n'.join(seen) if seen else ''\n        elif prog == 'echo':\n            return ' '.join(args)\n        else:\n            return prog + ': command not found'\n\n    # Split a raw shell string on unquoted ; separators.\n    # We do NOT use shlex here intentionally — this replicates a naive\n    # string-split that creates the injection surface.\n    def split_pipeline(raw):\n        cmds = []\n        current = []\n        in_sq = False\n        for ch in raw:\n            if ch == \"'\" and not in_sq:\n                in_sq = True\n                current.append(ch)\n            elif ch == \"'\" and in_sq:\n                in_sq = False\n                current.append(ch)\n            elif ch == ';' and not in_sq:\n                cmds.append(''.join(current))\n                current = []\n            else:\n                current.append(ch)\n        cmds.append(''.join(current))\n        return cmds\n\n    files = state.get('files', {})\n    filename = (query.get('filename') or [''])[0]\n\n    if not filename:\n        return 200, {'Content-Type': 'text/plain'}, 'Usage: ?filename=<backup_name>'\n\n    # Vulnerable interpolation: user-supplied filename is embedded into a\n    # shell command string without sanitisation.\n    raw_command = 'cat /backups/' + filename\n\n    # Execute each semicolon-separated command and collect output.\n    outputs = []\n    for cmd in split_pipeline(raw_command):\n        out = run_cmd(cmd, files)\n        if out:\n            outputs.append(out)\n\n    body = '\\n'.join(outputs)\n    if not body:\n        body = '(empty)'\n\n    return 200, {'Content-Type': 'text/plain'}, body\n",
+  "state_template": {
+    "files": {
+      "/backups/db_2026-06-01.sql.gz": "-- database backup (binary omitted)",
+      "/backups/db_2026-06-10.sql.gz": "-- database backup (binary omitted)",
+      "/backups/config_snapshot.tar.gz": "-- config snapshot (binary omitted)",
+      "/etc/flag": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "filename": ["db_2026-06-01.sql.gz; cat /etc/flag"]
+  },
+  "benign": {
+    "filename": ["db_2026-06-10.sql.gz"]
+  },
+  "wrong": {
+    "filename": ["${/etc/flag}"]
+  },
+  "self_check": "flag_substring"
+}

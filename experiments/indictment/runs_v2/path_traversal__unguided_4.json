@@ -1,0 +1,23 @@
+{
+  "name": "path_traversal__unguided_4",
+  "class": "path_traversal",
+  "app_code": "def handle(query, state):\n    # Simple file server that serves files from 'data/' directory\n    # The flag is stored outside this directory\n    vfs = state.get('files', {})\n    base_dir = 'data/'\n\n    filename = (query.get('file') or [''])[0]\n    if not filename:\n        return 200, {'Content-Type': 'text/plain'}, 'Provide a file parameter'\n\n    # Block absolute paths (start with /)\n    if filename.startswith('/'):\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: absolute paths not allowed'\n\n    # Block filenames that contain null bytes\n    if '\\x00' in filename:\n        return 400, {'Content-Type': 'text/plain'}, 'Invalid filename'\n\n    # Attempt to restrict access: check if filename contains '..' at the start\n    # BUG: This only blocks '..' at the beginning, not in the middle\n    if filename.startswith('..'):\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: relative traversal at start not allowed'\n\n    # Join the base directory with the filename without normalizing\n    resolved = base_dir + filename\n\n    # Try to read from the virtual filesystem\n    content = vfs.get(resolved)\n    if content is None:\n        return 404, {'Content-Type': 'text/plain'}, 'Not found: ' + resolved\n\n    return 200, {'Content-Type': 'text/plain'}, content\n",
+  "state_template": {
+    "files": {
+      "data/welcome.txt": "Welcome to the data server.",
+      "data/index.txt": "Available files: welcome.txt, index.txt",
+      "flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "file": ["../flag.txt"]
+  },
+  "benign": {
+    "file": ["welcome.txt"]
+  },
+  "wrong": {
+    "file": ["/flag.txt"]
+  },
+  "control": null,
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

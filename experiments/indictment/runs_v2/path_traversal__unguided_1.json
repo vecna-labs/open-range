@@ -1,0 +1,23 @@
+{
+  "name": "path_traversal__unguided_1",
+  "class": "path_traversal",
+  "app_code": "def handle(query, state):\n    vfs = state.get('vault', {})\n    base = '/var/assets'\n\n    requested = (query.get('asset') or [''])[0]\n    if not requested:\n        return 200, {'Content-Type': 'text/plain'}, 'Asset server: use ?asset=file.dat'\n\n    if requested.startswith('/'):\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: no absolute paths'\n\n    full_path = base + '/' + requested\n    content = vfs.get(full_path)\n    if content is None:\n        return 404, {'Content-Type': 'text/plain'}, 'Asset not found: ' + requested + '\\n'\n\n    return 200, {'Content-Type': 'text/plain'}, content\n",
+  "state_template": {
+    "vault": {
+      "/var/assets/app.js": "console.log('Asset loaded');",
+      "/var/assets/style.css": "body { margin: 0; }",
+      "/var/secrets/flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "asset": ["../secrets/flag.txt"]
+  },
+  "benign": {
+    "asset": ["app.js"]
+  },
+  "wrong": {
+    "asset": ["..\\..\\secrets\\flag.txt"]
+  },
+  "control": null,
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

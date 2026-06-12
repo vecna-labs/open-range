@@ -1,0 +1,28 @@
+{
+  "name": "command_injection__unguided_1",
+  "class": "command_injection",
+  "app_code": "def handle(query, state):\n    \"\"\"\n    A simple name greeter that builds a shell command from user input.\n    The name parameter is interpolated directly into a shell command\n    and executed against the in-memory filesystem, vulnerable to semicolon\n    injection to execute arbitrary commands.\n    \"\"\"\n    name = (query.get('name') or [''])[0]\n    files = state.get('files', {})\n\n    def _run_cmd(cmd_str):\n        \"\"\"Execute a single command against the in-memory environment.\"\"\"\n        cmd_str = cmd_str.strip()\n        if not cmd_str:\n            return ''\n        # Simple command parser: split on spaces, handle basic builtins\n        parts = cmd_str.split()\n        if not parts:\n            return ''\n        prog = parts[0]\n        args = parts[1:]\n\n        if prog == 'echo':\n            return ' '.join(args)\n        elif prog == 'cat':\n            if not args:\n                return ''\n            path = args[0]\n            content = files.get(path)\n            if content is None:\n                return f'cat: {path}: No such file or directory'\n            return content\n        elif prog == 'ls':\n            target = args[0] if args else '/'\n            entries = set()\n            for fp in files:\n                if fp.startswith(target.rstrip('/') + '/'):\n                    remainder = fp[len(target.rstrip('/')) + 1:]\n                    top = remainder.split('/')[0]\n                    entries.add(top)\n            return '\\n'.join(sorted(entries)) if entries else ''\n        elif prog == 'whoami':\n            return 'user'\n        else:\n            return f'{prog}: command not found'\n\n    # The vulnerability: build a command with user input and execute it\n    # Semicolons separate commands in the shell, so '; cat /path' injects a new command\n    cmd = f'echo hello {name}'\n    \n    # Simulate shell command execution with semicolon splitting\n    commands = cmd.split(';')\n    outputs = []\n    for sub_cmd in commands:\n        outputs.append(_run_cmd(sub_cmd))\n    \n    output = '\\n'.join(outputs)\n\n    body = (\n        '<html><head><title>Greeter</title></head><body>'\n        '<h1>Name Greeter</h1>'\n        f'<p>Input: <code>{name}</code></p>'\n        f'<pre>{output}</pre>'\n        '</body></html>'\n    )\n    return 200, {'Content-Type': 'text/html'}, body\n",
+  "state_template": {
+    "files": {
+      "/home/user/flag.txt": "__FLAG__",
+      "/etc/passwd": "root:x:0:0:root:/root:/bin/bash\\nuser:x:1000:1000:user:/home/user:/bin/bash",
+      "/home/user/note.txt": "This is a test file"
+    }
+  },
+  "exploit": {
+    "name": ["test; cat /home/user/flag.txt"]
+  },
+  "benign": {
+    "name": ["Alice"]
+  },
+  "wrong": {
+    "name": ["`cat /home/user/flag.txt`"]
+  },
+  "control": {
+    "query": {
+      "name": ["x; echo $((6*7))"]
+    },
+    "expect": "42"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

@@ -1,0 +1,27 @@
+{
+  "name": "Uptime Checker",
+  "app_code": "import shlex\n\ndef handle(query, state):\n    \"\"\"Simulate a network uptime checker that 'pings' a host and reports latency.\n    The host parameter is interpolated into a shell command string whose backtick\n    subshell expressions are evaluated, making it vulnerable to command injection\n    via backtick substitution.  Semicolons are NOT a separator here, so the only\n    working injection technique is backtick (or a $()-style variant if you add one).\n    \"\"\"\n    host = (query.get(\"host\") or [\"localhost\"])[0]\n\n    files = state.get(\"files\", {})\n    known_hosts = state.get(\"hosts\", {})\n\n    def _run_cmd(cmd_str):\n        \"\"\"Execute a single command against the in-memory environment.\"\"\"\n        cmd_str = cmd_str.strip()\n        if not cmd_str:\n            return \"\"\n        try:\n            parts = shlex.split(cmd_str)\n        except ValueError:\n            return \"[parse error]\"\n        if not parts:\n            return \"\"\n        prog = parts[0]\n        args = parts[1:]\n        if prog == \"ping\":\n            # -c and its value are flags; the target is the last argument.\n            target = args[-1] if args else \"\"\n            info = known_hosts.get(target)\n            if info is None:\n                return f\"ping: {target}: Name or service not known\"\n            return (\n                f\"PING {target} ({target}): 56 data bytes\\n\"\n                f\"--- {target} ping statistics ---\\n\"\n                f\"4 packets transmitted, 4 received, {info['loss_pct']}% packet loss\\n\"\n                f\"round-trip min/avg/max = {info['latency_ms']}/{info['latency_ms']}/{info['latency_ms']} ms\"\n            )\n        elif prog == \"cat\":\n            path = args[0] if args else \"\"\n            content = files.get(path)\n            if content is None:\n                return f\"cat: {path}: No such file or directory\"\n            return content\n        elif prog == \"echo\":\n            return \" \".join(args)\n        elif prog == \"ls\":\n            path = args[0] if args else \"/\"\n            entries = set()\n            for fp in files:\n                if fp.startswith(path.rstrip(\"/\") + \"/\"):\n                    remainder = fp[len(path.rstrip(\"/\")) + 1:]\n                    top = remainder.split(\"/\")[0]\n                    entries.add(top)\n            return \"\\n\".join(sorted(entries)) if entries else \"\"\n        elif prog == \"id\":\n            return \"uid=1000(checker) gid=1000(checker) groups=1000(checker)\"\n        elif prog == \"hostname\":\n            return files.get(\"/etc/hostname\", \"uptime-checker\")\n        else:\n            return f\"{prog}: command not found\"\n\n    def _expand_backticks(text):\n        \"\"\"Expand backtick subshell expressions `cmd` -> output of cmd.\n        This is the intentionally vulnerable substitution path.  The result of\n        the subshell is spliced into the surrounding command string in-place,\n        just as a real shell would do.\n        \"\"\"\n        result = []\n        i = 0\n        while i < len(text):\n            if text[i] == '`':\n                end = text.find('`', i + 1)\n                if end == -1:\n                    # Unclosed backtick — treat the rest as a literal.\n                    result.append(text[i:])\n                    break\n                inner = text[i + 1:end]\n                result.append(_run_cmd(inner))\n                i = end + 1\n            else:\n                result.append(text[i])\n                i += 1\n        return \"\".join(result)\n\n    # The uptime checker builds a ping command from the user-supplied host and\n    # runs it through a simulated shell that expands backtick subshells.\n    # There is NO semicolon splitting, so `;`-based injection is inert.\n    cmd = f\"ping -c 4 {host}\"\n    expanded = _expand_backticks(cmd)\n    output = _run_cmd(expanded)\n\n    body = (\n        \"<html><head><title>Uptime Checker</title></head><body>\"\n        \"<h1>Network Uptime Checker</h1>\"\n        f\"<p>Probing host: <code>{host}</code></p>\"\n        f\"<pre>{output}</pre>\"\n        \"</body></html>\"\n    )\n    return 200, {\"Content-Type\": \"text/html\"}, body\n",
+  "state_template": {
+    "hosts": {
+      "localhost": {"latency_ms": 0.05, "loss_pct": 0},
+      "api.internal": {"latency_ms": 1.2, "loss_pct": 0},
+      "db.internal": {"latency_ms": 0.8, "loss_pct": 0},
+      "backup.internal": {"latency_ms": 45.3, "loss_pct": 2}
+    },
+    "files": {
+      "/etc/hostname": "uptime-checker-01",
+      "/etc/motd": "Authorized use only.",
+      "/srv/secret/flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "host": ["`cat /srv/secret/flag.txt`"]
+  },
+  "benign": {
+    "host": ["api.internal"]
+  },
+  "wrong": {
+    "host": ["localhost; cat /srv/secret/flag.txt"]
+  },
+  "self_check": "flag_substring"
+}

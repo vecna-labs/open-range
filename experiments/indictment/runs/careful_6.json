@@ -1,0 +1,36 @@
+{
+  "name": "git-webhook-branch-inject",
+  "app_code": "def handle(query, state):\n    import shlex\n\n    # ------------------------------------------------------------------ #\n    # Simulated in-memory shell executor.                                  #\n    # Supports a tiny subset: cat, git log, semicolon chaining, pipes.    #\n    # All filesystem access is against state['fs'] (dict path->content).  #\n    # ------------------------------------------------------------------ #\n    def _exec_single(argv, fs):\n        if not argv:\n            return ''\n        cmd = argv[0]\n        if cmd == 'cat':\n            if len(argv) < 2:\n                return 'cat: missing operand'\n            path = argv[1]\n            return fs.get(path, 'cat: ' + path + ': No such file or directory')\n        if cmd == 'echo':\n            return ' '.join(argv[1:])\n        if cmd == 'git':\n            # git log --oneline --decorate <branch>\n            if len(argv) >= 2 and argv[1] == 'log':\n                branch = argv[-1] if len(argv) > 2 else 'HEAD'\n                refs = state.get('refs', {})\n                commits = refs.get(branch, [])\n                if not commits:\n                    return \"fatal: your current branch '\" + branch + \"' does not have any commits yet\"\n                return '\\n'.join(commits)\n            return 'git: unknown subcommand'\n        return cmd + ': command not found'\n\n    def _exec_pipeline(parts, fs):\n        # parts: list of argv lists joined by '|'\n        # For this sim only the last command's stdin matters (we ignore pipe data).\n        # Real pipeline would chain; here we just run each and return last output.\n        out = ''\n        for argv in parts:\n            out = _exec_single(argv, fs)\n        return out\n\n    def _exec_chain(cmdline, fs):\n        # Split on ';' first (semicolon chaining), then handle '|' within each segment.\n        output_parts = []\n        for segment in cmdline.split(';'):\n            segment = segment.strip()\n            if not segment:\n                continue\n            # Split on '|'\n            pipe_parts = [shlex.split(p) for p in segment.split('|') if p.strip()]\n            output_parts.append(_exec_pipeline(pipe_parts, fs))\n        return '\\n'.join(filter(None, output_parts))\n\n    # ------------------------------------------------------------------ #\n    # Webhook handler: receives a POST-style query from a git hosting      #\n    # service, runs 'git log' to confirm the branch exists, and returns   #\n    # a summary for the CI dashboard.                                      #\n    # ------------------------------------------------------------------ #\n    repo  = (query.get('repo')  or ['unknown'])[0]\n    event = (query.get('event') or ['push'])[0]\n    branch = (query.get('branch') or ['main'])[0]\n\n    fs = state.get('fs', {})\n\n    # VULNERABILITY: branch is interpolated unsanitised into the command string.\n    cmdline = 'git log --oneline --decorate ' + branch\n    output = _exec_chain(cmdline, fs)\n\n    body = (\n        '<html><body>'\n        '<h2>Webhook received</h2>'\n        '<pre>repo: ' + repo + '\\nevent: ' + event + '\\nbranch: ' + branch + '</pre>'\n        '<h3>Recent commits</h3>'\n        '<pre>' + output + '</pre>'\n        '</body></html>'\n    )\n    return 200, {'Content-Type': 'text/html'}, body\n",
+  "state_template": {
+    "refs": {
+      "main": [
+        "a1b2c3d Fix null pointer in auth middleware",
+        "e4f5a6b Add rate limiting to webhook endpoint",
+        "c7d8e9f Initial commit"
+      ],
+      "dev": [
+        "f0a1b2c WIP: refactor webhook parser"
+      ]
+    },
+    "fs": {
+      "/var/git/hooks/.flag": "__FLAG__",
+      "/etc/hostname": "webhook-prod-01"
+    }
+  },
+  "exploit": {
+    "repo": ["acme/backend"],
+    "event": ["push"],
+    "branch": ["main; cat /var/git/hooks/.flag"]
+  },
+  "benign": {
+    "repo": ["acme/backend"],
+    "event": ["push"],
+    "branch": ["main"]
+  },
+  "wrong": {
+    "repo": ["acme/backend"],
+    "event": ["push"],
+    "branch": ["../../../var/git/hooks/.flag"]
+  },
+  "self_check": "flag_substring"
+}

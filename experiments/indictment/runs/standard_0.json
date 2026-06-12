@@ -1,0 +1,30 @@
+{
+  "name": "System Status Page",
+  "app_code": "import shlex\n\ndef handle(query, state):\n    \"\"\"Simulate a system status page that runs shell-like commands to report service health.\n    The page accepts a 'service' parameter and checks its status by 'running' the command.\n    The simulated shell executor is vulnerable to OS command injection.\n    \"\"\"\n    service = (query.get(\"service\") or [\"web\"])[0]\n\n    # Simulate a tiny in-memory shell executor.\n    # Recognises: 'status <name>', 'cat <path>', and pipelines/semicolons.\n    files = state.get(\"files\", {})\n    env_vars = state.get(\"env\", {})\n\n    def _run_cmd(cmd_str):\n        \"\"\"Execute a single command token list against the in-memory state.\"\"\"\n        cmd_str = cmd_str.strip()\n        if not cmd_str:\n            return \"\"\n        try:\n            parts = shlex.split(cmd_str)\n        except ValueError:\n            return \"[parse error]\"\n        if not parts:\n            return \"\"\n        prog = parts[0]\n        args = parts[1:]\n        if prog == \"status\":\n            svc = args[0] if args else \"\"\n            services = state.get(\"services\", {})\n            info = services.get(svc)\n            if info is None:\n                return f\"unknown service: {svc}\"\n            return f\"{svc}: {info}\"\n        elif prog == \"cat\":\n            path = args[0] if args else \"\"\n            content = files.get(path)\n            if content is None:\n                return f\"cat: {path}: No such file or directory\"\n            return content\n        elif prog == \"echo\":\n            return \" \".join(args)\n        elif prog == \"env\":\n            return \"\\n\".join(f\"{k}={v}\" for k, v in env_vars.items())\n        elif prog == \"ls\":\n            path = args[0] if args else \"/\"\n            # List files whose paths start with path\n            entries = set()\n            for fp in files:\n                if fp.startswith(path.rstrip(\"/\") + \"/\"):\n                    remainder = fp[len(path.rstrip(\"/\")) + 1:]\n                    top = remainder.split(\"/\")[0]\n                    entries.add(top)\n            return \"\\n\".join(sorted(entries)) if entries else \"\"\n        else:\n            return f\"{prog}: command not found\"\n\n    def _eval_pipeline(pipeline_str):\n        \"\"\"Execute a semicolon-separated sequence of commands, return all output.\"\"\"\n        # Split on semicolons (outside quotes) — intentionally vulnerable.\n        # We do a simple character scan to respect single/double quotes.\n        segments = []\n        current = []\n        in_sq = False\n        in_dq = False\n        for ch in pipeline_str:\n            if ch == \"'\" and not in_dq:\n                in_sq = not in_sq\n                current.append(ch)\n            elif ch == '\"' and not in_sq:\n                in_dq = not in_dq\n                current.append(ch)\n            elif ch == \";\" and not in_sq and not in_dq:\n                segments.append(\"\".join(current))\n                current = []\n            else:\n                current.append(ch)\n        segments.append(\"\".join(current))\n\n        outputs = []\n        for seg in segments:\n            out = _run_cmd(seg)\n            if out:\n                outputs.append(out)\n        return \"\\n\".join(outputs)\n\n    # Build the command that the status page would \"run\" for the given service.\n    # An attacker can inject additional commands after a semicolon.\n    cmd = f\"status {service}\"\n    output = _eval_pipeline(cmd)\n\n    body = (\n        \"<html><head><title>System Status</title></head><body>\"\n        \"<h1>System Status Dashboard</h1>\"\n        f\"<pre>{output}</pre>\"\n        \"</body></html>\"\n    )\n    return 200, {\"Content-Type\": \"text/html\"}, body\n",
+  "state_template": {
+    "services": {
+      "web": "running",
+      "db": "running",
+      "cache": "degraded",
+      "queue": "stopped"
+    },
+    "files": {
+      "/etc/hostname": "status-host-01",
+      "/srv/flag.txt": "__FLAG__"
+    },
+    "env": {
+      "PATH": "/usr/local/bin:/usr/bin:/bin",
+      "APP_ENV": "production"
+    }
+  },
+  "exploit": {
+    "service": ["web; cat /srv/flag.txt"]
+  },
+  "benign": {
+    "service": ["web"]
+  },
+  "wrong": {
+    "service": ["web && cat /srv/flag.txt"]
+  },
+  "self_check": "flag_substring"
+}

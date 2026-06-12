@@ -1,0 +1,27 @@
+{
+  "name": "path_traversal__guided_5",
+  "class": "path_traversal",
+  "app_code": "import posixpath\n\ndef handle(query, state):\n    \"\"\"Document viewer with two compounding bugs:\n    1. Single-pass sanitization strips '../' once, so '....//'' collapses to '../'.\n    2. The prefix guard checks the pre-normpath string, which still starts with\n       'reports/' after the strip, even though normpath resolves outside it.\n    Combined, a payload like '....//confidential/flag.txt' bypasses both checks.\"\"\"\n    files = state['files']\n\n    filename = (query.get('doc') or [''])[0]\n\n    if not filename:\n        return 200, {'Content-Type': 'text/plain'}, 'Document viewer. Use ?doc=summary.txt'\n\n    # Block absolute paths\n    if filename.startswith('/'):\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: absolute paths not allowed'\n\n    # BUG 1: single-pass strip only; '....//'' survives and becomes '../' after one replacement\n    sanitized = filename.replace('../', '')\n\n    base = 'reports/'\n    pre_norm = base + sanitized\n    resolved = posixpath.normpath(pre_norm)\n\n    # BUG 2: prefix guard checks pre_norm (before normpath), not resolved (after normpath);\n    # 'reports/../confidential/flag.txt' starts with 'reports/' so it passes,\n    # but normpath collapses it to 'confidential/flag.txt' which is outside the base.\n    if not pre_norm.startswith('reports/'):\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: must be under reports/'\n\n    content = files.get(resolved)\n    if content is None:\n        return 404, {'Content-Type': 'text/plain'}, 'Not found: ' + resolved\n\n    return 200, {'Content-Type': 'text/plain'}, content\n",
+  "state_template": {
+    "files": {
+      "reports/summary.txt": "Q1 report: all systems nominal.",
+      "reports/index.txt": "Report index: summary.txt, q2.txt",
+      "reports/q2.txt": "Q2 report: growth on track.",
+      "confidential/flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "doc": ["....//confidential/flag.txt"]
+  },
+  "benign": {
+    "doc": ["summary.txt"]
+  },
+  "wrong": {
+    "doc": ["/confidential/flag.txt"]
+  },
+  "control": {
+    "query": {"doc": ["/confidential/flag.txt"]},
+    "expect": "Forbidden: absolute paths not allowed"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

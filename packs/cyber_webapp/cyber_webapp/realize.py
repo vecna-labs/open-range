@@ -149,9 +149,15 @@ class WebappRuntime(SubprocessRuntime):
             flag = str(result["flag_from_response"])
         requests = self._all_requests()
         requests_made = [str(row.get("path", "")) for row in requests if row]
+        leaked: set[str] = set()
+        for row in requests:
+            values = row.get("leaked")
+            if isinstance(values, list):
+                leaked.update(str(v) for v in values)
         return {
             "flag_from_response": flag or None,
             "requests_made": requests_made,
+            "leaked_secret_ids": sorted(leaked),
             "endpoint_serves_200": self._probe_root_200(),
         }
 

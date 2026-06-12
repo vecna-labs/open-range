@@ -1,0 +1,28 @@
+{
+  "name": "command_injection__guided_1",
+  "class": "command_injection",
+  "app_code": "import re\nimport shlex\n\ndef handle(query, state):\n    \"\"\"Simulate a log-viewer page that fetches a named log file.\n    The page accepts a 'filename' parameter and shells out to display the\n    file contents.  A path-prefix check is applied to the raw filename\n    before it is passed to the shell — but the check is bypassed once the\n    filename reaches the in-memory executor because semicolon injection lets\n    an attacker append arbitrary extra commands that are never checked.\n    \"\"\"\n    filename = (query.get(\"filename\") or [\"/var/log/app.log\"])[0]\n\n    # Naively validate: only files starting with /var/log/ are allowed.\n    # This check is performed on the raw filename string BEFORE shell\n    # execution, so an attacker can pass '/var/log/app.log; cat /var/log/secret/flag.txt'\n    # — the prefix check passes (the string starts with /var/log/) but the\n    # injected second command executes without any check.\n    ALLOWED_PREFIX = \"/var/log/\"\n    if not filename.startswith(ALLOWED_PREFIX):\n        return 403, {\"Content-Type\": \"text/plain\"}, \"Access denied: path must be under /var/log/\"\n\n    files = state.get(\"files\", {})\n\n    def _expand(token):\n        \"\"\"Expand $((expr)) arithmetic in a single token (best-effort).\"\"\"\n        def _arith(m):\n            expr = m.group(1)\n            if re.match(r'^[0-9+\\-*/() ]+$', expr):\n                try:\n                    return str(eval(expr))  # noqa: S307 - intentional CTF sandbox\n                except Exception:\n                    return m.group(0)\n            return m.group(0)\n        return re.sub(r'\\$\\(\\(([^)]+)\\)\\)', _arith, token)\n\n    def _run_cmd(cmd_str):\n        \"\"\"Execute a single command against the in-memory state.\"\"\"\n        cmd_str = cmd_str.strip()\n        if not cmd_str:\n            return \"\"\n        try:\n            parts = shlex.split(cmd_str)\n        except ValueError:\n            return \"[parse error]\"\n        if not parts:\n            return \"\"\n        prog = parts[0]\n        args = [_expand(a) for a in parts[1:]]\n        if prog == \"cat\":\n            path = args[0] if args else \"\"\n            content = files.get(path)\n            if content is None:\n                return f\"cat: {path}: No such file or directory\"\n            return content\n        elif prog == \"echo\":\n            return \" \".join(args)\n        elif prog == \"ls\":\n            path = args[0] if args else \"/\"\n            entries = set()\n            for fp in files:\n                if fp.startswith(path.rstrip(\"/\") + \"/\"):\n                    remainder = fp[len(path.rstrip(\"/\")) + 1:]\n                    top = remainder.split(\"/\")[0]\n                    entries.add(top)\n            return \"\\n\".join(sorted(entries)) if entries else \"\"\n        elif prog == \"id\":\n            return \"uid=33(www-data) gid=33(www-data) groups=33(www-data)\"\n        else:\n            return f\"{prog}: command not found\"\n\n    def _eval_pipeline(pipeline_str):\n        \"\"\"Execute a semicolon-separated sequence of commands.\n        Intentionally does NOT guard against injection.\n        \"\"\"\n        segments = []\n        current = []\n        in_sq = False\n        in_dq = False\n        for ch in pipeline_str:\n            if ch == \"'\" and not in_dq:\n                in_sq = not in_sq\n                current.append(ch)\n            elif ch == '\"' and not in_sq:\n                in_dq = not in_dq\n                current.append(ch)\n            elif ch == \";\" and not in_sq and not in_dq:\n                segments.append(\"\".join(current))\n                current = []\n            else:\n                current.append(ch)\n        segments.append(\"\".join(current))\n        outputs = []\n        for seg in segments:\n            out = _run_cmd(seg)\n            if out:\n                outputs.append(out)\n        return \"\\n\".join(outputs)\n\n    # The unsanitised filename (after the flawed prefix check) is interpolated\n    # directly into a shell command string — enabling semicolon injection.\n    cmd = f\"cat {filename}\"\n    output = _eval_pipeline(cmd)\n\n    body = (\n        \"<html><head><title>Log Viewer</title></head><body>\"\n        \"<h1>Log Viewer</h1>\"\n        f\"<pre>{output}</pre>\"\n        \"</body></html>\"\n    )\n    return 200, {\"Content-Type\": \"text/html\"}, body\n",
+  "state_template": {
+    "files": {
+      "/var/log/app.log": "2026-06-11 00:01:02 INFO  server started on :8080\n2026-06-11 00:01:05 INFO  database connected\n2026-06-11 00:01:10 DEBUG request GET /healthz 200\n",
+      "/var/log/auth.log": "2026-06-11 00:00:01 sshd[1234]: Accepted publickey for deploy\n",
+      "/root/.flag": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "filename": ["/var/log/app.log; cat /root/.flag"]
+  },
+  "benign": {
+    "filename": ["/var/log/app.log"]
+  },
+  "wrong": {
+    "filename": ["' OR '1'='1"]
+  },
+  "control": {
+    "query": {
+      "filename": ["/var/log/app.log; echo OR$((6*7))"]
+    },
+    "expect": "OR42"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "unguided-haiku_2",
+  "app_code": "import subprocess\n\ndef handle(query, state):\n    flag = state[\"flag\"]\n    filename = (query.get(\"file\") or [\"\"])[0]\n    if not filename:\n        return 200, {\"Content-Type\": \"text/plain\"}, \"Usage: ?file=<filename>\"\n    try:\n        result = subprocess.run(\n            f\"cat {filename}\",\n            shell=True,\n            capture_output=True,\n            text=True,\n            timeout=3\n        )\n        return 200, {\"Content-Type\": \"text/plain\"}, result.stdout\n    except subprocess.TimeoutExpired:\n        return 500, {\"Content-Type\": \"text/plain\"}, \"Timeout\"\n    except Exception as e:\n        return 500, {\"Content-Type\": \"text/plain\"}, \"Error: \" + str(e)",
+  "state_template": {
+    "flag": "__FLAG__"
+  },
+  "exploit": {
+    "file": ["/etc/passwd; echo __FLAG__"]
+  },
+  "benign": {
+    "file": ["/etc/hostname"]
+  },
+  "wrong": {
+    "file": ["test'; DROP TABLE flags; --"]
+  },
+  "self_check": "flag_substring"
+}

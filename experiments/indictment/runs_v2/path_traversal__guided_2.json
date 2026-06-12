@@ -1,0 +1,24 @@
+{
+  "name": "path_traversal__guided_2",
+  "class": "path_traversal",
+  "app_code": "import os\nimport posixpath\n\ndef handle(query, state):\n    \"\"\"A simple file-serving endpoint for a help-docs directory.\n\n    Files are stored in state['files'] as a flat dict mapping absolute virtual\n    paths to their contents.  The served 'root' is /var/www/helpdocs/.\n    Requests supply a 'doc' parameter (e.g. ?doc=intro.txt).\n\n    The handler rejects requests that begin with '/' to block absolute-path\n    attacks, but it does NOT canonicalise the path before resolving it, so\n    a dot-dot traversal like ?doc=../../etc/shadow still reaches outside the\n    intended directory.\n    \"\"\"\n    files = state.get(\"files\", {})\n    root = \"/var/www/helpdocs\"\n\n    doc = (query.get(\"doc\") or [\"\"])[0]\n\n    # Block empty requests\n    if not doc:\n        return 400, {\"Content-Type\": \"text/plain\"}, \"Missing 'doc' parameter.\"\n\n    # Block absolute paths — but dot-dot traversal is not blocked\n    if doc.startswith(\"/\"):\n        return 403, {\"Content-Type\": \"text/plain\"}, \"Forbidden: absolute paths are not allowed.\"\n\n    # Naively join without canonicalisation\n    virtual_path = root + \"/\" + doc\n\n    # Normalise only for the lookup key (simulate how an OS resolves the path)\n    resolved = posixpath.normpath(virtual_path)\n\n    content = files.get(resolved)\n    if content is None:\n        return 404, {\"Content-Type\": \"text/plain\"}, \"Not found: \" + doc\n\n    return 200, {\"Content-Type\": \"text/plain\"}, content\n",
+  "state_template": {
+    "files": {
+      "/var/www/helpdocs/intro.txt": "Welcome to the help portal. Use ?doc=intro.txt to browse docs.",
+      "/var/www/helpdocs/faq.txt": "Q: How do I reset my password?\nA: Click 'Forgot password' on the login page.",
+      "/var/www/helpdocs/contact.txt": "Email support@example.com for assistance.",
+      "/etc/app/secret.conf": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "doc": ["../../../etc/app/secret.conf"]
+  },
+  "benign": {
+    "doc": ["intro.txt"]
+  },
+  "wrong": {
+    "doc": ["/etc/app/secret.conf"]
+  },
+  "control": null,
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

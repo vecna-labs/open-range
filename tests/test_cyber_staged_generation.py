@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.codegen import _realize_graph
+from cyber_webapp.consequence import LeakVerdict, detect_leak, guarded_values
 from cyber_webapp.vulnerabilities import CATALOG
 from graphschema import WorldGraph
 from openrange_pack_sdk import Snapshot
@@ -299,20 +300,20 @@ def _exploit_url(kind: str, graph: WorldGraph, base: str) -> str:
     return f"{stem}?{_weak_cred_query(params)}"  # weak_credentials
 
 
-@pytest.mark.parametrize(
-    ("loot", "kind"),
-    [
-        ("file", "path_traversal"),
-        ("file", "command_injection"),
-        ("file", "xxe"),
-        ("file", "ssti"),
-        ("db", "sql_injection"),
-        ("db", "ssrf"),
-        ("db", "broken_authz"),
-        ("db", "idor"),
-        ("db", "weak_credentials"),
-    ],
-)
+_CLASS_CASES = [
+    ("file", "path_traversal"),
+    ("file", "command_injection"),
+    ("file", "xxe"),
+    ("file", "ssti"),
+    ("db", "sql_injection"),
+    ("db", "ssrf"),
+    ("db", "broken_authz"),
+    ("db", "idor"),
+    ("db", "weak_credentials"),
+]
+
+
+@pytest.mark.parametrize(("loot", "kind"), _CLASS_CASES)
 def test_fanout_class_episode_recovers_flag(
     loot: str, kind: str, tmp_path: Path
 ) -> None:
@@ -339,6 +340,228 @@ def test_fanout_class_episode_recovers_flag(
     finally:
         svc.close()
     assert report.passed, report.episode_result.reason
+
+
+def _exploit_response_body(snap: Snapshot, kind: str, tmp_path: Path) -> str:
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = svc.surface(handle)["base_url"]
+        body: str = (
+            urllib.request.urlopen(_exploit_url(kind, snap.graph, base), timeout=10)
+            .read()
+            .decode()
+        )
+        return body
+    finally:
+        svc.close()
+
+
+@pytest.mark.parametrize(("loot", "kind"), _CLASS_CASES)
+def test_consequence_verifier_detects_real_flag_leak(
+    loot: str, kind: str, tmp_path: Path
+) -> None:
+    # The independent leak oracle must fire on every faithful exploit and name the
+    # flag as the leaked node — agreeing with the planted-flag verdict it generalizes.
+    snap = _admit(loot, vuln_kinds={kind: 1})
+    body = _exploit_response_body(snap, kind, tmp_path)
+    verdict = detect_leak(snap.graph, [body])
+    assert verdict.occurred
+    assert "secret_flag" in verdict.leaked
+
+
+def test_consequence_verifier_silent_on_benign_response(tmp_path: Path) -> None:
+    # A benign request leaks nothing, so the oracle stays silent: no false positive.
+    snap = _admit("file", vuln_kinds={"command_injection": 1})
+    vuln = next(
+        n
+        for n in snap.graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "command_injection"
+    )
+    params = vuln.attrs["params"]
+    assert isinstance(params, Mapping)
+    endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
+    url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = svc.surface(handle)["base_url"]
+        url = (
+            f"{base}{url_path}?{params['target_param']}={urllib.parse.quote('8.8.8.8')}"
+        )
+        body = urllib.request.urlopen(url, timeout=10).read().decode()
+    finally:
+        svc.close()
+    assert not detect_leak(snap.graph, [body]).occurred
+
+
+def test_consequence_verifier_silent_on_neutralized_attack(tmp_path: Path) -> None:
+    # An attack-shaped attempt the sampled context neutralizes recovers no flag,
+    # so the oracle must stay silent on it too — not only on benign traffic.
+    snap = _admit("file", vuln_kinds={"command_injection": 1})
+    vuln = next(
+        n
+        for n in snap.graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "command_injection"
+    )
+    params = vuln.attrs["params"]
+    assert isinstance(params, Mapping)
+    flag_path = _flag_record_key(snap.graph)
+    endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
+    url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
+    # The injection vector the sampled context strips — the wrong technique.
+    if params.get("inj_context") == "substitution":
+        wrong = f"x; cat {flag_path}"
+    else:
+        wrong = f"$(cat {flag_path})"
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = svc.surface(handle)["base_url"]
+        url = f"{base}{url_path}?{params['target_param']}={urllib.parse.quote(wrong)}"
+        body = urllib.request.urlopen(url, timeout=10).read().decode()
+    finally:
+        svc.close()
+    assert not detect_leak(snap.graph, [body]).occurred
+
+
+def test_guarded_values_selects_only_hidden_value_refs() -> None:
+    from cyber_webapp.ontology import ONTOLOGY_ID
+    from graphschema import Node, Visibility
+
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+    # Guarded: HIDDEN with a long-enough string value_ref.
+    graph.add_node(
+        Node(
+            id="flag",
+            kind="secret",
+            attrs={"value_ref": "FLAGVALUE"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    # Not guarded: PUBLIC is the observable surface, even carrying a value_ref.
+    graph.add_node(Node(id="pub", kind="credential", attrs={"value_ref": "PUBVALUE0"}))
+    # Not guarded: HIDDEN but no usable value_ref — missing, non-str, or below the
+    # length floor (a short value would substring-match benign text).
+    graph.add_node(
+        Node(
+            id="novref",
+            kind="vulnerability",
+            attrs={"kind": "ssti"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    graph.add_node(
+        Node(
+            id="nonstr",
+            kind="secret",
+            attrs={"value_ref": 123},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    graph.add_node(
+        Node(
+            id="short",
+            kind="secret",
+            attrs={"value_ref": "tiny"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    assert guarded_values(graph) == {"flag": "FLAGVALUE"}
+
+
+def test_detect_leak_reports_leaked_nodes_and_handles_empties() -> None:
+    from cyber_webapp.ontology import ONTOLOGY_ID
+    from graphschema import Node, Visibility
+
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+    graph.add_node(
+        Node(
+            id="flag",
+            kind="secret",
+            attrs={"value_ref": "FLAGVALUE"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    hit = detect_leak(graph, ["nothing here", "prefix-FLAGVALUE-suffix"])
+    assert hit.occurred
+    assert hit.leaked == frozenset({"flag"})
+    assert not detect_leak(graph, ["clean", "also clean"]).occurred
+    assert not detect_leak(graph, []).occurred
+    # No guarded values at all -> silent via the early return.
+    assert not detect_leak(WorldGraph(ontology=ONTOLOGY_ID), ["FLAGVALUE"]).occurred
+    assert LeakVerdict(frozenset()).occurred is False
+
+
+def test_seed_carries_guarded_map_from_graph() -> None:
+    # Convergence: the values the runtime watches for are exactly what the offline
+    # verifier reads — both come from consequence.guarded_values(graph).
+    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    seed = json.loads(_realize_graph(snap.graph)["seed.json"])
+    assert seed["guarded"] == dict(guarded_values(snap.graph))
+    assert seed["guarded"]["secret_flag"] == str(
+        snap.graph.nodes["secret_flag"].attrs["value_ref"]
+    )
+
+
+def test_rendered_app_scans_leaks_to_node_ids_not_values() -> None:
+    # Integrity: the app records WHICH guarded node leaked (its id), never the secret
+    # value — so the request log can't be grepped for the flag.
+    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    namespace: dict[str, object] = {}
+    exec(compile(_realize_graph(snap.graph)["app.py"], "<app>", "exec"), namespace)
+    scan = namespace["_scan_leaks"]
+    assert scan(b"prefix SECRETVAL suffix", {"secret_flag": "SECRETVAL"}) == [
+        "secret_flag"
+    ]
+    assert scan("plain-str SECRETVAL", {"secret_flag": "SECRETVAL"}) == ["secret_flag"]
+    assert scan(b"nothing in here", {"secret_flag": "SECRETVAL"}) == []
+
+
+def test_live_episode_records_the_flag_leak_as_a_node_id(tmp_path: Path) -> None:
+    # The §8.3 spine, end to end: a real exploit makes the flag cross the response
+    # boundary, and the runtime records that consequence on final_state — by node id.
+    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = svc.surface(handle)["base_url"]
+        urllib.request.urlopen(
+            _exploit_url("sql_injection", snap.graph, base), timeout=10
+        ).read()
+        report = svc.stop_episode(handle)
+    finally:
+        svc.close()
+    leaked = report.final_state.get("leaked_secret_ids") or []
+    assert "secret_flag" in leaked
+
+
+def test_check_success_surfaces_leak_without_changing_the_reward_rungs() -> None:
+    from cyber_webapp.families.pentest import WebappPentest
+
+    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    fam = WebappPentest()
+    base = {"requests_made": ["/svc"], "flag_from_response": "wrong"}
+
+    leaked = fam.check_success(
+        snap.graph, pentest, {**base, "leaked_secret_ids": ["secret_flag"]}
+    )
+    quiet = fam.check_success(snap.graph, pentest, base)
+    assert "leaked" in leaked.reason and "leaked" not in quiet.reason
+    assert leaked.success is False and quiet.success is False
+    # The averaged subgoal set is unchanged, so the trainer's rungs are intact.
+    assert set(leaked.subgoals) == {
+        "reached_endpoint",
+        "extracted_anything",
+        "matched_flag",
+    }
 
 
 def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:

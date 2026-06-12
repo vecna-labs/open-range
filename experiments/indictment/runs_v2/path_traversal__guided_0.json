@@ -1,0 +1,23 @@
+{
+  "name": "path_traversal__guided_0",
+  "class": "path_traversal",
+  "app_code": "import posixpath\n\ndef handle(query, state):\n    vfs = state.get(\"files\", {})\n    base = \"/srv/public\"\n\n    filename = (query.get(\"file\") or [\"\"])[0]\n    if not filename:\n        listing = [k[len(base)+1:] for k in vfs if k.startswith(base + \"/\")]\n        return 200, {\"Content-Type\": \"text/plain\"}, \"Available: \" + \", \".join(sorted(listing)) + \"\\n\"\n\n    # Block absolute paths supplied directly by the user\n    if filename.startswith(\"/\"):\n        return 403, {\"Content-Type\": \"text/plain\"}, \"Forbidden: absolute paths not allowed\\n\"\n\n    # Naive join — does NOT resolve traversal sequences\n    resolved = base + \"/\" + filename\n\n    content = vfs.get(resolved)\n    if content is None:\n        return 404, {\"Content-Type\": \"text/plain\"}, \"Not found: \" + filename + \"\\n\"\n\n    return 200, {\"Content-Type\": \"text/plain\"}, content\n",
+  "state_template": {
+    "files": {
+      "/srv/public/readme.txt": "Welcome to the file server.\n",
+      "/srv/public/info.txt": "Version 1.0 — public release.\n",
+      "/srv/private/flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "file": ["../private/flag.txt"]
+  },
+  "benign": {
+    "file": ["readme.txt"]
+  },
+  "wrong": {
+    "file": ["/srv/private/flag.txt"]
+  },
+  "control": null,
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

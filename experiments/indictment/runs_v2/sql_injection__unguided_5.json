@@ -1,0 +1,22 @@
+{
+  "name": "sql_injection__unguided_5",
+  "class": "sql_injection",
+  "app_code": "import sqlite3\n\ndef handle(query, state):\n    flag = state.get(\"flag\", \"\")\n    product_id = (query.get(\"product_id\") or [\"\"])[0]\n\n    conn = sqlite3.connect(\":memory:\")\n    cur = conn.cursor()\n\n    # Public inventory table\n    cur.execute(\n        \"CREATE TABLE inventory (\"\n        \"  id INTEGER PRIMARY KEY,\"\n        \"  product_name TEXT,\"\n        \"  stock_count INTEGER\"\n        \")\"\n    )\n    # Hidden table with sensitive data\n    cur.execute(\n        \"CREATE TABLE system_config (\"\n        \"  id INTEGER PRIMARY KEY,\"\n        \"  config_key TEXT,\"\n        \"  config_value TEXT\"\n        \")\"\n    )\n    cur.executemany(\n        \"INSERT INTO inventory (id, product_name, stock_count) VALUES (?, ?, ?)\",\n        [\n            (1, \"Laptop\", 15),\n            (2, \"Monitor\", 42),\n            (3, \"Keyboard\", 87),\n            (4, \"Mouse\", 156),\n        ],\n    )\n    cur.execute(\n        \"INSERT INTO system_config (config_key, config_value) VALUES (?, ?)\",\n        (\"master_token\", flag),\n    )\n    conn.commit()\n\n    if not product_id:\n        conn.close()\n        return 200, {\"Content-Type\": \"text/plain\"}, \"Usage: ?product_id=<id>\"\n\n    # Vulnerable: product_id is concatenated directly into the SQL query\n    sql = (\n        \"SELECT product_name, stock_count\"\n        \" FROM inventory\"\n        \" WHERE id = \" + product_id\n    )\n    try:\n        cur.execute(sql)\n        rows = cur.fetchall()\n    except sqlite3.Error as e:\n        conn.close()\n        return 500, {\"Content-Type\": \"text/plain\"}, \"DB error: \" + str(e)\n\n    conn.close()\n\n    if not rows:\n        return 200, {\"Content-Type\": \"text/plain\"}, \"Product not found.\"\n\n    lines = []\n    for row in rows:\n        lines.append(\"|\".join(str(c) for c in row))\n    return 200, {\"Content-Type\": \"text/plain\"}, \"\\n\".join(lines)\n",
+  "state_template": {
+    "flag": "__FLAG__"
+  },
+  "exploit": {
+    "product_id": ["999 UNION SELECT config_key, config_value FROM system_config WHERE config_key='master_token' --"]
+  },
+  "benign": {
+    "product_id": ["2"]
+  },
+  "wrong": {
+    "product_id": ["1; DROP TABLE inventory; --"]
+  },
+  "control": {
+    "query": {"product_id": ["1 UNION SELECT 'computed', 6*7 --"]},
+    "expect": "42"
+  },
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

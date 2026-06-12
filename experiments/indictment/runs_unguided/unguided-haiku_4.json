@@ -1,0 +1,17 @@
+{
+  "name": "unguided-haiku_4",
+  "app_code": "import subprocess, os, tempfile\n\ndef handle(query, state):\n    flag = state.get(\"flag\", \"\")\n    flag_file = os.path.join(tempfile.gettempdir(), \"flag_app.txt\")\n    with open(flag_file, \"w\") as f:\n        f.write(flag)\n    user = (query.get(\"user\") or [\"\"])[0]\n    result = subprocess.run(\n        f\"whoami > /dev/null && echo User: {user}\",\n        shell=True,\n        capture_output=True,\n        text=True,\n        timeout=5\n    )\n    output = result.stdout if result.stdout else \"no output\"\n    return 200, {\"Content-Type\": \"text/plain\"}, output",
+  "state_template": {
+    "flag": "__FLAG__"
+  },
+  "exploit": {
+    "user": ["admin`cat /tmp/flag_app.txt`"]
+  },
+  "benign": {
+    "user": ["admin"]
+  },
+  "wrong": {
+    "user": ["admin'; DROP TABLE users; --"]
+  },
+  "self_check": "flag_substring"
+}
