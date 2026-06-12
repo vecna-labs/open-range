@@ -620,3 +620,41 @@ runs real RCE (resource/privilege limits, egress, flag-out-of-image) is
 [#265](https://github.com/vecna-labs/open-range/issues/265); sandboxing the `exec`'d
 *verifier source* is the separate, host-side
 [#202](https://github.com/vecna-labs/open-range/issues/202).
+
+## 10. Networked multi-service: real network position
+
+The single-container backing (§9) runs the whole world in one container, every service
+mounted by path prefix — so "internal" services are just `/svc/<name>` paths on the same
+server and SSRF is emulated in-process. The graph already carries the topology primitives
+(`service.exposure` public/internal, `host.zone`, `network.isolation`, `connected_to`),
+but the runtime doesn't enforce them. This stage makes network position **real**, on the
+runtime-first track (#252 per-service realizer; the scale generation that feeds it is #212
+/ #235).
+
+**The shape.** A real SSRF world is: a **public** service (the agent's only entry,
+published) holds the SSRF; an **internal** service (no published port, reachable only on
+the container network) holds the flag. The flag is reachable **only** by pivoting — the
+agent exploits SSRF on the public service to make it fetch the internal service's URL,
+which returns the flag. That is genuine networked exploitation, not a path lookup.
+
+**What it takes (increments):**
+
+1. **Per-service realization.** Split the one generated app into one app per `service`
+   node — each carries only its own endpoints and only its own state (the secrets/records/
+   files of the data_stores it is `backed_by`). The flag stays in its owning internal
+   service; the public service never holds it (so it is never in the public image).
+2. **Networked runtime.** One container per service on a real docker network, each named
+   by its service so they resolve each other by name; publish only the public/entrypoint
+   service to the host; surface its `base_url`. The leak signal is **aggregated across all
+   services' request logs** — the internal service detects it leaking its own flag when it
+   serves it (it has the flag in its own guarded set; the public service does not).
+3. **Real SSRF.** The SSRF handler, in networked mode, actually `urlopen`s the target URL
+   across the network; the world is shaped so the SSRF's internal target is the internal
+   flag service. Recovering the flag requires the pivot; the internal service is not
+   directly reachable from the host.
+4. **Cross-backing parity.** The same SSRF world grades identically on `PROCESS`
+   (emulated, one app) and the networked `CONTAINER` — only fidelity changes.
+
+Later: real lateral movement / credential reuse / `metadata_credential_leak` (currently
+referenced but undefined), then enterprise scale (#212) + lazy realization (#235) on top
+of this runtime, then k8s (#189).
