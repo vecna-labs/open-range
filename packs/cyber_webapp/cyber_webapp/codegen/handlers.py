@@ -15,7 +15,10 @@ from cyber_webapp.vulnerabilities import render_vulnerability
 
 def build_handlers_and_routes(
     graph: WorldGraph,
+    only_services: frozenset[str] | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    # ``only_services`` restricts to one service's own endpoints — the per-service split
+    # that the networked CONTAINER backing realizes (each service is its own container).
     services_by_id: dict[str, Node] = {
         n.id: n for n in graph.nodes.values() if n.kind == "service"
     }
@@ -40,6 +43,8 @@ def build_handlers_and_routes(
     for endpoint_id, endpoint in endpoints_by_id.items():
         service_id = service_for_endpoint.get(endpoint_id)
         if service_id is None:
+            continue
+        if only_services is not None and service_id not in only_services:
             continue
         service = services_by_id[service_id]
         service_name = str(service.attrs.get("name", service_id))

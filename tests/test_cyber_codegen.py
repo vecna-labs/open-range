@@ -43,6 +43,27 @@ def _sample_graph(seed: int = 0) -> WorldGraph:
     return build_result.graph
 
 
+def _multi_service_graph() -> WorldGraph:
+    for seed in range(8):
+        graph = _sample_graph(seed)
+        if sum(1 for n in graph.nodes.values() if n.kind == "service") >= 2:
+            return graph
+    raise AssertionError("no multi-service world found in seeds 0-7")
+
+
+def test_build_handlers_filters_to_one_service() -> None:
+    # The per-service split: building for one service sees only its own endpoints.
+    from cyber_webapp.codegen.handlers import build_handlers_and_routes
+
+    graph = _multi_service_graph()
+    services = [n.id for n in graph.nodes.values() if n.kind == "service"]
+    all_handlers, _ = build_handlers_and_routes(graph)
+    one_handlers, _ = build_handlers_and_routes(graph, frozenset({services[0]}))
+    name = str(graph.nodes[services[0]].attrs.get("name", services[0]))
+    assert 0 < len(one_handlers) < len(all_handlers)
+    assert all(h["name"].startswith(f"handle__{name}__") for h in one_handlers)
+
+
 def test_realize_graph_emits_app_and_seed_files() -> None:
     """The codegen returns a plain mapping containing both required files."""
     files = _realize_graph(_sample_graph())
