@@ -41,7 +41,7 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from openrange_pack_sdk import EpisodeReportLike, Pack, Snapshot, TaskSpec
+from openrange_pack_sdk import Backing, EpisodeReportLike, Pack, Snapshot, TaskSpec
 
 from openrange.core.curriculum import Direction
 from openrange.core.episode import (
@@ -523,13 +523,16 @@ def _make_factory[E: EpisodeEnv](
     run_root: str | Path,
     reward_fn: Callable[[EpisodeReport], Reward],
     env_cls: type[E],
+    backing: Backing,
 ) -> Callable[[], E]:
     snap_map = {s.snapshot_id: s for s in snapshots}
     base = Path(run_root)
     base.mkdir(parents=True, exist_ok=True)
 
     def factory() -> E:
-        service = EpisodeService(pack, base / f"env-{uuid.uuid4().hex[:8]}")
+        service = EpisodeService(
+            pack, base / f"env-{uuid.uuid4().hex[:8]}", backing=backing
+        )
         return env_cls(service=service, snapshots=snap_map, reward_fn=reward_fn)
 
     return factory
@@ -541,6 +544,7 @@ def make_environment_factory(
     run_root: str | Path,
     *,
     reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+    backing: Backing = Backing.PROCESS,
 ) -> Callable[[], OpenRangeEnv]:
     """Build the zero-arg factory TRL calls once per rollout slot.
 
@@ -548,9 +552,10 @@ def make_environment_factory(
     envs in a GRPO generation batch are fully isolated. The factory closes over
     one round's ``snapshots`` (often a single, current world); the curriculum
     re-roots the next round by re-building the dataset + factory against the
-    evolved snapshot.
+    evolved snapshot. ``backing`` picks how each rollout realizes its world —
+    PROCESS by default; CONTAINER trains against the real containerized runtime.
     """
-    return _make_factory(pack, snapshots, run_root, reward_fn, OpenRangeEnv)
+    return _make_factory(pack, snapshots, run_root, reward_fn, OpenRangeEnv, backing)
 
 
 def make_web_environment_factory(
@@ -559,15 +564,18 @@ def make_web_environment_factory(
     run_root: str | Path,
     *,
     reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+    backing: Backing = Backing.PROCESS,
 ) -> Callable[[], WebTargetEnv]:
     """Like ``make_environment_factory`` but yields ``WebTargetEnv`` rollouts.
 
     For packs whose episode realizes a live web target (e.g. the cyber webapp
     pack): each rollout boots its own isolated service + HTTP server, and the
     policy acts through ``http_get`` / ``submit``. Pair with
-    ``build_grpo_dataset(..., tool_guide=WEB_TOOL_GUIDE)``.
+    ``build_grpo_dataset(..., tool_guide=WEB_TOOL_GUIDE)``. ``backing`` picks the
+    runtime — PROCESS by default; CONTAINER (incl. the networked multi-service
+    runtime) trains the policy against the real containerized target.
     """
-    return _make_factory(pack, snapshots, run_root, reward_fn, WebTargetEnv)
+    return _make_factory(pack, snapshots, run_root, reward_fn, WebTargetEnv, backing)
 
 
 def env_trajectory(env: EpisodeEnv) -> Trajectory:

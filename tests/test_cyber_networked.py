@@ -4,6 +4,7 @@ the runtime that runs one container per service on a real network with real SSRF
 from __future__ import annotations
 
 import ast
+import json
 import shutil
 import subprocess
 import urllib.error
@@ -269,3 +270,33 @@ def test_ssrf_parity_across_backings(tmp_path: Path) -> None:
     finally:
         runtime.stop()
     assert flag in container_body
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_networked_ssrf_grades_through_the_container_harness(tmp_path: Path) -> None:
+    # The full grade path the trainer / run_episode use: start the episode on the
+    # CONTAINER backing, recover the flag across the network, submit it, and let the
+    # pack's check_success grade it. Proves the networked world is a gradable episode
+    # end to end — not just an HTTP body that happens to carry the flag.
+    snap = _admit_ssrf()
+    graph = snap.graph
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    path, param, payload = _ssrf_exploit(graph)
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    svc = EpisodeService(WebappPack(), tmp_path, backing=Backing.CONTAINER)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = str(svc.surface(handle)["base_url"])
+        _, body = _get(base, path, {param: payload})
+        assert flag in body  # recovered across the container boundary
+        # Submit the recovered flag the way the harness grades it.
+        (Path(svc.solver_root(handle)) / "result.json").write_text(
+            json.dumps({"flag": flag})
+        )
+        report = svc.stop_episode(handle)
+    finally:
+        svc.close()
+    assert report.passed
+    assert report.episode_result.success
+    assert report.episode_result.subgoals["matched_flag"]

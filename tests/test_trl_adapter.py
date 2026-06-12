@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from openrange_pack_sdk import EpisodeResult, Snapshot
+from openrange_pack_sdk import Backing, EpisodeResult, Snapshot
 from openrange_trl import (
     EpisodeEnv,
     FileWorkspaceTools,
@@ -27,6 +27,7 @@ from openrange_trl import (
     env_trajectory,
     make_environment_factory,
     make_reward_func,
+    make_web_environment_factory,
     reward_variance_policy,
 )
 from swe import SwePack
@@ -66,6 +67,25 @@ def make_env(tmp_path: Path) -> Iterator[EnvMaker]:
 def _solve(env: OpenRangeEnv, instance: str) -> None:
     for path, content in load_instance(instance).gold_files.items():
         env.write_file(path, content)
+
+
+def test_factories_thread_backing_into_each_rollout_service(tmp_path: Path) -> None:
+    # The factory's ``backing`` reaches every rollout's EpisodeService unchanged, so a
+    # GRPO run can train against the CONTAINER runtime (incl. the networked one). The
+    # default stays PROCESS. No reset here — just the constructed service, no realize.
+    snapshot = _admit("calc_sum")
+    default_factory = make_environment_factory(SwePack(), [snapshot], tmp_path / "proc")
+    container_factory = make_web_environment_factory(
+        SwePack(), [snapshot], tmp_path / "cont", backing=Backing.CONTAINER
+    )
+    proc_env = default_factory()
+    cont_env = container_factory()
+    try:
+        assert proc_env.service.backing is Backing.PROCESS
+        assert cont_env.service.backing is Backing.CONTAINER
+    finally:
+        proc_env.service.close()
+        cont_env.service.close()
 
 
 def test_base_env_resets_with_no_tools(tmp_path: Path) -> None:
