@@ -490,10 +490,10 @@ One class, one figure, the whole mechanism proven small.
 
 ### 8.10 The indictment runs — what they actually showed
 
-Runs 2026-06-11 (`experiments/indictment/`, full writeup in its `RESULTS.md`): 89
-LLM-generated worlds (Claude sonnet/haiku) across `command_injection`, `sql_injection`,
-`ssti`, `path_traversal`, guided and unguided, the final run carrying each generator's
-**own checker** (the real loop) plus a computed faithfulness control.
+A one-off validation experiment (run 2026-06-11; scaffolding not kept in the repo) ran
+89 LLM-generated worlds (Claude sonnet/haiku) across `command_injection`,
+`sql_injection`, `ssti`, `path_traversal`, guided and unguided, the final run carrying
+each generator's **own checker** (the real loop) plus a computed faithfulness control.
 
 | run | shipped | broken (self-caught) | admit-gap |
 | --- | --- | --- | --- |
@@ -534,9 +534,9 @@ number — which is the independent verifier's job.
 | graded reward rungs for GRPO variance | **done** — pentest subgoals; `test_trl_cyber.py` |
 | LLM behind admission (instruction, mutation enrichment) | **done** — `llm_generation.py`, strictly non-correctness-path |
 | any-hidden-leak verifier (rung 1+3 spine, 8.3) | **done** — `consequence.py`, validated on all 9 classes |
-| indictment: independent shortcut/faithfulness probes + run (8.8, 8.10) | **done** — `experiments/indictment/`, gap ≈3.7% |
-| wire the verifier into live `check_success` (runtime leak-capture) | **next** — needed before a training run |
-| LLM generates the *world* (emergent mode, 8.5) | partial — used in the indictment; not yet a gym mode |
+| indictment: independent probes + run (8.8, 8.10) | **done** (one-off; scaffolding not kept) — gap ~2–4% |
+| wire the verifier into live `check_success` (runtime leak-capture) | **done** — seed → app scan → `leaked_secret_ids` → `check_success` |
+| LLM generates the *world* (emergent mode, 8.5) | **next** — not yet a gym mode |
 | report ↔ graph check (rung 2) | designed, unbuilt |
 | execution-effect consequences (rung 4) | **blocked** on container ([#252](https://github.com/vecna-labs/open-range/issues/252) / [#202](https://github.com/vecna-labs/open-range/issues/202)) |
 | novel-class discovery | far-future, human-seeded (8.7) |
