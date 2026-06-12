@@ -4,10 +4,18 @@ the runtime that runs one container per service on a real network with real SSRF
 from __future__ import annotations
 
 import ast
+import shutil
+import subprocess
+import urllib.request
 
-from cyber_webapp import WebappPack
+import pytest
+from cyber_webapp import (
+    ContainerWebappRuntime,
+    NetworkedContainerWebappRuntime,
+    WebappPack,
+)
 from cyber_webapp.container import realize_services
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import Backing, Snapshot
 
 from openrange.core.admit import admit
 
@@ -48,3 +56,67 @@ def test_realize_services_splits_per_service_and_confines_the_flag() -> None:
     # Per-service apps route on bare paths (their own container/port), not the
     # single-app `/svc/<name>` namespace.
     assert "/svc/" not in internal.build_files["app.py"]
+
+
+def test_ssrf_world_routes_to_networked_backing() -> None:
+    # The CONTAINER backing runs an SSRF world networked (per-service); a non-SSRF
+    # multi-service world stays a single container.
+    ssrf = WebappPack().realize(_admit_ssrf().graph, Backing.CONTAINER)
+    assert isinstance(ssrf, NetworkedContainerWebappRuntime)
+    cmdi = admit(
+        WebappPack(),
+        manifest={
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "seed": 7,
+            "loot_shapes": {"file": 1, "db": 0},
+            "vuln_kinds": {"command_injection": 1},
+        },
+        max_repairs=3,
+    )
+    assert isinstance(cmdi, Snapshot)
+    single = WebappPack().realize(cmdi.graph, Backing.CONTAINER)
+    assert isinstance(single, ContainerWebappRuntime)
+    assert not isinstance(single, NetworkedContainerWebappRuntime)
+
+
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        probe = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=10, check=False
+        )
+    except Exception:  # noqa: BLE001 - any failure means "no"
+        return False
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_networked_runtime_isolates_internal_services() -> None:
+    # The public service is reachable from the host; an internal service is reachable
+    # only from inside the network, by name — real network position.
+    runtime = WebappPack().realize(_admit_ssrf().graph, Backing.CONTAINER)
+    assert isinstance(runtime, NetworkedContainerWebappRuntime)
+    try:
+        runtime.reset()
+        base_url = str(runtime.surface()["base_url"])
+        with urllib.request.urlopen(base_url + "/", timeout=10) as resp:
+            assert resp.status == 200  # public service reachable from the host
+
+        internal_name = runtime._internals[0].name
+        probe = (
+            "import urllib.request as u; "
+            f"print(u.urlopen('http://{internal_name}:8000/', timeout=3).status)"
+        )
+        out = subprocess.run(
+            ["docker", "exec", str(runtime._cname), "python", "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        # The public container reaches the internal service by name over the network.
+        assert out.returncode == 0 and "200" in out.stdout, out.stderr
+    finally:
+        runtime.stop()

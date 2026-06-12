@@ -24,6 +24,7 @@ from cyber_webapp.invariants import (
 from cyber_webapp.ontology import ONTOLOGY_ID, webapp_ontology
 from cyber_webapp.realize import (
     ContainerWebappRuntime,
+    NetworkedContainerWebappRuntime,
     WebappRuntime,
     WebappRuntimeError,
 )
@@ -58,6 +59,13 @@ class WebappPack(Pack):
         backing: Backing,
     ) -> RuntimeHandle:
         if backing is Backing.CONTAINER:
+            # A world with an SSRF needs real network position (fetch an internal
+            # service) — run it as one container per service on a network. Single-host
+            # worlds stay one container.
+            if any(
+                v.attrs.get("kind") == "ssrf" for v in graph.by_kind("vulnerability")
+            ):
+                return NetworkedContainerWebappRuntime(graph, backing)
             return ContainerWebappRuntime(graph, backing)
         return WebappRuntime(graph, backing)
 
@@ -68,6 +76,7 @@ class WebappPack(Pack):
 __all__ = [
     "ONTOLOGY_ID",
     "ContainerWebappRuntime",
+    "NetworkedContainerWebappRuntime",
     "WebappBuild",
     "WebappBuilder",
     "WebappPack",

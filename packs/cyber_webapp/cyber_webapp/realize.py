@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -25,7 +27,12 @@ from cyber_webapp.codegen.entrypoint import (
     REQUEST_LOG_NAME,
     RESULT_FILE_NAME,
 )
-from cyber_webapp.container import hardening_run_args, image_files
+from cyber_webapp.container import (
+    ServiceImage,
+    hardening_run_args,
+    image_files,
+    realize_services,
+)
 
 # Where the container's app writes its request log (the image CMD's --log path).
 _CONTAINER_LOG_PATH = "/app/requests.jsonl"
@@ -321,3 +328,153 @@ class ContainerWebappRuntime(WebappRuntime):
             subprocess.run(["docker", "rm", "-f", self._cname], capture_output=True)
         if self._image_built:
             subprocess.run(["docker", "rmi", "-f", self._tag], capture_output=True)
+
+
+class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
+    """The CONTAINER backing for a *networked* world: one container per service on a
+    real docker network. The public service is the foreground child (reused from
+    ContainerWebappRuntime — it gives the agent's ``base_url``); the internal services
+    run detached on the same network, reachable only by name and never published. So a
+    flag in an internal service is reachable only by pivoting from the public service
+    over the network — genuine network position, not a path lookup on one server.
+    """
+
+    def __init__(self, graph: WorldGraph, backing: Backing) -> None:
+        super().__init__(graph, backing)
+        self._services = realize_services(graph)
+        publics = [s for s in self._services if s.exposure == "public"]
+        self._public: ServiceImage = publics[0] if publics else self._services[0]
+        self._internals = [s for s in self._services if s is not self._public]
+        # The foreground child is the public service, not the whole-world image.
+        self._build_files = self._public.build_files
+        self._network = f"openrange-net-{uuid.uuid4().hex[:12]}"
+        self._network_created = False
+        self._internal_runs: list[tuple[str, str]] = []  # (container name, image tag)
+
+    def reset(self) -> None:
+        # Network + internal services first, then the public service as the child.
+        self._create_network()
+        self._start_internals()
+        super().reset()
+
+    def subprocess_command(self, env_root: Path, solver_root: Path) -> list[str]:
+        cmd = super().subprocess_command(env_root, solver_root)
+        # Put the public container on the network so it can reach the internals by name.
+        insert = cmd.index("run") + 1
+        cmd[insert:insert] = [
+            "--network",
+            self._network,
+            "--network-alias",
+            self._public.name,
+        ]
+        return cmd
+
+    def _create_network(self) -> None:
+        if self._network_created:
+            return
+        subprocess.run(
+            ["docker", "network", "create", self._network],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self._network_created = True
+
+    def _start_internals(self) -> None:
+        if self._internal_runs:
+            return
+        for service in self._internals:
+            tag = f"openrange-cyber-{service.name}-{uuid.uuid4().hex[:8]}"
+            cname = f"{self._network}-{service.name}"
+            self._build_service_image(tag, service.build_files)
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    cname,
+                    "--network",
+                    self._network,
+                    "--network-alias",
+                    service.name,
+                    *hardening_run_args(),
+                    tag,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self._internal_runs.append((cname, tag))
+            self._wait_ready_in_container(cname)
+
+    @staticmethod
+    def _build_service_image(tag: str, build_files: dict[str, str]) -> None:
+        context = Path(tempfile.mkdtemp(prefix="openrange-svc-"))
+        try:
+            for name, content in build_files.items():
+                (context / name).write_text(content, encoding="utf-8")
+            subprocess.run(
+                ["docker", "build", "-q", "-t", tag, str(context)],
+                check=True,
+                capture_output=True,
+                timeout=600,
+            )
+        finally:
+            shutil.rmtree(context, ignore_errors=True)
+
+    @staticmethod
+    def _wait_ready_in_container(cname: str) -> None:
+        # The internal service publishes no port, so probe it from inside the container
+        # (the docker-exec latency itself paces the retries).
+        probe = (
+            "import urllib.request as u; u.urlopen('http://localhost:8000/', timeout=2)"
+        )
+        for _ in range(40):
+            done = subprocess.run(
+                ["docker", "exec", cname, "python", "-c", probe],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            if done.returncode == 0:
+                return
+        raise WebappRuntimeError(f"internal service {cname} did not become ready")
+
+    def _read_log_bytes(self) -> bytes | None:
+        # Aggregate the public child's log with every internal service's log, so the
+        # verdict sees a leak wherever it happened (the internal service detects it
+        # serving its own flag). collect() reads this fully; poll_events is disabled —
+        # one offset can't track concatenated, independently-growing logs.
+        chunks: list[bytes] = []
+        public = super()._read_log_bytes()
+        if public:
+            chunks.append(public)
+        for cname, _tag in self._internal_runs:
+            done = subprocess.run(
+                ["docker", "exec", cname, "cat", _CONTAINER_LOG_PATH],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            if done.returncode == 0 and done.stdout:
+                chunks.append(done.stdout)
+        if chunks:
+            return b"".join(chunks)
+        return b"" if self._cname is not None else None
+
+    def poll_events(self) -> tuple[Mapping[str, Any], ...]:
+        return ()  # verdict comes from collect()'s full aggregated read, not offsets
+
+    def stop(self) -> None:
+        super().stop()  # tears down the public child + its image
+        for cname, tag in self._internal_runs:
+            subprocess.run(["docker", "rm", "-f", cname], capture_output=True)
+            subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
+        self._internal_runs.clear()
+        if self._network_created:
+            subprocess.run(
+                ["docker", "network", "rm", self._network], capture_output=True
+            )
+            self._network_created = False
