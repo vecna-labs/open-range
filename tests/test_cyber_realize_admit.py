@@ -11,6 +11,7 @@ so it lives here in the test, not in the pack.
 from __future__ import annotations
 
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from cyber_webapp import WebappPack
@@ -120,6 +121,74 @@ def test_admission_gate_accepts_a_faithful_cmdi_world(tmp_path: Path) -> None:
     verdict = _run_and_classify(_admit_cmdi(), tmp_path)
     assert verdict.accepted, verdict.reason
     assert verdict.solvable and not verdict.trivial
+
+
+def _cmdi_with_realized(make_handler: Callable[[str, str], str]) -> Snapshot:
+    # A command-injection world whose vuln carries a stand-in "realized" handler, as
+    # an LLM would write. The injection context is pinned to "separator" so the
+    # exploit is a plain `;cat <path>`, which the faithful handler below also speaks.
+    from cyber_webapp.realize_admit import _flag_record_key
+
+    snap = _admit_cmdi()
+    graph = snap.graph
+    vuln = next(
+        n
+        for n in graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "command_injection"
+    )
+    params = vuln.attrs["params"]
+    assert isinstance(params, dict)
+    params["inj_context"] = "separator"
+    param = str(params["target_param"])
+    vuln.attrs["realized_handler"] = make_handler(param, _flag_record_key(graph))
+    return snap
+
+
+def _faithful_handler(param: str, flag_path: str) -> str:
+    # A different-but-real command injection: split on ';', run `cat <path>` against
+    # the file store — so the flag is reachable only by injecting the command.
+    del flag_path
+    return (
+        "def handle(query, state):\n"
+        "    import shlex\n"
+        f"    raw = (query.get({param!r}) or [''])[0]\n"
+        "    files = state.get('files', {})\n"
+        "    if ';' not in raw:\n"
+        "        return 200, {}, b'pong'\n"
+        "    parts = shlex.split(raw.split(';', 1)[1])\n"
+        "    if len(parts) == 2 and parts[0] == 'cat':\n"
+        "        return 200, {}, files.get(parts[1], '').encode()\n"
+        "    return 200, {}, b'rejected'\n"
+    )
+
+
+def _trivial_handler(param: str, flag_path: str) -> str:
+    # Returns the flag on any request — solvable without the injection at all.
+    del param
+    return (
+        "def handle(query, state):\n"
+        f"    return 200, {{}}, state['files'][{flag_path!r}].encode()\n"
+    )
+
+
+def _broken_handler(param: str, flag_path: str) -> str:
+    del param, flag_path
+    return "def handle(query, state):\n    return 200, {}, b'nothing here'\n"
+
+
+def test_admission_gate_accepts_a_faithful_realized_handler(tmp_path: Path) -> None:
+    verdict = _run_and_classify(_cmdi_with_realized(_faithful_handler), tmp_path)
+    assert verdict.accepted, verdict.reason
+
+
+def test_admission_gate_rejects_a_trivial_realized_handler(tmp_path: Path) -> None:
+    verdict = _run_and_classify(_cmdi_with_realized(_trivial_handler), tmp_path)
+    assert not verdict.accepted and verdict.trivial
+
+
+def test_admission_gate_rejects_a_broken_realized_handler(tmp_path: Path) -> None:
+    verdict = _run_and_classify(_cmdi_with_realized(_broken_handler), tmp_path)
+    assert not verdict.accepted and not verdict.solvable
 
 
 def test_internal_helpers_cover_defensive_branches() -> None:
