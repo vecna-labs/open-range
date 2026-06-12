@@ -609,8 +609,8 @@ def test_rendered_app_scans_leaks_to_node_ids_not_values() -> None:
 
 
 def test_live_episode_records_the_flag_leak_as_a_node_id(tmp_path: Path) -> None:
-    # The §8.3 spine, end to end: a real exploit makes the flag cross the response
-    # boundary, and the runtime records that consequence on final_state — by node id.
+    # End to end: a real exploit makes the flag cross the response boundary, and the
+    # runtime records that leak on final_state by node id.
     snap = _admit("db", vuln_kinds={"sql_injection": 1})
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(WebappPack(), tmp_path)

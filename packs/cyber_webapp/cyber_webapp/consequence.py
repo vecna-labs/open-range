@@ -68,9 +68,8 @@ def value_variants(value: str) -> set[str]:
     """The forms a value might take in a response: literal + cheap text encodings.
 
     Encoding the *needle* (rather than decoding the body) finds the value even when
-    it is a substring of a larger response. Mirrored by the rendered app's scanner,
-    so live and offline agree — `test_rendered_app_scanner_agrees_with_consequence`
-    pins that.
+    it is a substring of a larger response. The rendered app's scanner mirrors this,
+    so the live and offline verdicts agree.
     """
     raw = value.encode()
     b64 = base64.b64encode(raw).decode()
