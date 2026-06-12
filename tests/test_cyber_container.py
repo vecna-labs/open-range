@@ -88,6 +88,28 @@ def test_required_apt_packages_scopes_to_the_worlds_cmdi_tool() -> None:
     assert required_apt_packages(_admit_path_traversal().graph) == set()
 
 
+def test_hardening_run_args_drops_privileges_and_caps_resources() -> None:
+    args = hardening_run_args()
+    assert args[args.index("--cap-drop") + 1] == "ALL"
+    assert "no-new-privileges" in args
+    assert "--memory" in args and "--cpus" in args and "--pids-limit" in args
+
+
+def test_required_apt_packages_skips_malformed_and_unmapped() -> None:
+    # A cmdi vuln whose params aren't a mapping, or whose base_command isn't a known
+    # diagnostic tool, contributes nothing — no crash, no bogus package.
+    graph = _admit_cmdi().graph
+    vuln = next(
+        n
+        for n in graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "command_injection"
+    )
+    vuln.attrs["params"] = "not-a-mapping"
+    assert required_apt_packages(graph) == set()
+    vuln.attrs["params"] = {"base_command": "whoami", "target_param": "q"}
+    assert required_apt_packages(graph) == set()
+
+
 def test_dockerfile_installs_os_tools_only_when_a_vuln_needs_them() -> None:
     cmdi_df = image_files(_admit_cmdi().graph)["Dockerfile"]
     pt_df = image_files(_admit_path_traversal().graph)["Dockerfile"]
