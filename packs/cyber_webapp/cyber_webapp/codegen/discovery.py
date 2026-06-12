@@ -5,9 +5,15 @@ from __future__ import annotations
 from graphschema import Node, WorldGraph
 
 
-def build_discovery(graph: WorldGraph) -> dict[str, object]:
+def build_discovery(
+    graph: WorldGraph, only_services: frozenset[str] | None = None
+) -> dict[str, object]:
+    # ``only_services`` scopes the discovery doc to those services — a per-service app
+    # advertises only its own endpoints, not the rest of the (internal) estate.
     services_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes.values() if n.kind == "service"
+        n.id: n
+        for n in graph.nodes.values()
+        if n.kind == "service" and (only_services is None or n.id in only_services)
     }
     endpoints_by_service: dict[str, list[Node]] = {sid: [] for sid in services_by_id}
     for edge in graph.edges.values():
@@ -32,9 +38,12 @@ def build_discovery(graph: WorldGraph) -> dict[str, object]:
         exposure = str(service.attrs.get("exposure", "internal"))
         paths: list[dict[str, str]] = []
         for endpoint in endpoints_by_service[service_id]:
+            # Per-service: advertise the bare path the service serves on its own
+            # container (the single app uses the /svc/<name> namespace instead).
+            url_key = "path" if only_services is not None else "public_url"
             paths.append(
                 {
-                    "url": str(endpoint.attrs["public_url"]),
+                    "url": str(endpoint.attrs[url_key]),
                     "method": str(endpoint.attrs.get("method", "GET")),
                 },
             )

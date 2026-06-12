@@ -65,7 +65,12 @@ def build_handlers_and_routes(
         handlers.append(
             {"name": handler_name, "body": body, "docstring": docstring},
         )
-        routes.append({"path": public_url, "handler": handler_name})
+        # Single app: every service shares one server, so internal services are
+        # namespaced by ``/svc/<name>`` (public_url). Per-service: each service is its
+        # own container serving on its own port, so it routes on the bare ``path`` and a
+        # caller reaches it at ``http://<service-name><path>``.
+        route_path = path if only_services is not None else public_url
+        routes.append({"path": route_path, "handler": handler_name})
     return handlers, routes
 
 

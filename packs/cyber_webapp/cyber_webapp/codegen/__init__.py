@@ -16,11 +16,15 @@ from cyber_webapp.codegen.seeding import project_seed
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
-def _realize_graph(graph: WorldGraph) -> dict[str, str]:
-    # Secret must never land on disk — app.py loads seed into memory then unlinks.
-    seed = project_seed(graph)
-    handlers, routes = build_handlers_and_routes(graph)
-    discovery = build_discovery(graph)
+def _realize_graph(
+    graph: WorldGraph, only_services: frozenset[str] | None = None
+) -> dict[str, str]:
+    # ``only_services`` renders one service in isolation (its own endpoints + its own
+    # state) — the per-service app the networked CONTAINER backing runs per service.
+    # Default (None) renders the whole world into one app (PROCESS / single-container).
+    seed = project_seed(graph, only_services)
+    handlers, routes = build_handlers_and_routes(graph, only_services)
+    discovery = build_discovery(graph, only_services)
 
     template = _jinja_env().get_template("app.py.j2")
     source = template.render(

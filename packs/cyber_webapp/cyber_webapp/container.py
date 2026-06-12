@@ -21,6 +21,7 @@ entirely.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from graphschema import WorldGraph
 
@@ -124,3 +125,40 @@ def image_files(graph: WorldGraph) -> dict[str, str]:
         APP_FILE_NAME: rendered[APP_FILE_NAME],
         SEED_FILE_NAME: rendered[SEED_FILE_NAME],
     }
+
+
+@dataclass(frozen=True)
+class ServiceImage:
+    """One service's container build context (the networked CONTAINER backing builds
+    one image per service node). ``name`` is the container/DNS name services reach each
+    other by; ``exposure`` decides whether the host publishes it (public) or it stays
+    reachable only on the container network (internal)."""
+
+    service_id: str
+    name: str
+    exposure: str
+    build_files: dict[str, str]
+
+
+def realize_services(graph: WorldGraph) -> list[ServiceImage]:
+    """Per-service build contexts: one image per service, each carrying only its own
+    endpoints + its own state (so the flag stays in the internal service that owns it
+    and never enters the public image). The networked runtime wires these on a container
+    network and publishes only the public service."""
+    dockerfile = _dockerfile(required_apt_packages(graph))
+    images: list[ServiceImage] = []
+    for service in graph.by_kind("service"):
+        rendered = _realize_graph(graph, frozenset({service.id}))
+        images.append(
+            ServiceImage(
+                service_id=service.id,
+                name=str(service.attrs.get("name", service.id)),
+                exposure=str(service.attrs.get("exposure", "internal")),
+                build_files={
+                    "Dockerfile": dockerfile,
+                    APP_FILE_NAME: rendered[APP_FILE_NAME],
+                    SEED_FILE_NAME: rendered[SEED_FILE_NAME],
+                },
+            )
+        )
+    return images
