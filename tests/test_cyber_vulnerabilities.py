@@ -47,6 +47,7 @@ def test_catalog_has_starter_vulns() -> None:
         "ssti",
         "idor",
         "weak_credentials",
+        "metadata_credential_leak",
     }
     assert vuln("sql_injection") is SQL_INJECTION
 
@@ -63,6 +64,7 @@ def test_vulns_for_kind_filters_by_target() -> None:
         "ssti",
         "idor",
         "weak_credentials",
+        "metadata_credential_leak",
     }
     assert vulns_for_kind("network") == ()
 

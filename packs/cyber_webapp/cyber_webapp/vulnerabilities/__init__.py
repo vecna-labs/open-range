@@ -227,6 +227,21 @@ WEAK_CREDENTIALS = Vulnerability(
 )
 
 
+METADATA_CREDENTIAL_LEAK = Vulnerability(
+    id="metadata_credential_leak",
+    family="code_web",
+    description=(
+        "An unauthenticated internal endpoint (cloud-metadata / admin style) returns a "
+        "secret on a plain GET. Not reachable from outside; it is the resource an SSRF "
+        "on a public service pivots to — the internal half of the networked SSRF chain."
+    ),
+    target_kinds=frozenset({"endpoint"}),
+    template="metadata_credential_leak.py.j2",
+    shape="response_leak",
+    attrs_schema={},
+)
+
+
 CATALOG: Mapping[str, Vulnerability] = {
     SQL_INJECTION.id: SQL_INJECTION,
     SSRF.id: SSRF,
@@ -237,6 +252,7 @@ CATALOG: Mapping[str, Vulnerability] = {
     SSTI.id: SSTI,
     IDOR.id: IDOR,
     WEAK_CREDENTIALS.id: WEAK_CREDENTIALS,
+    METADATA_CREDENTIAL_LEAK.id: METADATA_CREDENTIAL_LEAK,
 }
 
 
@@ -310,6 +326,7 @@ __all__ = [
     "CATALOG",
     "COMMAND_INJECTION",
     "IDOR",
+    "METADATA_CREDENTIAL_LEAK",
     "PATH_TRAVERSAL",
     "SQL_INJECTION",
     "SSRF",

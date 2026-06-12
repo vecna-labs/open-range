@@ -214,6 +214,11 @@ _COMMAND_INJECTION_PARAMS: tuple[str, ...] = (
     "ip",
     "domain",
 )
+# Classes never placed by general sampling: a metadata_credential_leak on a reachable
+# endpoint would hand over the flag with no exploit. It goes only inside the networked
+# SSRF chain, on an INTERNAL service the agent can reach only by pivoting.
+_INTERNAL_ONLY_KINDS: frozenset[str] = frozenset({"metadata_credential_leak"})
+
 _COMMAND_INJECTION_BASE: tuple[str, ...] = (
     "ping",
     "nslookup",
@@ -730,7 +735,9 @@ def _forced_oracle(
     fallback = [
         k
         for k, v in VULN_CATALOG.items()
-        if v.shape in oracle_shapes and "endpoint" in v.target_kinds
+        if v.shape in oracle_shapes
+        and "endpoint" in v.target_kinds
+        and k not in _INTERNAL_ONLY_KINDS
     ]
     preferred = [k for k in pool if k in fallback]
     for source in (preferred, fallback):
