@@ -3,9 +3,9 @@
 `image_files` packages a world's rendered app into a container build context. The
 docker-gated tests then prove the real thing: build the image, run the container, and
 recover the flag by exploiting the world over HTTP. The container sets OPENRANGE_REALFS,
-so the file-read shape (path_traversal, xxe) and the cmdi readers hit a REAL filesystem:
-a real `open()` and real OS path resolution, not the in-memory dict. The stdlib
-`image_files_realfs` variant additionally proves a REAL `sh -c` for command_injection.
+so the app's surfaces go real on the ONE generated app: the file-read shape
+(path_traversal, xxe) does a real `open()` with real OS path resolution, and
+command_injection runs a real `sh -c` — both with the §6 / confinement contexts intact.
 """
 
 from __future__ import annotations
@@ -23,12 +23,8 @@ from urllib.parse import quote
 
 import pytest
 from cyber_webapp import WebappPack
-from cyber_webapp.container import (
-    BASE_IMAGE,
-    image_files,
-    image_files_realfs,
-    realfs_cmdi_app,
-)
+from cyber_webapp.codegen import _realize_graph
+from cyber_webapp.container import BASE_IMAGE, image_files
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Snapshot
@@ -77,9 +73,10 @@ def _http_get(url: str) -> str:
     # The response body regardless of status — a neutralized traversal answers 403/404,
     # which urlopen raises on; we still want to assert the flag is NOT in that body.
     try:
-        return urllib.request.urlopen(url, timeout=10).read().decode()
+        body = urllib.request.urlopen(url, timeout=10).read()
     except urllib.error.HTTPError as exc:
-        return exc.read().decode()
+        body = exc.read()
+    return bytes(body).decode()
 
 
 def _wait_ready(base: str, timeout: float) -> None:
@@ -175,13 +172,13 @@ def test_world_runs_in_a_container_and_is_exploited(tmp_path: Path) -> None:
     assert expected in body, body[:200]
 
 
-def test_realfs_cmdi_app_is_a_valid_real_shell_app() -> None:
+def test_generated_app_has_a_real_shell_cmdi_branch() -> None:
     import ast
 
-    source = realfs_cmdi_app(_admit_cmdi().graph)
+    source = _realize_graph(_admit_cmdi().graph)["app.py"]
     ast.parse(source)  # the generated app is valid Python
-    assert "subprocess.run" in source  # a real shell, not the in-memory emulation
-    assert "OPENRANGE_FLAG" in source  # the flag arrives at run time, not in the image
+    assert "subprocess.run" in source  # real shell, gated by OPENRANGE_REALFS
+    assert 'os.environ.get("OPENRANGE_REALFS")' in source  # the CONTAINER toggle
 
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
@@ -193,8 +190,7 @@ def test_real_shell_container_recovers_a_real_file_flag(tmp_path: Path) -> None:
     exploit_path, benign_path = cmdi_exploit_and_benign(graph)
 
     tag = f"openrange-m1-realfs-{snap.snapshot_id[:12]}"
-    env = [("OPENRANGE_FLAG", flag)]
-    with _container(image_files_realfs(graph), tmp_path, tag, env=env) as base:
+    with _container(image_files(graph), tmp_path, tag) as base:
         # A real `cat` against the real filesystem recovers the real file's flag.
         exploit_body = (
             urllib.request.urlopen(base + exploit_path, timeout=10).read().decode()
@@ -230,8 +226,7 @@ def test_real_shell_contexts_are_mutually_exclusive(
     _pin_context(graph, live)  # the image must be built from the live context
 
     tag = f"openrange-m1-ctx-{live}-{snap.snapshot_id[:8]}"
-    env = [("OPENRANGE_FLAG", flag)]
-    with _container(image_files_realfs(graph), tmp_path, tag, env=env) as base:
+    with _container(image_files(graph), tmp_path, tag) as base:
         hit = urllib.request.urlopen(base + matching, timeout=10).read().decode()
         miss = urllib.request.urlopen(base + mismatched, timeout=10).read().decode()
     assert flag in hit, hit[:200]  # the matching context's exploit lands

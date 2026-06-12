@@ -583,13 +583,13 @@ measures on.
 
 **M1 status.** The CONTAINER backing runs the *one* generated multi-service app (not a
 bespoke app per class). The container sets `OPENRANGE_REALFS`, which flips the rendered
-app's `files` surface from the in-memory dict to a real filesystem (`_RealFiles` — a real
-`open()` per path); `PROCESS` leaves it unset and stays byte-for-byte the emulation. That
-makes the whole **file_read** shape (path_traversal, xxe) genuinely real with zero handler
-changes — a traversal escape is real OS path resolution — and the cmdi readers `cat` real
-files. The **code_exec** real shell (a real `sh -c` for command_injection, contexts of §6
-preserved) is proven by the stdlib `image_files_realfs` variant; folding that real-shell
-branch into the generated app — and then retiring the bespoke variant — is the remaining
-M1 step before isolation ([#202](https://github.com/vecna-labs/open-range/issues/202)) and
-wiring the `Backing.CONTAINER` runtime (which reads the leak signal from the app's request
-log).
+app's surfaces from in-memory emulation to the real container; `PROCESS` leaves it unset
+and stays byte-for-byte the emulation. **file_read** (path_traversal, xxe) becomes real
+with zero handler changes — the `files` surface is a real filesystem (`_RealFiles`, a real
+`open()` per path), so a traversal escape is real OS path resolution. **code_exec**
+command_injection runs a real `sh -c` (the §6 mutually-exclusive contexts preserved by the
+same naive per-context filter, now over a real shell). Both are proven live by docker-gated,
+context-parametrized tests. Remaining M1: ssti real (unsandboxed eval), then isolation
+([#202](https://github.com/vecna-labs/open-range/issues/202) — `--network none`, rlimits,
+and keeping the flag out of the image layer) and wiring the `Backing.CONTAINER` runtime
+(which reads the leak signal from the app's request log).

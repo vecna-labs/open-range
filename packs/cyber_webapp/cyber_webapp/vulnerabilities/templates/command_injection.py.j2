@@ -31,6 +31,24 @@ def handle(query, state):
     else:
         command = {{ base_command | tojson }} + " " + target
 
+    if os.environ.get("OPENRANGE_REALFS"):
+        # CONTAINER backing: the SAME naive, context-specific filter, but a REAL ``sh -c``
+        # then runs the result against the real fs — genuine RCE / file-read, not the
+        # in-memory emulation below. ``substitution`` keeps $()/`` `` `` `` and kills the
+        # separators; the others strip substitution and leave the separators live.
+        import subprocess
+        if inj_context == "substitution":
+            real_cmd = command.translate(str.maketrans(";|&\n", "    "))
+        else:
+            real_cmd = re.sub(r"\$\([^()]*\)|`[^`]*`", "", command)
+        try:
+            done = subprocess.run(
+                ["sh", "-c", real_cmd], capture_output=True, timeout=5, check=False
+            )
+        except subprocess.SubprocessError:
+            return 200, {"Content-Type": "text/plain"}, b"diagnostic error"
+        return 200, {"Content-Type": "text/plain"}, done.stdout + done.stderr
+
     # BUG: input reaches a shell with only a NAIVE, context-specific filter.
     # ``separator`` strips substitution but not separators; ``substitution`` and
     # ``quoted`` strip substitution; ``substitution`` additionally strips the
