@@ -1,13 +1,16 @@
 """Container build context for a webapp world (M1 — DESIGN.md §9, #252).
 
 The same rendered app the ``PROCESS`` backing runs as a subprocess, packaged to run in
-a real container — real filesystem and shell, so file-read / RCE exploits eventually
-hit the real thing instead of the in-memory emulation. This first brick produces the
-build context; the runtime that builds and runs it lands on top.
+a real container. The container sets ``OPENRANGE_REALFS``, so the file surface is a REAL
+filesystem: the file-read shape (path_traversal, xxe) does a real ``open()`` and a
+traversal escape is real OS path resolution, not a dict lookup — across all nine classes
+on the one generated app. (Real-shell code-exec — a real ``sh -c`` for command_injection
+in the generated app — is tracked separately; the stdlib ``image_files_realfs`` variant
+below is the standalone proof of that until it folds in.)
 
-Caveat (first brick): the seed (with the flag) is COPYed into the image, so it lives in
-an image layer until the app unlinks it at startup. Mounting it at run time — keeping
-the flag out of the image entirely — is the follow-up.
+Caveat: the seed (with the flag) is COPYed into the image, so it lives in an image layer
+until the app unlinks it at startup. Mounting it at run time — keeping the flag out of
+the image entirely — is the follow-up (the realfs variant already injects it via env).
 """
 
 from __future__ import annotations
@@ -25,9 +28,13 @@ from cyber_webapp.codegen.entrypoint import APP_FILE_NAME, SEED_FILE_NAME
 CONTAINER_PORT = 8000
 BASE_IMAGE = "python:3.13-slim"
 
+# OPENRANGE_REALFS flips the rendered app's file surface to a REAL filesystem, so the
+# file-read shape (path_traversal, xxe) and the readers cmdi chains hit the container fs
+# instead of the in-memory dict. The PROCESS backing never sets it and stays in-memory.
 _DOCKERFILE = f"""\
 FROM {BASE_IMAGE}
 WORKDIR /app
+ENV OPENRANGE_REALFS=1
 RUN pip install --no-cache-dir jinja2
 COPY {APP_FILE_NAME} {SEED_FILE_NAME} ./
 EXPOSE {CONTAINER_PORT}
@@ -38,7 +45,9 @@ CMD ["python", "{APP_FILE_NAME}", "--host", "0.0.0.0", \
 
 def image_files(graph: WorldGraph) -> dict[str, str]:
     """The build context for the world's container: the Dockerfile + the rendered app
-    + its seed. Same content the PROCESS backing renders, plus the packaging."""
+    + its seed. Same rendered app the PROCESS backing runs, but the container sets
+    OPENRANGE_REALFS so its file surface is a REAL filesystem (real open() / traversal),
+    not the in-memory dict."""
     rendered = _realize_graph(graph)
     return {
         "Dockerfile": _DOCKERFILE,

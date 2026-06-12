@@ -12,6 +12,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import posixpath
 import re
 import shlex
@@ -23,6 +24,44 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import urlopen
+
+
+class _RealFiles:
+    # Real-filesystem backing for the ``files`` surface (the CONTAINER backing). Same
+    # get / contains / subscript access the in-memory dict offers, but every read is a
+    # real ``open()`` against the container fs — so a traversal escape or a ``cat``
+    # reaches the real filesystem, not a dict. A real fs is not a finite, enumerable
+    # map, so iteration / len are intentionally unsupported.
+    def get(self, path, default=None):
+        data = self._read(path)
+        return default if data is None else data
+
+    def __getitem__(self, path):
+        data = self._read(path)
+        if data is None:
+            raise KeyError(path)
+        return data
+
+    def __contains__(self, path):
+        return self._read(path) is not None
+
+    @staticmethod
+    def _read(path):
+        try:
+            with open(path, "rb") as handle:
+                return handle.read().decode("utf-8", "replace")
+        except OSError:
+            return None
+
+
+def _materialize_files(files: dict) -> None:
+    # Write the seed's file map onto the REAL container filesystem at its own paths, so
+    # the handlers' real open() finds them and a traversal escape genuinely climbs it.
+    for path, content in files.items():
+        target = Path(path)
+        if str(target.parent) not in ("", "."):
+            target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(content), encoding="utf-8")
 
 
 def _load_seed_and_init_state(seed_path: Path) -> dict:
@@ -47,11 +86,19 @@ def _load_seed_and_init_state(seed_path: Path) -> dict:
         )
     db.commit()
 
+    # OPENRANGE_REALFS (set by the CONTAINER backing) flips the file surface from the
+    # in-memory dict to a real filesystem — the PROCESS backing leaves it unset and
+    # stays byte-for-byte the in-memory emulation.
+    files = payload.get("files", {})
+    if os.environ.get("OPENRANGE_REALFS"):
+        _materialize_files(files)
+        files = _RealFiles()
+
     return {
         "db": db,
         "secrets": payload["secrets"],
         "accounts": payload["accounts"],
-        "files": payload.get("files", {}),
+        "files": files,
         "schema": schema,
         "guarded": payload.get("guarded", {}),
     }
