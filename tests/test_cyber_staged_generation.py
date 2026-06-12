@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cyber_webapp import WebappPack
@@ -565,7 +566,7 @@ def test_rendered_app_scanner_agrees_with_consequence() -> None:
     snap = _admit("db", vuln_kinds={"sql_injection": 1})
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile(_realize_graph(graph)["app.py"], "<app>", "exec"), namespace)
     app_scan = namespace["_scan_leaks"]
     guarded = dict(guarded_values(graph))
@@ -598,7 +599,7 @@ def test_rendered_app_scans_leaks_to_node_ids_not_values() -> None:
     # Integrity: the app records WHICH guarded node leaked (its id), never the secret
     # value — so the request log can't be grepped for the flag.
     snap = _admit("db", vuln_kinds={"sql_injection": 1})
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(compile(_realize_graph(snap.graph)["app.py"], "<app>", "exec"), namespace)
     scan = namespace["_scan_leaks"]
     assert scan(b"prefix SECRETVAL suffix", {"secret_flag": "SECRETVAL"}) == [
