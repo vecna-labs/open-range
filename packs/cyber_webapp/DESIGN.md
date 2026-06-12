@@ -580,3 +580,16 @@ might be wrong.) Exec-effect faithfulness rides the container
 ([#202](https://github.com/vecna-labs/open-range/issues/202) sandbox). This is also
 the sim-to-real fidelity ladder (`PROCESS` → `CONTAINER` → cluster) the H2 study
 measures on.
+
+**M1 status.** The CONTAINER backing runs the *one* generated multi-service app (not a
+bespoke app per class). The container sets `OPENRANGE_REALFS`, which flips the rendered
+app's `files` surface from the in-memory dict to a real filesystem (`_RealFiles` — a real
+`open()` per path); `PROCESS` leaves it unset and stays byte-for-byte the emulation. That
+makes the whole **file_read** shape (path_traversal, xxe) genuinely real with zero handler
+changes — a traversal escape is real OS path resolution — and the cmdi readers `cat` real
+files. The **code_exec** real shell (a real `sh -c` for command_injection, contexts of §6
+preserved) is proven by the stdlib `image_files_realfs` variant; folding that real-shell
+branch into the generated app — and then retiring the bespoke variant — is the remaining
+M1 step before isolation ([#202](https://github.com/vecna-labs/open-range/issues/202)) and
+wiring the `Backing.CONTAINER` runtime (which reads the leak signal from the app's request
+log).
