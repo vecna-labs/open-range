@@ -359,13 +359,17 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
 
     def subprocess_command(self, env_root: Path, solver_root: Path) -> list[str]:
         cmd = super().subprocess_command(env_root, solver_root)
-        # Put the public container on the network so it can reach the internals by name.
+        # Put the public container on the network so it can reach the internals by name,
+        # and switch its SSRF handler to a real cross-network fetch (the public service
+        # holds no flag — the secret can only come from the internal host).
         insert = cmd.index("run") + 1
         cmd[insert:insert] = [
             "--network",
             self._network,
             "--network-alias",
             self._public.name,
+            "-e",
+            "OPENRANGE_NETWORKED=1",
         ]
         return cmd
 

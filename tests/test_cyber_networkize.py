@@ -8,6 +8,7 @@ pivot to make, and is a no-op otherwise.
 
 from __future__ import annotations
 
+from cyber_webapp import WebappPack
 from cyber_webapp.sampling import _flag_service_id, _networkize_ssrf
 from graphschema import Edge, Node, Visibility, WorldGraph
 
@@ -45,6 +46,30 @@ def _flag_on(g: WorldGraph, service_id: str) -> None:
 
 def test_flag_service_id_none_without_flag() -> None:
     assert _flag_service_id(_graph()) is None
+
+
+def test_metadata_kind_is_filtered_from_general_sampling() -> None:
+    # Requested as a decoy, the internal-only metadata leak is dropped from the pool:
+    # on a reachable endpoint it would hand over the flag with no exploit. In a non-SSRF
+    # world (no networkize) that means zero metadata vulns, despite the request.
+    graph = (
+        WebappPack()
+        .make_builder(None)
+        .build(
+            {
+                "seed": 1,
+                "vuln_kinds": {"sql_injection": 3, "metadata_credential_leak": 3},
+                "vuln_count": 4,
+            }
+        )
+        .graph
+    )
+    metas = [
+        v
+        for v in graph.by_kind("vulnerability")
+        if v.attrs["kind"] == "metadata_credential_leak"
+    ]
+    assert metas == []
 
 
 def test_networkize_noop_without_public_service() -> None:

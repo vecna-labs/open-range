@@ -629,7 +629,13 @@ def _sample_vulnerabilities(
     # ``oracle_service_id``, so the flag is reachable by construction. The
     # rest are decoys drawn from the weighted pool.
     count = _sample_int(rng, prior, "vuln_count")
-    pool = _weighted_pool(prior, "vuln_kinds")
+    # Internal-only kinds (a metadata leak that serves the flag on a plain GET) are
+    # never placed by general sampling — on a reachable endpoint they leak the flag
+    # with no exploit. They enter a world only via ``_networkize_ssrf``, on an
+    # unreachable internal endpoint that an SSRF must pivot to.
+    pool = [
+        k for k in _weighted_pool(prior, "vuln_kinds") if k not in _INTERNAL_ONLY_KINDS
+    ]
     if not pool:
         return
 
