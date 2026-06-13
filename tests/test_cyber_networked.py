@@ -65,9 +65,6 @@ def test_realize_services_splits_per_service_and_confines_the_flag() -> None:
 
 
 def test_ssrf_world_is_networked_by_construction() -> None:
-    # Generation re-homes the SSRF onto a PUBLIC service's endpoint — the pivot the
-    # agent attacks — so it reaches the flag only across the network. That public-facing
-    # shape is exactly what routes the world to the networked backing.
     graph = _admit_ssrf().graph
     ssrf = next(
         n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
@@ -86,8 +83,6 @@ def test_ssrf_world_is_networked_by_construction() -> None:
 
 
 def test_non_networked_world_stays_single_container() -> None:
-    # A world whose vuln sits directly on the flag's own service (no public-service
-    # pivot) isn't networked-shaped, so the CONTAINER backing runs it as one container.
     runtime = WebappPack().realize(_admit_cmdi().graph, Backing.CONTAINER)
     assert isinstance(runtime, ContainerWebappRuntime)
     assert not isinstance(runtime, NetworkedContainerWebappRuntime)
@@ -186,11 +181,9 @@ def test_networked_runtime_isolates_internal_services() -> None:
             text=True,
             timeout=20,
         )
-        # The public container reaches the internal service by name over the network.
         assert out.returncode == 0 and "200" in out.stdout, out.stderr
 
-        # collect() aggregates every service's request log; a benign request leaks
-        # nothing (the public service never holds the flag).
+        # A benign request leaks nothing — the public service never holds the flag.
         final = runtime.collect()
         assert final["leaked_secret_ids"] == []
         assert "/" in final["requests_made"]
@@ -200,9 +193,8 @@ def test_networked_runtime_isolates_internal_services() -> None:
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_networked_ssrf_recovers_the_flag_across_containers() -> None:
-    # The whole point: the flag lives in an internal container the host can't address.
-    # The agent recovers it ONLY by making the public service's SSRF fetch the internal
-    # metadata host over the docker network — a real cross-container exploit.
+    # The flag lives in an internal container the host can't address; only the SSRF
+    # pivot across the docker network reaches it.
     snap = _admit_ssrf()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
@@ -218,21 +210,17 @@ def test_networked_ssrf_recovers_the_flag_across_containers() -> None:
         runtime.reset()
         base_url = str(runtime.surface()["base_url"])
 
-        # The internal metadata path is NOT reachable on the public service directly —
-        # the flag can only come through the pivot, not a path lookup on one host.
+        # The internal path isn't reachable on the public service directly, and a fetch
+        # that doesn't resolve to the internal host leaks nothing — only the pivot does.
         _, direct_body = _get(base_url, internal_path, {})
         assert flag not in direct_body
-
-        # A benign fetch that doesn't resolve to the internal host leaks nothing.
         _, benign_body = _get(base_url, path, {param: "gopher://example.com/"})
         assert flag not in benign_body
 
-        # The real exploit: the SSRF pivots to the internal host and returns its secret.
         status, body = _get(base_url, path, {param: payload})
         assert status == 200, body
         assert flag in body  # recovered across the container boundary
 
-        # The verdict sees the leak in the aggregated logs.
         final = runtime.collect()
         assert "secret_flag" in final["leaked_secret_ids"]
     finally:
@@ -241,16 +229,15 @@ def test_networked_ssrf_recovers_the_flag_across_containers() -> None:
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_ssrf_parity_across_backings(tmp_path: Path) -> None:
-    # The same SSRF world is solvable on both backings — PROCESS reads the shared
-    # secret in place, CONTAINER fetches it for real across the network. Same exploit,
-    # same flag: the sim-to-real gap is the runtime, not the task.
+    # Same exploit, same flag on both backings: PROCESS reads the shared secret in
+    # place, CONTAINER fetches it across the network — only the runtime differs.
     snap = _admit_ssrf()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
     path, param, payload = _ssrf_exploit(graph)
     query = {param: payload}
 
-    # PROCESS, through the real episode harness.
+    # PROCESS, through the episode harness.
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(WebappPack(), tmp_path)
     try:
@@ -261,7 +248,7 @@ def test_ssrf_parity_across_backings(tmp_path: Path) -> None:
         svc.close()
     assert flag in process_body
 
-    # CONTAINER, through the networked runtime (a real cross-container fetch).
+    # CONTAINER, through the networked runtime.
     runtime = WebappPack().realize(graph, Backing.CONTAINER)
     try:
         runtime.reset()
@@ -274,10 +261,8 @@ def test_ssrf_parity_across_backings(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_networked_ssrf_grades_through_the_container_harness(tmp_path: Path) -> None:
-    # The full grade path the trainer / run_episode use: start the episode on the
-    # CONTAINER backing, recover the flag across the network, submit it, and let the
-    # pack's check_success grade it. Proves the networked world is a gradable episode
-    # end to end — not just an HTTP body that happens to carry the flag.
+    # Grade through the full harness path the trainer / run_episode use — not just an
+    # HTTP body that happens to carry the flag.
     snap = _admit_ssrf()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
@@ -290,7 +275,7 @@ def test_networked_ssrf_grades_through_the_container_harness(tmp_path: Path) -> 
         base = str(svc.surface(handle)["base_url"])
         _, body = _get(base, path, {param: payload})
         assert flag in body  # recovered across the container boundary
-        # Submit the recovered flag the way the harness grades it.
+        # The harness grades the submitted flag from result.json.
         (Path(svc.solver_root(handle)) / "result.json").write_text(
             json.dumps({"flag": flag})
         )

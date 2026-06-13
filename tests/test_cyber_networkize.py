@@ -129,7 +129,6 @@ def test_networkize_builds_the_pivot_half() -> None:
     params = g.nodes["ssrf"].attrs["params"]
     assert params["internal_host"] == "db"
     assert params["internal_path"] == "/latest/meta-data/credential"
-    # The metadata vuln is enabled by the SSRF and affects the new internal endpoint.
     enables = [(e.src, e.dst) for e in g.edges.values() if e.kind == "enables"]
     assert ("ssrf", "vuln_metadata_credential_leak_0") in enables
 
@@ -160,7 +159,6 @@ def test_networkize_switches_decimal_ip_filter_to_host_allowlist() -> None:
 
     ssrf = g.nodes["ssrf"]
     assert ssrf.attrs["params"]["ssrf_filter"] == "host_allowlist"
-    # The SSRF is re-homed onto the public endpoint.
     affected = [
         e.dst for e in g.edges.values() if e.kind == "affects" and e.src == "ssrf"
     ]
