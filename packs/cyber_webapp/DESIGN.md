@@ -467,79 +467,29 @@ a property you never stated. That is real and far-off: consequence instrumentati
 reaches novel *instances and chains* of known property-violations (most of real
 pentesting); new categories stay human-seeded. A fine place for the wall.
 
-### 8.8 First step — the experiment that earns the design
+### 8.8 What the indictment experiment showed
 
-Before trusting any of this, prove the verifier is worth trusting, then use it to
-indict the naive loop:
+A one-off experiment (2026-06-11, scaffolding not kept) validated a consequence verifier
+against known-good worlds, then used it to audit 89 LLM-generated worlds (world + solver
++ self-checker) across four classes, guided and unguided. The durable finding: the
+self-check is a strong, necessary filter — it catches the dominant failure, *unsolvable*
+worlds — but leaves a small, consistent tail (**~2–4% of shipped worlds**) that it passes
+and an independent verifier rejects as trivial or unfaithful. The tail did not widen with
+harder classes, bigger N, or real LLM checkers. The genuinely hard part is the independent
+verifier itself: it mis-fires in both directions, and the reliable signals are
+**triviality** and **faked-engine**, not the generator's own wrong-vector. The tail still
+matters — a `command_injection` set even 2% arbitrary-file-read biases a per-class transfer
+number — which is the verifier's job to measure.
 
-1. **Build + validate the consequence verifier on one class** (e.g.
-   `command_injection`): generalize `check_success` to "any `HIDDEN` value leaked,"
-   and confirm it against worlds we already trust — it must pass every existing
-   faithful exploit and reject every trivial/neutralized negative in
-   `test_cyber_staged_generation.py`. *The verifier is validated against known
-   ground truth before it audits anything.*
-2. **Run the indictment:** have an LLM generate world + solver + self-checker for
-   that class, N times. Grade each by (a) its own self-check and (b) the validated
-   verifier. **Measure the admit-gap** — worlds the self-check passes that the
-   independent verifier rejects as trivially-solvable or unfaithful — and let the
-   number be what it is (see §8.10).
+### 8.9 State of this direction
 
-Scope honestly: this runs at `PROCESS`, so it exercises the response-leak
-consequence only; file-read / code-exec consequences wait on the container (8.4).
-One class, one figure, the whole mechanism proven small.
-
-### 8.10 The indictment runs — what they actually showed
-
-A one-off validation experiment (run 2026-06-11; scaffolding not kept in the repo) ran
-89 LLM-generated worlds (Claude sonnet/haiku) across `command_injection`,
-`sql_injection`, `ssti`, `path_traversal`, guided and unguided, the final run carrying
-each generator's **own checker** (the real loop) plus a computed faithfulness control.
-
-| run | shipped | broken (self-caught) | admit-gap |
-| --- | --- | --- | --- |
-| A — guided cmdi (21) | 21 | 0 | 1 (trivial) |
-| B — unguided cmdi (20) | 6 | 14 | 0 |
-| C — 4 classes, real checkers (48) | 43 | 5 | 1 (faked engine) |
-
-The honest result is **narrower than this section first predicted, and consistent:**
-the admit-gap is **~2–4% of shipped worlds**, and did not widen with harder classes,
-bigger N, or real LLM checkers. Findings:
-
-1. The self-check is a **strong, necessary filter** — it catches the dominant failure,
-   *unsolvable* worlds (14/20 unguided cmdi never self-admit: faked tool output, the
-   stub reused, exploits that echo the literal marker).
-2. Two predicted amplifiers **didn't materialise.** Generated checkers were mostly
-   sound (`flag in response`), so broken worlds were self-rejected, not shipped; and
-   weak generation produces *more broken* worlds, not *more contaminated* ones.
-3. **The harder finding: an independent verifier is itself hard to get right.** The
-   harness mis-fired in both directions, each found only by hand-auditing real worlds —
-   false *negatives* (it took three probe iterations to stop passing `log-file-viewer`
-   trivial worlds) and false *positives* (judging faithfulness on the generator's own
-   "wrong" query flagged a real shell and real jinja2 as unfaithful; the fix is to judge
-   only on the computed control). The reliable signals are **triviality** and
-   **faked-engine**; the generator-supplied wrong-vector is not.
-
-So the defensible claim is not "self-verification fails" but: **its gross failures
-(broken worlds) are self-caught, the residual impurity is a small consistent tail
-(~2–4%) invisible to the self-check, and the genuinely hard part is building an
-independent verifier reliable enough to measure that tail.** That tail still matters —
-a `command_injection` set even 2% arbitrary-file-read biases a per-class transfer
-number — which is the independent verifier's job.
-
-### 8.9 Status of this direction
-
-| piece | state |
-| --- | --- |
-| planted-flag verifier (rung 1) | **done** — `check_success` |
-| graded reward rungs for GRPO variance | **done** — pentest subgoals; `test_trl_cyber.py` |
-| LLM behind admission (instruction, mutation enrichment) | **done** — `llm_generation.py`, strictly non-correctness-path |
-| any-hidden-leak verifier (rung 1+3 spine, 8.3) | **done** — `consequence.py`, validated on all 9 classes |
-| indictment: independent probes + run (8.8, 8.10) | **done** (one-off; scaffolding not kept) — gap ~2–4% |
-| wire the verifier into live `check_success` (runtime leak-capture) | **done** — seed → app scan → `leaked_secret_ids` → `check_success` |
-| LLM generates the *world* (emergent mode, 8.5) | **next** — not yet a gym mode |
-| report ↔ graph check (rung 2) | designed, unbuilt |
-| execution-effect consequences (rung 4) | **blocked** on container ([#252](https://github.com/vecna-labs/open-range/issues/252) / [#202](https://github.com/vecna-labs/open-range/issues/202)) |
-| novel-class discovery | far-future, human-seeded (8.7) |
+Built and validated on all 9 classes: the any-hidden-leak verifier (rungs 1+3 of the
+spine, `consequence.py`), wired into live `check_success` via runtime leak-capture; graded
+reward rungs for GRPO; the LLM kept strictly off the correctness path. Still ahead: the LLM
+generating the *world* itself (emergent mode, 8.5); report↔graph checks (rung 2, designed);
+execution-effect consequences (rung 4, blocked on the container,
+[#252](https://github.com/vecna-labs/open-range/issues/252)); novel-class discovery
+(far-future, human-seeded, 8.7).
 
 ---
 
@@ -553,12 +503,12 @@ The invariant at every stage: **procedural architects the graph** (topology, fla
 placement, the solvability skeleton — the controllable, scalable, solvable-by-
 construction part that is OpenRange's differentiator); **the LLM realizes each node**
 into a real, varied service; **admission verifies** (the consequence oracle + the
-shortcut/faithfulness probes of §8.10) that the realization is still solvable and not
+shortcut/faithfulness probes of §8.8) that the realization is still solvable and not
 *trivially* so; **the result freezes** to a content-addressed snapshot, so the study
 stays reproducible even with an LLM in the build path.
 
 Why the mix, not pure-LLM: an LLM asked for "a vulnerable world" gives *one* world,
-low controllability, and — §8.10 measured this — mostly *broken* ones. The procedural
+low controllability, and — §8.8 measured this — mostly *broken* ones. The procedural
 engine is the controllable variation source; the LLM is realism *per node, behind
 admission*. The LLM never architects correctness.
 
