@@ -625,57 +625,34 @@ runs real RCE (resource/privilege limits, egress, flag-out-of-image) is
 
 The single-container backing (§9) runs the whole world in one container, every service
 mounted by path prefix — so "internal" services are just `/svc/<name>` paths on the same
-server and SSRF is emulated in-process. The graph already carries the topology primitives
-(`service.exposure` public/internal, `host.zone`, `network.isolation`, `connected_to`),
-but the runtime doesn't enforce them. This stage makes network position **real**, on the
-runtime-first track (#252 per-service realizer; the scale generation that feeds it is #212
-/ #235).
+server and SSRF is emulated in-process. This stage makes network position **real**.
 
 **The shape.** A real SSRF world is: a **public** service (the agent's only entry,
 published) holds the SSRF; an **internal** service (no published port, reachable only on
 the container network) holds the flag. The flag is reachable **only** by pivoting — the
-agent exploits SSRF on the public service to make it fetch the internal service's URL,
-which returns the flag. That is genuine networked exploitation, not a path lookup.
+agent exploits the SSRF to make the public service fetch the internal service's URL,
+which returns the flag. Genuine networked exploitation, not a path lookup.
 
-**What it takes (increments):**
+**How it works.**
 
-1. **Per-service realization.** Split the one generated app into one app per `service`
-   node — each carries only its own endpoints and only its own state (the secrets/records/
-   files of the data_stores it is `backed_by`). The flag stays in its owning internal
-   service; the public service never holds it (so it is never in the public image).
-2. **Networked runtime.** One container per service on a real docker network, each named
-   by its service so they resolve each other by name; publish only the public/entrypoint
-   service to the host; surface its `base_url`. The leak signal is **aggregated across all
-   services' request logs** — the internal service detects it leaking its own flag when it
-   serves it (it has the flag in its own guarded set; the public service does not).
-3. **Real SSRF.** The SSRF handler, in networked mode, actually `urlopen`s the target URL
-   across the network; the world is shaped so the SSRF's internal target is the internal
-   flag service. Recovering the flag requires the pivot; the internal service is not
-   directly reachable from the host.
-4. **Cross-backing parity.** The same SSRF world grades identically on `PROCESS`
-   (emulated, one app) and the networked `CONTAINER` — only fidelity changes.
+- **Per-service realization** (`realize_services`) splits the world into one container per
+  `service` node, each carrying only its own endpoints and the state of the data_stores it
+  is `backed_by`. The flag stays in its owning internal service and never enters the public
+  image.
+- **The networked runtime** (`NetworkedContainerWebappRuntime`) runs those containers on a
+  real docker network, each reachable by name, publishing only the public service. The leak
+  signal aggregates across every service's request log, so the internal service detects
+  itself serving its own flag. `WebappPack.realize` routes here when a world is networked-
+  shaped (`_is_networked`).
+- **Generation** re-homes the SSRF onto the public service's endpoint and adds the internal
+  half — a `metadata_credential_leak` endpoint that serves the flag, which the SSRF
+  `enables`. Feasibility and entrypoint selection follow that pivot, so the agent starts at
+  the public endpoint and the internal flag service counts as reachable.
+- **The exploit is real.** Under `OPENRANGE_NETWORKED` the SSRF handler `urlopen`s the
+  internal host across the network. Docker-gated tests recover the flag only through the
+  pivot (a benign fetch and a direct hit on the internal path leak nothing) and confirm the
+  same exploit grades identically on `PROCESS` (in-process read) and the networked
+  `CONTAINER` (real fetch) — only fidelity changes.
 
 Later: real lateral movement / credential reuse, then enterprise scale (#212) + lazy
-realization (#235) on top of this runtime, then k8s (#189).
-
-**Status.** All four increments are **done and proven**:
-
-- **Per-service realization + networked runtime.** `realize_services` splits a world into
-  per-service build contexts (the flag confined to its owning internal service);
-  `NetworkedContainerWebappRuntime` runs one container per service on a real docker network,
-  each reachable by name, publishing only the public service. A docker-gated test shows real
-  network position — the public service is reachable from the host, an internal service only
-  from inside the network.
-- **Networked-shaped generation.** An SSRF world is now networked by construction: the
-  sampler re-homes the SSRF onto the public service's endpoint and adds the internal half on
-  the flag's own service — a `metadata_credential_leak` endpoint that serves the flag, which
-  the SSRF `enables`. Feasibility and entrypoint selection follow that pivot, so the flag-
-  bearing internal service counts as reachable and the agent starts at the public endpoint.
-  `WebappPack.realize` routes these worlds to the networked runtime (`_is_networked`).
-- **Real cross-container SSRF.** Under `OPENRANGE_NETWORKED` the SSRF handler actually
-  `urlopen`s the internal host over the network. A docker-gated test recovers the flag only
-  through the pivot — a benign fetch and a direct hit on the internal path both leak nothing,
-  and the internal service is never reachable from the host.
-- **Cross-backing parity.** The same SSRF world is solved by the same exploit on both
-  backings: `PROCESS` reads the shared secret in place, the networked `CONTAINER` fetches it
-  across the network — same flag, only the runtime fidelity differs.
+realization (#235) on this runtime, then k8s (#189).
