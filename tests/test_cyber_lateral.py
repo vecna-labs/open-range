@@ -152,6 +152,25 @@ def test_lateral_chain_is_synthesized_and_wired() -> None:
     assert record.attrs["fields"]["value"] != flag
 
 
+def test_lateral_chain_pivots_inward_by_tier() -> None:
+    # Structure coherence: the chain pivots INWARD — its hosts' tiers never decrease
+    # (web < api < auth < db) — so lateral movement reads architecturally.
+    graph = _admit().graph
+    tier = {"web": 1, "api": 2, "auth": 3, "db": 4}
+    out = {e.src: e.dst for e in graph.edges.values() if e.kind == "enables"}
+    ep_of_vuln = {e.src: e.dst for e in graph.edges.values() if e.kind == "affects"}
+    svc_of_ep = {e.dst: e.src for e in graph.edges.values() if e.kind == "exposes"}
+    by_kind = {n.attrs.get("kind"): n.id for n in graph.by_kind("vulnerability")}
+    node = by_kind["credential_leak"]
+    tiers: list[int] = []
+    while node is not None and graph.nodes.get(node) is not None:
+        svc = svc_of_ep.get(ep_of_vuln.get(node))
+        if svc is not None:
+            tiers.append(tier.get(str(graph.nodes[svc].attrs.get("kind")), 0))
+        node = out.get(node)
+    assert tiers == sorted(tiers)  # non-decreasing — the pivot moves toward the data
+
+
 def test_lateral_synthesizes_varied_depth() -> None:
     # One preset, many depths: the engine synthesizes a distribution, not a fixed shape.
     depths = {_chain_depth(_admit(seed).graph) for seed in range(12)}

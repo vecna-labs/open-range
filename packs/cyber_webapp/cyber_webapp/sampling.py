@@ -145,6 +145,34 @@ _CORP_DOMAINS: tuple[str, ...] = (
 _HOST_ENVS: tuple[str, ...] = ("prod", "stg", "infra")
 
 
+# Realistic service names by kind, sampled deterministically so a world reads like a
+# real company's estate rather than ``api1`` / ``db2`` (DESIGN.md §2: realism is
+# procedural-first, from curated pools). Hyphen-safe so a name doubles as a docker host.
+_SERVICE_NAMES_BY_KIND: Mapping[str, tuple[str, ...]] = {
+    "web": ("storefront", "customer-portal", "shop", "portal", "dashboard", "www-app"),
+    "api": (
+        "orders-api",
+        "catalog-api",
+        "payments-api",
+        "inventory-api",
+        "checkout-api",
+        "billing-api",
+    ),
+    "auth": ("identity", "sso-gateway", "accounts", "login-service", "idp"),
+    "db": (
+        "orders-db",
+        "users-db",
+        "billing-db",
+        "ledger-db",
+        "records-db",
+        "warehouse-db",
+    ),
+    "queue": ("jobs-queue", "event-bus", "broker"),
+    "mail": ("mailer", "smtp-relay", "notifications"),
+    "fileshare": ("file-store", "documents", "asset-store"),
+}
+
+
 # Vuln-parameter pools sampled per-build so exploit payloads (e.g. which header
 # carries the privileged role) differ across builds rather than being constant.
 _SQLI_PARAMS: tuple[str, ...] = ("q", "query", "search", "term", "filter", "ref")
@@ -586,28 +614,44 @@ def _sample_services(
 ) -> list[dict[str, str]]:
     count = _sample_int(rng, prior, "service_count")
     kinds_pool = _weighted_pool(prior, "service_kinds", exclude=("web",))
+    used_names: set[str] = set()
     services: list[dict[str, str]] = [
         {
-            "name": "web",
+            "name": _service_name("web", used_names),
             "kind": "web",
             "language": "python",
             "exposure": "public",
         },
     ]
-    used_names = {"web"}
     for _ in range(count - 1):
         kind = rng.choice(kinds_pool) if kinds_pool else "api"
-        name = _unique_name(kind, used_names)
-        used_names.add(name)
         services.append(
             {
-                "name": name,
+                "name": _service_name(kind, used_names),
                 "kind": kind,
                 "language": "python",
                 "exposure": "internal",
             },
         )
     return services
+
+
+def _service_name(kind: str, used: set[str]) -> str:
+    # A realistic name from the kind's pool, distinct within the world. Deterministic
+    # (no rng draw) so adding it does not shift the structural sampling stream — the
+    # world is the same one, just better-named; the pool order gives the assignment.
+    pool = _SERVICE_NAMES_BY_KIND.get(kind, (kind,))
+    for name in pool:
+        if name not in used:
+            used.add(name)
+            return name
+    base = pool[0]
+    i = 2
+    while f"{base}-{i}" in used:
+        i += 1
+    name = f"{base}-{i}"
+    used.add(name)
+    return name
 
 
 def _sample_endpoints(
@@ -1224,7 +1268,11 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
     #    sampled and bounded by the internal hosts available. ``gated_hosts`` are the
     #    hosts that require a credential (the relays, then the flag); ``creds[j]`` opens
     #    ``gated_hosts[j]``.
-    rng.shuffle(others)
+    # Order the chain to pivot INWARD through the tiers — shallow services first, toward
+    # the deep db that bears the flag — so the lateral movement reads architecturally
+    # (web -> api -> auth -> db) rather than hopping random hosts.
+    tier = {"web": 1, "api": 2, "auth": 3, "db": 4}
+    others.sort(key=lambda n: (tier.get(str(n.attrs.get("kind")), 2), n.id))
     depth = rng.randint(1, min(_MAX_CHAIN_DEPTH, len(others)))
     entry = others[0]
     gated_hosts = [*others[1:depth], graph.nodes[flag_service_id]]
@@ -1442,16 +1490,6 @@ def _prior_weights(
             continue
         out[name] = weight
     return out
-
-
-def _unique_name(kind: str, used: set[str]) -> str:
-    base = kind
-    if base not in used:
-        return base
-    i = 1
-    while f"{base}{i}" in used:
-        i += 1
-    return f"{base}{i}"
 
 
 def _pick_deepest_service(

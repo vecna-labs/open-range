@@ -168,6 +168,18 @@ def test_company_solves_on_process(tmp_path: Path) -> None:
         svc.close()
 
 
+def test_services_are_realistically_named() -> None:
+    # Coherence (DESIGN.md §2: realism is procedural-first, from curated pools): names
+    # read like a real company estate, not the mechanical api1/db2 shape.
+    from cyber_webapp.sampling import _SERVICE_NAMES_BY_KIND
+
+    graph = _admit(_COMPANY_MANIFEST).graph
+    for svc in graph.by_kind("service"):
+        name, kind = str(svc.attrs["name"]), str(svc.attrs["kind"])
+        pool = _SERVICE_NAMES_BY_KIND[kind]
+        assert name in pool or name.startswith(pool[0] + "-")  # pool name or -indexed
+
+
 def test_default_world_stays_one_flat_segment() -> None:
     # The company preset is opt-in: a default world is unchanged — one network, no
     # recon disclosure.
