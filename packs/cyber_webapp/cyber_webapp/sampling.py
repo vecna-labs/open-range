@@ -144,6 +144,21 @@ _CORP_DOMAINS: tuple[str, ...] = (
 )
 _HOST_ENVS: tuple[str, ...] = ("prod", "stg", "infra")
 
+# Realistic people for the background accounts (DESIGN.md §2: `alice@corp.example`),
+# assigned deterministically and qualified with the world's corp domain.
+_PERSON_HANDLES: tuple[str, ...] = (
+    "alice.chen",
+    "brian.okafor",
+    "carla.diaz",
+    "devin.patel",
+    "erin.walsh",
+    "felix.nardi",
+    "grace.kim",
+    "hana.suzuki",
+    "ivan.petrov",
+    "julia.ross",
+)
+
 
 # Realistic service names by kind, sampled deterministically so a world reads like a
 # real company's estate rather than ``api1`` / ``db2`` (DESIGN.md §2: realism is
@@ -548,7 +563,7 @@ def sample_graph(
         attrs={"field": "value"},
     )
 
-    _sample_accounts(graph, rng, prior)
+    _sample_accounts(graph, rng, prior, corp_domain)
     _sample_vulnerabilities(
         graph,
         rng,
@@ -698,19 +713,22 @@ def _sample_accounts(
     graph: WorldGraph,
     rng: random.Random,
     prior: PackPrior | None,
+    corp_domain: str,
 ) -> None:
-    # Accounts are tagged ``Role.NPC``: they aren't the agent; they're
-    # background identities the realized world is seeded with.
+    # Accounts are tagged ``Role.NPC``: they aren't the agent; they're background
+    # identities the realized world is seeded with. Names are real people at the
+    # company domain (deterministic, no rng draw) rather than admin / user1.
     count = _sample_int(rng, prior, "account_count")
     for i in range(count):
         is_admin = i == 0
         account_id = f"acct_{i}"
+        handle = _PERSON_HANDLES[i % len(_PERSON_HANDLES)]
         graph.add_node(
             Node(
                 id=account_id,
                 kind="account",
                 attrs={
-                    "username": "admin" if is_admin else f"user{i}",
+                    "username": f"{handle}@{corp_domain}",
                     "role": "admin" if is_admin else "user",
                     "active": True,
                 },

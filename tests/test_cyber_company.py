@@ -180,6 +180,18 @@ def test_services_are_realistically_named() -> None:
         assert name in pool or name.startswith(pool[0] + "-")  # pool name or -indexed
 
 
+def test_accounts_are_real_people() -> None:
+    # Coherence (DESIGN.md §2: alice@corp.example): background accounts are real people
+    # at the company domain, not admin / user1.
+    graph = _admit(_COMPANY_MANIFEST).graph
+    accounts = list(graph.by_kind("account"))
+    assert accounts
+    for acct in accounts:
+        username = str(acct.attrs["username"])
+        assert "@" in username and "." in username.split("@")[0]
+        assert not username.startswith("user")
+
+
 def test_default_world_stays_one_flat_segment() -> None:
     # The company preset is opt-in: a default world is unchanged — one network, no
     # recon disclosure.
