@@ -225,11 +225,16 @@ _INTERNAL_ONLY_KINDS: frozenset[str] = frozenset(
         "config_disclosure",
         "credential_leak",
         "credential_gated_flag",
+        "credential_gated_relay",
     }
 )
 
-# Query params the credential-gated internal DB reads the reused token from.
+# Query params the credential-gated internal hosts read the reused token from.
 _TOKEN_PARAMS: tuple[str, ...] = ("token", "api_key", "auth", "session", "key")
+
+# Longest credential-reuse chain the synthesizer composes (number of gated hops); the
+# actual depth is sampled per world and also bounded by the internal hosts available.
+_MAX_CHAIN_DEPTH = 3
 
 # Status/config paths the company recon disclosure mounts on the public service.
 _RECON_PATHS: tuple[str, ...] = (
@@ -1162,11 +1167,13 @@ def _flag_record_id(graph: WorldGraph) -> str | None:
 
 
 def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
-    # Credential-reuse lateral movement. Re-home the SSRF onto the public service in
-    # PROXY mode (the agent drives the pivot to any internal host), leak a db credential
-    # from an internal service, and gate the flag on the internal db behind that reused
-    # credential. The flag is reachable ONLY via the gate: the db record's value goes
-    # decoy, the real flag stays in the secret the gated handler serves.
+    # Compose a credential-reuse chain of sampled depth — the lateral-movement
+    # primitive. Re-home the SSRF into PROXY mode (the agent drives the pivot), then
+    # chain internal hosts: an entry host leaks a db credential, each next host is gated
+    # by the credential leaked one hop back, relaying the next; the last serves it.
+    # Depth is sampled per seed, so one preset synthesizes 1-, 2-, 3-hop chains. The
+    # flag is reachable ONLY via the final gate: the db record's value goes decoy, real
+    # flag stays in the secret the gated handler serves.
     ssrf = next(
         (n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"),
         None,
@@ -1180,18 +1187,16 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
         return
     if flag_service_id == public.id:
         return  # the deepest (internal) service bears the flag, never the public one
+    public_ep = next((e.dst for e in graph.out_edges(public.id, "exposes")), None)
+    if public_ep is None:
+        return
     others = [
         n
         for n in graph.by_kind("service")
         if n.attrs.get("exposure") != "public" and n.id != flag_service_id
     ]
     if not others:
-        return  # need a separate internal host to hold the leaked credential
-    metadata_service = min(others, key=lambda n: n.id)
-    flag_service = graph.nodes[flag_service_id]
-    public_ep = next((e.dst for e in graph.out_edges(public.id, "exposes")), None)
-    if public_ep is None:
-        return
+        return  # need a separate internal host to leak the credential from
 
     # 1. Re-home the SSRF onto the public endpoint, in proxy mode (agent-driven).
     for edge in graph.edges.values():
@@ -1208,21 +1213,30 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
         for n in graph.by_kind("service")
         if n.attrs.get("exposure") != "public"
     )
-    target_param = str(dict(ssrf.attrs.get("params", {})).get("target_param", "url"))
     ssrf.attrs["params"] = {
-        "target_param": target_param,
+        "target_param": str(
+            dict(ssrf.attrs.get("params", {})).get("target_param", "url")
+        ),
         "internal_hosts": internal_names,
     }
 
-    # 2. The reused credential + where it is honored (the internal db's gated vault).
-    credential = _b62(rng, 24)
-    token_param = rng.choice(_TOKEN_PARAMS)
-    flag_name = str(flag_service.attrs.get("name", flag_service_id))
+    # 2. Compose the chain: an entry host + (depth-1) relays + the flag host; depth is
+    #    sampled and bounded by the internal hosts available. ``gated_hosts`` are the
+    #    hosts that require a credential (the relays, then the flag); ``creds[j]`` opens
+    #    ``gated_hosts[j]``.
+    rng.shuffle(others)
+    depth = rng.randint(1, min(_MAX_CHAIN_DEPTH, len(others)))
+    entry = others[0]
+    gated_hosts = [*others[1:depth], graph.nodes[flag_service_id]]
+    creds = [_b62(rng, 24) for _ in range(depth)]
+    tparams = [rng.choice(_TOKEN_PARAMS) for _ in range(depth)]
     gate_path = "/internal/vault"
 
-    # 3. An internal metadata service leaks the credential and how to use it.
-    meta_name = str(metadata_service.attrs.get("name", metadata_service.id))
-    leak_ep_id = f"ep_{meta_name}_credleak"
+    def _name(node: Node) -> str:
+        return str(node.attrs.get("name", node.id))
+
+    # 3. The entry host leaks the first credential and how to reach the first gate.
+    leak_ep_id = f"ep_{_name(entry)}_credleak"
     leak_path = "/internal/credentials"
     graph.add_node(
         Node(
@@ -1230,14 +1244,14 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
             kind="endpoint",
             attrs={
                 "path": leak_path,
-                "public_url": _public_url(metadata_service.attrs, leak_path),
+                "public_url": _public_url(entry.attrs, leak_path),
                 "method": "GET",
                 "auth_required": False,
                 "behavior_ref": "credential.leak",
             },
         )
     )
-    _add_edge(graph, "exposes", metadata_service.id, leak_ep_id)
+    _add_edge(graph, "exposes", entry.id, leak_ep_id)
     leak_vuln_id = "vuln_credential_leak_0"
     graph.add_node(
         Node(
@@ -1247,9 +1261,9 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
                 "kind": "credential_leak",
                 "family": "code_web",
                 "params": {
-                    "credential": credential,
-                    "token_param": token_param,
-                    "vault_host": flag_name,
+                    "credential": creds[0],
+                    "token_param": tparams[0],
+                    "vault_host": _name(gated_hosts[0]),
                     "vault_path": gate_path,
                 },
             },
@@ -1257,6 +1271,7 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
         )
     )
     _add_edge(graph, "affects", leak_vuln_id, leak_ep_id)
+    _add_edge(graph, "enables", ssrf.id, leak_vuln_id)
 
     # 4. The flag record's value goes decoy so the db's default endpoints can't leak it;
     #    the real flag stays in the secret the gated handler serves.
@@ -1267,40 +1282,57 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
         fields["value"] = f"rotated-{_b62(rng, 8)}"
         record.attrs["fields"] = fields
 
-    # 5. The internal db gates the flag behind the reused credential.
-    gate_ep_id = f"ep_{flag_name}_vault"
-    graph.add_node(
-        Node(
-            id=gate_ep_id,
-            kind="endpoint",
-            attrs={
-                "path": gate_path,
-                "public_url": _public_url(flag_service.attrs, gate_path),
-                "method": "GET",
-                "auth_required": True,
-                "behavior_ref": "credential.gate",
-            },
+    # 5. Each gated host validates the credential leaked one hop back; the last serves
+    #    the flag, the rest relay the next host's credential — composable, any depth.
+    prev_vuln = leak_vuln_id
+    for j, host in enumerate(gated_hosts):
+        ep_id = f"ep_{_name(host)}_vault"
+        graph.add_node(
+            Node(
+                id=ep_id,
+                kind="endpoint",
+                attrs={
+                    "path": gate_path,
+                    "public_url": _public_url(host.attrs, gate_path),
+                    "method": "GET",
+                    "auth_required": True,
+                    "behavior_ref": "credential.gate",
+                },
+            )
         )
-    )
-    _add_edge(graph, "exposes", flag_service_id, gate_ep_id)
-    gate_vuln_id = "vuln_credential_gated_flag_0"
-    graph.add_node(
-        Node(
-            id=gate_vuln_id,
-            kind="vulnerability",
-            attrs={
+        _add_edge(graph, "exposes", host.id, ep_id)
+        if j < depth - 1:
+            vuln_id = f"vuln_credential_gated_relay_{j}"
+            attrs = {
+                "kind": "credential_gated_relay",
+                "family": "code_web",
+                "params": {
+                    "credential": creds[j],
+                    "token_param": tparams[j],
+                    "next_credential": creds[j + 1],
+                    "next_vault_host": _name(gated_hosts[j + 1]),
+                    "next_vault_path": gate_path,
+                    "next_token_param": tparams[j + 1],
+                },
+            }
+        else:
+            vuln_id = "vuln_credential_gated_flag_0"
+            attrs = {
                 "kind": "credential_gated_flag",
                 "family": "code_web",
-                "params": {"credential": credential, "token_param": token_param},
-            },
-            visibility=Visibility.HIDDEN,
+                "params": {"credential": creds[j], "token_param": tparams[j]},
+            }
+        graph.add_node(
+            Node(
+                id=vuln_id,
+                kind="vulnerability",
+                attrs=attrs,
+                visibility=Visibility.HIDDEN,
+            )
         )
-    )
-    _add_edge(graph, "affects", gate_vuln_id, gate_ep_id)
-
-    # 6. The chain: SSRF reaches the leak; the leaked credential opens the gate.
-    _add_edge(graph, "enables", ssrf.id, leak_vuln_id)
-    _add_edge(graph, "enables", leak_vuln_id, gate_vuln_id)
+        _add_edge(graph, "affects", vuln_id, ep_id)
+        _add_edge(graph, "enables", prev_vuln, vuln_id)
+        prev_vuln = vuln_id
 
 
 def _add_edge(

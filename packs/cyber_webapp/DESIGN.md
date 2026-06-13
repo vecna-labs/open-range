@@ -647,19 +647,22 @@ following the SSRF `enables` chain (`_enable_closure`); cross-backing parity (`P
 vs the networked `CONTAINER`) stays the load-bearing check — only fidelity changes, not
 the task.
 
-**Lateral movement: credential reuse (built on this ground).** The richest chain this
-unlocks. The SSRF gains an opt-in *proxy* mode: the agent drives the pivot — bypass the
-scheme filter to make the public service fetch ANY internal host by name and forward the
-path and query, so the internal estate is the agent's to explore (a real `urlopen` on
-the container backing; the same in-process `/svc/<host>` dispatch on `PROCESS`, so parity
-still holds). An internal service leaks a db credential and how to use it; an
-internal db gates the flag behind that reused credential. The flag is reachable ONLY
-through the gate — the db record's own value is a decoy and the real flag sits in the
-gated secret, so neither the db's default endpoints nor a request without the credential
-can leak it. The agent recons the estate, pivots to the metadata host, then reuses the
-credential it found to open the db on a *different* host: genuine host-to-host lateral
-movement, the project's stated stage after §10. Opt-in and additive — the direct-pivot
-worlds above are untouched.
+**Lateral movement: a synthesized credential chain (built on this ground).** The richest
+worlds this unlocks — and the first that are *composed* rather than hand-shaped. The SSRF
+gains an opt-in *proxy* mode: the agent drives the pivot — bypass the scheme filter to
+make the public service fetch ANY internal host by name and forward the path and query,
+so the internal estate is the agent's to explore (a real `urlopen` on the container
+backing; the same in-process `/svc/<host>` dispatch on `PROCESS`, so parity still holds).
+On top of it the engine **synthesizes** a credential-reuse chain of *sampled depth* from
+one composable primitive: an entry host leaks a db credential, each gated host validates
+the credential leaked one hop back and relays the next, and the last serves the flag. One
+preset therefore synthesizes 1-, 2-, 3-hop chains across seeds — a distribution, not a
+fixed shape. The flag is reachable ONLY through the final gate — the db record's value is
+a decoy and the real flag sits in the gated secret — so no default endpoint and no
+un-credentialed request can leak it. Genuine host-to-host lateral movement, the project's
+stated stage after §10; opt-in and additive (the direct-pivot worlds are untouched). The
+composable hop is exactly the action a search-based sampler (#193) would compose and
+score — the substrate for "synthesize, don't hand-shape."
 
 **What comes next, on this ground.** Graph-driven lazy realization (#235) once worlds
 outgrow what is cheap to fully realize; then k8s (#189).

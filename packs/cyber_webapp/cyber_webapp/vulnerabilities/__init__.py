@@ -301,6 +301,28 @@ CREDENTIAL_GATED_FLAG = Vulnerability(
 )
 
 
+CREDENTIAL_GATED_RELAY = Vulnerability(
+    id="credential_gated_relay",
+    family="code_web",
+    description=(
+        "An intermediate internal relay: validates the reused db token, then hands "
+        "over the NEXT host's credential and how to reach it. One composable hop of an "
+        "arbitrary-depth lateral chain. Never placed by general sampling."
+    ),
+    target_kinds=frozenset({"endpoint"}),
+    template="credential_gated_relay.py.j2",
+    shape="response_leak",
+    attrs_schema={
+        "credential": "the db token a caller must present to pass this hop",
+        "token_param": "query parameter the token is read from",
+        "next_credential": "the credential handed over for the next host",
+        "next_vault_host": "the next host on the chain",
+        "next_vault_path": "the next host's gated path",
+        "next_token_param": "the query parameter the next host reads its token from",
+    },
+)
+
+
 CATALOG: Mapping[str, Vulnerability] = {
     SQL_INJECTION.id: SQL_INJECTION,
     SSRF.id: SSRF,
@@ -315,6 +337,7 @@ CATALOG: Mapping[str, Vulnerability] = {
     CONFIG_DISCLOSURE.id: CONFIG_DISCLOSURE,
     CREDENTIAL_LEAK.id: CREDENTIAL_LEAK,
     CREDENTIAL_GATED_FLAG.id: CREDENTIAL_GATED_FLAG,
+    CREDENTIAL_GATED_RELAY.id: CREDENTIAL_GATED_RELAY,
 }
 
 
@@ -389,6 +412,7 @@ __all__ = [
     "COMMAND_INJECTION",
     "CONFIG_DISCLOSURE",
     "CREDENTIAL_GATED_FLAG",
+    "CREDENTIAL_GATED_RELAY",
     "CREDENTIAL_LEAK",
     "IDOR",
     "METADATA_CREDENTIAL_LEAK",
