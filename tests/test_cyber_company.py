@@ -1,0 +1,250 @@
+"""Company worlds (DESIGN.md §11): a believable multi-service estate the agent recons
+and pivots through. Generation + a PROCESS solve here; the docker-gated test proves the
+same recon→pivot recovers the flag across real containers."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+import pytest
+from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
+from graphschema import WorldGraph
+from openrange_pack_sdk import Backing, Snapshot
+
+from openrange.core.admit import admit
+from openrange.core.episode import EpisodeService
+
+_COMPANY_MANIFEST = {
+    "pack": {"id": "webapp"},
+    "runtime": {"tick": {"mode": "off"}},
+    "npc": [],
+    "seed": 3,
+    "company": True,
+}
+_DEFAULT_MANIFEST = {
+    "pack": {"id": "webapp"},
+    "runtime": {"tick": {"mode": "off"}},
+    "npc": [],
+    "seed": 3,
+}
+
+
+def _admit(manifest: dict) -> Snapshot:
+    snap = admit(WebappPack(), manifest=manifest, max_repairs=3)
+    assert isinstance(snap, Snapshot), snap
+    return snap
+
+
+def _public_service(graph: WorldGraph):
+    return next(
+        n for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
+    )
+
+
+def _company_exploit(graph: WorldGraph) -> tuple[str, str, str]:
+    # The public SSRF payload, built from the sampled filter the way an agent would —
+    # the same payload drives PROCESS and CONTAINER.
+    ssrf = next(
+        n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
+    )
+    params = dict(ssrf.attrs.get("params", {}))
+    public_eps = {
+        e.dst
+        for svc in graph.by_kind("service")
+        if svc.attrs.get("exposure") == "public"
+        for e in graph.out_edges(svc.id, "exposes")
+    }
+    ep_id = next(
+        iter({e.dst for e in graph.out_edges(ssrf.id, "affects")} & public_eps)
+    )
+    path = str(graph.nodes[ep_id].attrs.get("path", "/"))
+    param = str(params["target_param"])
+    host = str(params["internal_host"])
+    internal_path = str(params["internal_path"])
+    if params.get("ssrf_filter") == "scheme_block":
+        payload = f"gopher://{host}{internal_path}"
+    else:  # host_allowlist (decimal_ip is swapped to it for a hostname target)
+        payload = f"http://{params.get('allowed_host', 'ok')}@{host}{internal_path}"
+    return path, param, payload
+
+
+def _get(
+    base_url: str, path: str, query: dict[str, str] | None = None
+) -> tuple[int, str]:
+    url = f"{base_url}{path}"
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode()
+
+
+def test_company_world_is_multi_service_and_segmented() -> None:
+    graph = _admit(_COMPANY_MANIFEST).graph
+    services = list(graph.by_kind("service"))
+    assert len(services) >= 6  # a believable estate, not the minimal pair
+
+    networks = {n.attrs.get("name"): n for n in graph.by_kind("network")}
+    assert set(networks) == {"dmz", "internal"}  # segmented, not one flat segment
+    public = _public_service(graph)
+
+    def nets_of(svc):
+        return {e.dst for e in graph.out_edges(svc.id, "connected_to")}
+
+    assert nets_of(public) == {"net_dmz"}
+    for svc in services:
+        if svc.attrs.get("exposure") != "public":
+            assert nets_of(svc) == {"net_internal"}
+
+    assert _is_networked(graph)  # routes to the per-service networked runtime
+
+
+def test_company_plants_recon_that_names_internal_hosts() -> None:
+    graph = _admit(_COMPANY_MANIFEST).graph
+    recon = next(
+        n
+        for n in graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "config_disclosure"
+    )
+    # The recon sits on the public service (the agent's only entry).
+    recon_eps = {e.dst for e in graph.out_edges(recon.id, "affects")}
+    public_eps = {e.dst for e in graph.out_edges(_public_service(graph).id, "exposes")}
+    assert recon_eps <= public_eps
+
+    internal_names = {
+        str(n.attrs.get("name"))
+        for n in graph.by_kind("service")
+        if n.attrs.get("exposure") != "public"
+    }
+    disclosed = set(recon.attrs["params"]["internal_services"])
+    assert disclosed == internal_names  # names every internal host, incl. the flag's
+
+    ssrf = next(
+        n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
+    )
+    assert str(ssrf.attrs["params"]["internal_host"]) in disclosed
+
+
+def test_company_solves_on_process(tmp_path: Path) -> None:
+    snap = _admit(_COMPANY_MANIFEST)
+    graph = snap.graph
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    ssrf = next(
+        n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
+    )
+    flag_host = str(ssrf.attrs["params"]["internal_host"])
+    recon = next(n for n in graph.by_kind("endpoint") if n.id.endswith("_recon"))
+    recon_url = str(recon.attrs["public_url"])
+    path, param, payload = _company_exploit(graph)
+
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, pentest.id)
+        base = str(svc.surface(handle)["base_url"])
+
+        # Recon discloses the internal estate (the flag host among them) — but not the
+        # flag itself; that still takes the pivot.
+        status, recon_body = _get(base, recon_url)
+        assert status == 200
+        assert flag_host in recon_body
+        assert flag not in recon_body
+
+        # A benign internal fetch leaks nothing; the SSRF pivot to the flag host does.
+        _, benign = _get(base, path, {param: "gopher://example.com/"})
+        assert flag not in benign
+        status, exploit = _get(base, path, {param: payload})
+        assert status == 200, exploit
+        assert flag in exploit
+    finally:
+        svc.close()
+
+
+def test_default_world_stays_one_flat_segment() -> None:
+    # The company preset is opt-in: a default world is unchanged — one network, no
+    # recon disclosure.
+    graph = _admit(_DEFAULT_MANIFEST).graph
+    networks = {n.attrs.get("name") for n in graph.by_kind("network")}
+    assert networks == {"main"}
+    kinds = {n.attrs.get("kind") for n in graph.by_kind("vulnerability")}
+    assert "config_disclosure" not in kinds
+
+
+def test_company_world_is_deterministic() -> None:
+    # Same builder + manifest + seed -> the same world, byte for byte (the recon path
+    # is sampled, so this guards it stays content-addressed).
+    a, b = _admit(_COMPANY_MANIFEST), _admit(_COMPANY_MANIFEST)
+    assert a.snapshot_id == b.snapshot_id
+
+
+def test_company_world_admits_across_seeds() -> None:
+    # The preset is robust across the seed space, not just the pinned seed: every seed
+    # yields a solvable networked company world with the recon disclosure wired. A
+    # stray vuln_kinds override cannot strip the SSRF either.
+    for seed in range(12):
+        snap = _admit({**_COMPANY_MANIFEST, "seed": seed, "vuln_kinds": {"idor": 9}})
+        kinds = {n.attrs.get("kind") for n in snap.graph.by_kind("vulnerability")}
+        assert len(list(snap.graph.by_kind("service"))) >= 6
+        assert _is_networked(snap.graph)
+        assert {"ssrf", "metadata_credential_leak", "config_disclosure"} <= kinds
+
+
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        probe = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=10, check=False
+        )
+    except Exception:  # noqa: BLE001 - any failure means "no"
+        return False
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_company_solves_across_real_containers() -> None:
+    # The same recon→pivot recovers the flag across real per-service containers: the
+    # flag lives in an internal container the host can't address; only the SSRF pivot
+    # over the docker network reaches it.
+    snap = _admit(_COMPANY_MANIFEST)
+    graph = snap.graph
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    path, param, payload = _company_exploit(graph)
+
+    recon = next(n for n in graph.by_kind("endpoint") if n.id.endswith("_recon"))
+    internal_names = {
+        str(n.attrs.get("name"))
+        for n in graph.by_kind("service")
+        if n.attrs.get("exposure") != "public"
+    }
+
+    runtime = WebappPack().realize(graph, Backing.CONTAINER)
+    assert isinstance(runtime, NetworkedContainerWebappRuntime)
+    try:
+        runtime.reset()
+        base = str(runtime.surface()["base_url"])
+
+        # Recon works on real containers too (cross-backing parity): it discloses the
+        # internal estate but never the flag.
+        status, recon_body = _get(base, str(recon.attrs["public_url"]))
+        assert status == 200, recon_body
+        assert set(json.loads(recon_body)["upstreams"]) == internal_names
+        assert flag not in recon_body
+
+        _, benign = _get(base, path, {param: "gopher://example.com/"})
+        assert flag not in benign
+        status, exploit = _get(base, path, {param: payload})
+        assert status == 200, exploit
+        assert flag in exploit  # recovered across the container boundary
+        final = runtime.collect()
+        assert "secret_flag" in final["leaked_secret_ids"]
+    finally:
+        runtime.stop()

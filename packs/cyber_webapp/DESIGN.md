@@ -606,3 +606,60 @@ which returns the flag. Genuine networked exploitation, not a path lookup.
 
 Later: real lateral movement / credential reuse, then enterprise scale (#212) + lazy
 realization (#235) on this runtime, then k8s (#189).
+
+## 11. Company worlds: a believable multi-service estate
+
+§10 made network position real for a hand-shaped pair — one public service, one
+internal flag-bearer. A real target is not two services; it is a small company's
+estate, and the interesting part of the attack is finding the way in. This stage grows
+the generator from that pair to a believable medium-size company the agent recons and
+pivots through. It stays **fully realized** — every service is a real container —
+because the point right now is a stable world good enough to train an agent on. Spinning
+up only what the agent can reach (#235) is a later step, deferred on purpose until this
+ground is solid.
+
+**The shape.** Procedural architects a coherent estate:
+
+- a public `web` portal in the `dmz` the agent enters;
+- internal services on a separate segment — `api`, `auth`, one or more `db` (one bears
+  the flag behind an internal metadata-style endpoint) — plus ordinary internal services
+  that are *not* on the path, so the estate is believable and the agent has to tell
+  signal from noise;
+- real hosts, zones, and `connected_to` wiring. "Internal" is already a real network
+  position — the networked runtime runs each service as its own container and leaves
+  the internal ones unpublished, reachable only by name, not a path prefix on one
+  server. The dmz/internal zone split is graph-level today (one docker network);
+  enforcing it as real per-zone isolation rides the later network work.
+
+**The way in.** The flag sits on the internal metadata service, reachable only by
+pivoting from the public entry. The agent recons the public service — an over-sharing
+config disclosure names the internal metadata host and path — then drives the public
+service's SSRF to fetch that host across the network and read the flag. The pivot rides
+the §10 mechanic unchanged: the filter bypass is still the puzzle, the published service
+is the only entry, and the internal flag host is one of several the agent could aim at,
+so finding the right one is part of the work. A benign internal fetch leaks nothing.
+
+**Why procedural still owns it.** Topology, zones, flag placement, and the
+solvable-by-construction pivot stay procedural — the controllable, admission-checked
+part. Per-node realism (LLM-realized handlers, #260) and the consequence verifier ride
+on top unchanged. Feasibility already proves the flag reachable across services by
+following the SSRF `enables` chain (`_enable_closure`); cross-backing parity (`PROCESS`
+vs the networked `CONTAINER`) stays the load-bearing check — only fidelity changes, not
+the task.
+
+**Lateral movement: credential reuse (built on this ground).** The richest chain this
+unlocks. The SSRF gains an opt-in *proxy* mode: the agent drives the pivot — bypass the
+scheme filter to make the public service fetch ANY internal host by name and forward the
+path and query, so the internal estate is the agent's to explore (a real `urlopen` on
+the container backing; the same in-process `/svc/<host>` dispatch on `PROCESS`, so parity
+still holds). An internal service leaks a db credential and how to use it; an
+internal db gates the flag behind that reused credential. The flag is reachable ONLY
+through the gate — the db record's own value is a decoy and the real flag sits in the
+gated secret, so neither the db's default endpoints nor a request without the credential
+can leak it. The agent recons the estate, pivots to the metadata host, then reuses the
+credential it found to open the db on a *different* host: genuine host-to-host lateral
+movement, the project's stated stage after §10. Opt-in and additive — the direct-pivot
+worlds above are untouched.
+
+**What comes next, on this ground.** Graph-driven lazy realization (#235) once worlds
+outgrow what is cheap to fully realize; then k8s (#189).

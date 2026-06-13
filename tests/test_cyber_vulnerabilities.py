@@ -48,6 +48,9 @@ def test_catalog_has_starter_vulns() -> None:
         "idor",
         "weak_credentials",
         "metadata_credential_leak",
+        "config_disclosure",
+        "credential_leak",
+        "credential_gated_flag",
     }
     assert vuln("sql_injection") is SQL_INJECTION
 
@@ -65,6 +68,9 @@ def test_vulns_for_kind_filters_by_target() -> None:
         "idor",
         "weak_credentials",
         "metadata_credential_leak",
+        "config_disclosure",
+        "credential_leak",
+        "credential_gated_flag",
     }
     assert vulns_for_kind("network") == ()
 

@@ -214,10 +214,31 @@ _COMMAND_INJECTION_PARAMS: tuple[str, ...] = (
     "ip",
     "domain",
 )
-# Classes never placed by general sampling: a metadata_credential_leak on a reachable
-# endpoint would hand over the flag with no exploit. It goes only inside the networked
-# SSRF chain, on an INTERNAL service the agent can reach only by pivoting.
-_INTERNAL_ONLY_KINDS: frozenset[str] = frozenset({"metadata_credential_leak"})
+# Classes general sampling never places. A metadata_credential_leak on a reachable
+# endpoint would hand over the flag with no exploit — it goes only inside the networked
+# SSRF chain, on an INTERNAL service the agent reaches by pivoting. A config_disclosure
+# names the internal pivot targets — it is placed only on a company world's public
+# service, by ``_add_recon_disclosure``.
+_INTERNAL_ONLY_KINDS: frozenset[str] = frozenset(
+    {
+        "metadata_credential_leak",
+        "config_disclosure",
+        "credential_leak",
+        "credential_gated_flag",
+    }
+)
+
+# Query params the credential-gated internal DB reads the reused token from.
+_TOKEN_PARAMS: tuple[str, ...] = ("token", "api_key", "auth", "session", "key")
+
+# Status/config paths the company recon disclosure mounts on the public service.
+_RECON_PATHS: tuple[str, ...] = (
+    "/status",
+    "/debug",
+    "/_info",
+    "/health/internal",
+    "/.well-known/app-config",
+)
 
 _COMMAND_INJECTION_BASE: tuple[str, ...] = (
     "ping",
@@ -387,18 +408,8 @@ def sample_graph(
     the prior never dictates specific outputs."""
     graph = WorldGraph(ontology=ONTOLOGY_ID)
 
-    network_id = "net_main"
-    graph.add_node(
-        Node(
-            id=network_id,
-            kind="network",
-            attrs={
-                "name": "main",
-                "isolation": "bridge",
-                "zone": "dmz",
-            },
-        )
-    )
+    company = _is_company(prior)
+    _add_networks(graph, company)
     graph.meta["discovery_title"] = rng.choice(DISCOVERY_TITLES)
 
     services = _sample_services(rng, prior)
@@ -432,7 +443,12 @@ def sample_graph(
             )
         )
         _add_edge(graph, "runs_on", service_id, host_id)
-        _add_edge(graph, "connected_to", service_id, network_id)
+        _add_edge(
+            graph,
+            "connected_to",
+            service_id,
+            _network_for(company, str(service["exposure"])),
+        )
 
         for endpoint in _sample_endpoints(rng, prior, service):
             graph.add_node(endpoint)
@@ -507,9 +523,56 @@ def sample_graph(
         oracle_service_id=deepest_service_id,
         oracle_shapes=_ORACLE_SHAPES_FOR_LOOT[loot_shape],
     )
-    _networkize_ssrf(graph)
+    if _is_lateral(prior):
+        _lateralize(graph, rng)
+    else:
+        _networkize_ssrf(graph)
+    if company:
+        _add_recon_disclosure(graph, rng)
 
     return graph
+
+
+def _is_company(prior: PackPrior | None) -> bool:
+    return bool(prior is not None and prior.topology.get("preset") == "company")
+
+
+def _is_lateral(prior: PackPrior | None) -> bool:
+    return bool(prior is not None and prior.topology.get("lateral"))
+
+
+def _add_networks(graph: WorldGraph, company: bool) -> None:
+    if not company:
+        graph.add_node(
+            Node(
+                id="net_main",
+                kind="network",
+                attrs={"name": "main", "isolation": "bridge", "zone": "dmz"},
+            )
+        )
+        return
+    # A company estate is segmented: the public service sits in the dmz; the internal
+    # services share an isolated internal segment.
+    graph.add_node(
+        Node(
+            id="net_dmz",
+            kind="network",
+            attrs={"name": "dmz", "isolation": "bridge", "zone": "dmz"},
+        )
+    )
+    graph.add_node(
+        Node(
+            id="net_internal",
+            kind="network",
+            attrs={"name": "internal", "isolation": "isolated", "zone": "corp"},
+        )
+    )
+
+
+def _network_for(company: bool, exposure: str) -> str:
+    if not company:
+        return "net_main"
+    return "net_dmz" if exposure == "public" else "net_internal"
 
 
 def _sample_services(
@@ -1021,6 +1084,223 @@ def _networkize_ssrf(graph: WorldGraph) -> None:
     )
     _add_edge(graph, "affects", meta_vuln_id, meta_ep_id)
     _add_edge(graph, "enables", ssrf.id, meta_vuln_id)
+
+
+def _add_recon_disclosure(graph: WorldGraph, rng: random.Random) -> None:
+    # A company world is solvable by recon: a public status endpoint over-shares the
+    # internal hostnames the SSRF can pivot to. It names candidates, not the flag — the
+    # agent still has to find the one that leaks and bypass the SSRF filter to reach it.
+    ssrf = next(
+        (n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"),
+        None,
+    )
+    public = next(
+        (n for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"),
+        None,
+    )
+    if ssrf is None or public is None:
+        return
+    internal_names = sorted(
+        str(n.attrs.get("name"))
+        for n in graph.by_kind("service")
+        if n.attrs.get("exposure") != "public"
+    )
+    if not internal_names:
+        return
+    params = ssrf.attrs.get("params", {})
+    internal_path = (
+        str(params.get("internal_path", _METADATA_PATH))
+        if isinstance(params, Mapping)
+        else _METADATA_PATH
+    )
+    public_name = str(public.attrs.get("name", "web"))
+    path = rng.choice(_RECON_PATHS)
+    ep_id = f"ep_{public_name}_recon"
+    graph.add_node(
+        Node(
+            id=ep_id,
+            kind="endpoint",
+            attrs={
+                "path": path,
+                "public_url": _public_url(public.attrs, path),
+                "method": "GET",
+                "auth_required": False,
+                "behavior_ref": "config.disclosure",
+            },
+        )
+    )
+    _add_edge(graph, "exposes", public.id, ep_id)
+    vuln_id = "vuln_config_disclosure_0"
+    graph.add_node(
+        Node(
+            id=vuln_id,
+            kind="vulnerability",
+            attrs={
+                "kind": "config_disclosure",
+                "family": "code_web",
+                "params": {
+                    "internal_services": internal_names,
+                    "internal_path": internal_path,
+                },
+            },
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    _add_edge(graph, "affects", vuln_id, ep_id)
+
+
+def _flag_record_id(graph: WorldGraph) -> str | None:
+    flag = next(
+        (n for n in graph.by_kind("secret") if n.attrs.get("kind") == "flag"), None
+    )
+    if flag is None:
+        return None
+    return next(
+        (e.src for e in graph.edges.values() if e.kind == "holds" and e.dst == flag.id),
+        None,
+    )
+
+
+def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
+    # Credential-reuse lateral movement. Re-home the SSRF onto the public service in
+    # PROXY mode (the agent drives the pivot to any internal host), leak a db credential
+    # from an internal service, and gate the flag on the internal db behind that reused
+    # credential. The flag is reachable ONLY via the gate: the db record's value goes
+    # decoy, the real flag stays in the secret the gated handler serves.
+    ssrf = next(
+        (n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"),
+        None,
+    )
+    public = next(
+        (n for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"),
+        None,
+    )
+    flag_service_id = _flag_service_id(graph)
+    if ssrf is None or public is None or flag_service_id is None:
+        return
+    if flag_service_id == public.id:
+        return  # the deepest (internal) service bears the flag, never the public one
+    others = [
+        n
+        for n in graph.by_kind("service")
+        if n.attrs.get("exposure") != "public" and n.id != flag_service_id
+    ]
+    if not others:
+        return  # need a separate internal host to hold the leaked credential
+    metadata_service = min(others, key=lambda n: n.id)
+    flag_service = graph.nodes[flag_service_id]
+    public_ep = next((e.dst for e in graph.out_edges(public.id, "exposes")), None)
+    if public_ep is None:
+        return
+
+    # 1. Re-home the SSRF onto the public endpoint, in proxy mode (agent-driven).
+    for edge in graph.edges.values():
+        if edge.kind == "affects" and edge.src == ssrf.id:
+            edge.dst = public_ep
+            edge.attrs = {
+                "injection_site": str(
+                    graph.nodes[public_ep].attrs.get("path", "service")
+                )
+            }
+            break
+    internal_names = sorted(
+        str(n.attrs.get("name"))
+        for n in graph.by_kind("service")
+        if n.attrs.get("exposure") != "public"
+    )
+    target_param = str(dict(ssrf.attrs.get("params", {})).get("target_param", "url"))
+    ssrf.attrs["params"] = {
+        "target_param": target_param,
+        "internal_hosts": internal_names,
+    }
+
+    # 2. The reused credential + where it is honored (the internal db's gated vault).
+    credential = _b62(rng, 24)
+    token_param = rng.choice(_TOKEN_PARAMS)
+    flag_name = str(flag_service.attrs.get("name", flag_service_id))
+    gate_path = "/internal/vault"
+
+    # 3. An internal metadata service leaks the credential and how to use it.
+    meta_name = str(metadata_service.attrs.get("name", metadata_service.id))
+    leak_ep_id = f"ep_{meta_name}_credleak"
+    leak_path = "/internal/credentials"
+    graph.add_node(
+        Node(
+            id=leak_ep_id,
+            kind="endpoint",
+            attrs={
+                "path": leak_path,
+                "public_url": _public_url(metadata_service.attrs, leak_path),
+                "method": "GET",
+                "auth_required": False,
+                "behavior_ref": "credential.leak",
+            },
+        )
+    )
+    _add_edge(graph, "exposes", metadata_service.id, leak_ep_id)
+    leak_vuln_id = "vuln_credential_leak_0"
+    graph.add_node(
+        Node(
+            id=leak_vuln_id,
+            kind="vulnerability",
+            attrs={
+                "kind": "credential_leak",
+                "family": "code_web",
+                "params": {
+                    "credential": credential,
+                    "token_param": token_param,
+                    "vault_host": flag_name,
+                    "vault_path": gate_path,
+                },
+            },
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    _add_edge(graph, "affects", leak_vuln_id, leak_ep_id)
+
+    # 4. The flag record's value goes decoy so the db's default endpoints can't leak it;
+    #    the real flag stays in the secret the gated handler serves.
+    flag_record_id = _flag_record_id(graph)
+    if flag_record_id is not None and flag_record_id in graph.nodes:
+        record = graph.nodes[flag_record_id]
+        fields = dict(record.attrs.get("fields", {}))
+        fields["value"] = f"rotated-{_b62(rng, 8)}"
+        record.attrs["fields"] = fields
+
+    # 5. The internal db gates the flag behind the reused credential.
+    gate_ep_id = f"ep_{flag_name}_vault"
+    graph.add_node(
+        Node(
+            id=gate_ep_id,
+            kind="endpoint",
+            attrs={
+                "path": gate_path,
+                "public_url": _public_url(flag_service.attrs, gate_path),
+                "method": "GET",
+                "auth_required": True,
+                "behavior_ref": "credential.gate",
+            },
+        )
+    )
+    _add_edge(graph, "exposes", flag_service_id, gate_ep_id)
+    gate_vuln_id = "vuln_credential_gated_flag_0"
+    graph.add_node(
+        Node(
+            id=gate_vuln_id,
+            kind="vulnerability",
+            attrs={
+                "kind": "credential_gated_flag",
+                "family": "code_web",
+                "params": {"credential": credential, "token_param": token_param},
+            },
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    _add_edge(graph, "affects", gate_vuln_id, gate_ep_id)
+
+    # 6. The chain: SSRF reaches the leak; the leaked credential opens the gate.
+    _add_edge(graph, "enables", ssrf.id, leak_vuln_id)
+    _add_edge(graph, "enables", leak_vuln_id, gate_vuln_id)
 
 
 def _add_edge(
