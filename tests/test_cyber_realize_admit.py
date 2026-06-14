@@ -127,7 +127,7 @@ def _cmdi_with_realized(make_handler: Callable[[str, str], str]) -> Snapshot:
     # A command-injection world whose vuln carries a stand-in "realized" handler, as
     # an LLM would write. The injection context is pinned to "separator" so the
     # exploit is a plain `;cat <path>`, which the faithful handler below also speaks.
-    from cyber_webapp.realize_admit import _flag_record_key
+    from cyber_webapp.reference_solver import _flag_record_key
 
     snap = _admit_cmdi()
     graph = snap.graph
@@ -193,7 +193,7 @@ def test_admission_gate_rejects_a_broken_realized_handler(tmp_path: Path) -> Non
 
 def test_internal_helpers_cover_defensive_branches() -> None:
     import pytest
-    from cyber_webapp.realize_admit import _cmdi_payload, _flag_record_key
+    from cyber_webapp.reference_solver import _cmdi_payload, _flag_record_key
     from openrange_pack_sdk import PackError
 
     assert _cmdi_payload({"inj_context": "substitution"}, "/f") == "$(cat /f)"
