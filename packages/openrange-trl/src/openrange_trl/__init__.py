@@ -144,8 +144,6 @@ class EpisodeEnv:
         # (missing names still raise ``AttributeError``).
         def __getattr__(self, name: str) -> Callable[..., str]: ...
 
-    # -- lifecycle -----------------------------------------------------------
-
     def reset(
         self,
         *,
@@ -171,7 +169,6 @@ class EpisodeEnv:
         return self._initial_observation()
 
     def _initial_observation(self) -> str:
-        """The reset text appended to the prompt: the live interface contract."""
         surface = self._surface or {}
         base_url = surface.get("base_url")
         if isinstance(base_url, str):
@@ -181,16 +178,11 @@ class EpisodeEnv:
             )
         solver_root = surface.get("solver_root")
         if solver_root is not None:
-            from openrange_trl.tools import FileWorkspaceTools
-
-            listing = FileWorkspaceTools(str(solver_root)).list_dir(".")
-            return f"Workspace ready at {solver_root}. Files:\n{listing}"
+            names = sorted(p.name for p in Path(str(solver_root)).iterdir())
+            return f"Workspace ready at {solver_root}. Files:\n" + "\n".join(names)
         return "Environment ready. Use the available tools."
 
-    # -- tool dispatch -------------------------------------------------------
-
     def _invoke(self, fn: Tool, **kwargs: Any) -> str:
-        """Run a tool against the live surface, fail-soft + recorded + tailed."""
         out = self._safe(lambda: fn(self._require_surface(), **kwargs))
         self._record(fn.__name__, kwargs, out)
         return out[-_OUTPUT_TAIL:]
@@ -200,14 +192,9 @@ class EpisodeEnv:
             raise RuntimeError("tool called before reset()")
         return self._surface
 
-    # -- grading / lifecycle internals (underscore → TRL skips these) --------
-
     def _finalize(self) -> None:
-        """Stop + grade the episode, caching the report and scalar reward.
-
-        Idempotent: the reward func may read ``env.reward`` more than once, and
-        ``stop_episode`` itself caches, so a double read is safe.
-        """
+        # Idempotent: the reward func may read env.reward more than once, and
+        # stop_episode caches, so a double read is safe.
         if self._finalized or self._handle is None:
             self._finalized = True
             return

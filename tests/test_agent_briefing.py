@@ -27,11 +27,7 @@ def _task() -> TaskSpec:
 def test_briefing_gives_the_agent_the_http_target() -> None:
     ctx = EpisodeContext(
         task=_task(),
-        surface={
-            "base_url": "http://127.0.0.1:51991",
-            "solver_root": "/tmp/ep0",
-            "http_get": lambda p: b"",
-        },
+        surface={"base_url": "http://127.0.0.1:51991", "solver_root": "/tmp/ep0"},
     )
     briefing = agent_briefing(ctx)
     assert _task().instruction in briefing
@@ -44,7 +40,7 @@ def test_briefing_gives_the_agent_the_http_target() -> None:
 def test_briefing_gives_a_file_world_its_workspace() -> None:
     ctx = EpisodeContext(
         task=_task(),
-        surface={"solver_root": "/tmp/ws", "run_tests": lambda t: {}},
+        surface={"solver_root": "/tmp/ws"},
     )
     briefing = agent_briefing(ctx)
     assert _task().instruction in briefing

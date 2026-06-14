@@ -80,9 +80,6 @@ class FileWorkspaceTools:
         return f"patched {path} ({occurrences} occurrence(s))"
 
 
-# -- HTTP target tools -------------------------------------------------------
-
-
 def http_get(surface: Mapping[str, Any], path: str) -> str:
     """Send an HTTP GET to the running target and return its status + body.
 
@@ -109,9 +106,6 @@ def submit(surface: Mapping[str, Any], content: str) -> str:
         content, encoding="utf-8"
     )
     return f"submitted {len(content)} byte(s)"
-
-
-# -- file-workspace tools ----------------------------------------------------
 
 
 def read_file(surface: Mapping[str, Any], path: str) -> str:
@@ -175,17 +169,3 @@ def run_tests(surface: Mapping[str, Any], node_ids: str = "") -> str:
 
 WEB_TOOLS = (http_get, submit)
 FILE_TOOLS = (read_file, write_file, list_dir, apply_patch, run_tests)
-
-__all__ = [
-    "FILE_TOOLS",
-    "WEB_TOOLS",
-    "FileWorkspaceTools",
-    "WorkspaceError",
-    "apply_patch",
-    "http_get",
-    "list_dir",
-    "read_file",
-    "run_tests",
-    "submit",
-    "write_file",
-]
