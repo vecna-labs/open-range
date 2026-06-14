@@ -60,8 +60,7 @@ def _pentest_task(snapshot: Snapshot) -> Any:
 
 
 def test_user_tools_reflect_with_the_schema_trl_reads(make_env: Any) -> None:
-    pytest.importorskip("transformers")
-    from transformers.utils import get_json_schema  # type: ignore[attr-defined]
+    get_json_schema = pytest.importorskip("transformers.utils").get_json_schema
 
     env = make_env(list(WEB_TOOLS))
     fn = get_json_schema(env.http_get)["function"]
