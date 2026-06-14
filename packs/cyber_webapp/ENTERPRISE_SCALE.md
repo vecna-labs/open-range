@@ -178,7 +178,7 @@ The all-nodes dashboard can't draw 100k entities. Use the org hierarchy (§1) as
 
 ## Proposed issue tree (follow-ups under #212 / #261)
 
-Filed in the build order of §11. Each is a child of the umbrella; the body sketch lives with the design section above.
+Filed (in this order) as #275–#285, children of #212 / #261, in the build order of §11. The body sketch for each lives with the design section above.
 
 1. **AD-shaped identity + org-hierarchy sub-ontology (shared)** — Add the org and identity layers #212 §1 calls for, as a SHARED sub-ontology (graphschema or a new openrange-identity module) so sibling packs reuse it.
 2. **Hierarchical org-chart sampler with a planted oracle chain** — Replace the flat `sample_graph` (sampling.py:451) with a top-down budget-driven generator, per design §2.

@@ -8,8 +8,13 @@ episode runner.
 
 Run::
 
-    uv run python -m examples.cyber_realize             # all classes
-    uv run python -m examples.cyber_realize --kind ssti  # just one
+    uv run python -m examples.cyber_realize              # vuln handlers, all classes
+    uv run python -m examples.cyber_realize --kind ssti  # one class
+    uv run python -m examples.cyber_realize --service --kind sql_injection  # a service
+
+With ``--service`` the LLM realizes a whole service's BENIGN endpoint bodies
+(`realize_service_surface`, #212) instead of the vuln handler — admitted iff the oracle
+still fires and no realized endpoint leaks the flag.
 """
 
 from __future__ import annotations
@@ -23,9 +28,13 @@ from pathlib import Path
 from cyber_webapp import WebappPack
 from cyber_webapp.llm_realize import (
     REALIZABLE_KINDS,
+    benign_endpoints_of,
     handler_from_result,
     realization_request,
+    realize_service_surface,
     realize_world,
+    service_handlers_from_result,
+    service_realization_request,
 )
 from cyber_webapp.reference_solver import control_request, exploit_and_benign
 from graphschema import WorldGraph
@@ -99,10 +108,59 @@ def _realize(backend: LLMBackend, kind: str, base_dir: Path) -> Snapshot:
     return realize_world(snap, propose, run_probes)
 
 
+def _realize_service(
+    backend: LLMBackend, kind: str, base_dir: Path
+) -> tuple[Snapshot, str]:
+    snap = _admit(kind)
+    service_id = max(
+        (s.id for s in snap.graph.by_kind("service")),
+        key=lambda sid: len(benign_endpoints_of(snap.graph, sid)),
+    )
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    counter = iter(range(1000))
+
+    def propose_service(graph: WorldGraph, sid: str) -> dict[str, str]:
+        return service_handlers_from_result(
+            backend.complete(service_realization_request(graph, sid)).parsed_json
+        )
+
+    def run_service_probes(sid: str) -> tuple[str, str, dict[str, str], bool]:
+        svc = EpisodeService(WebappPack(), base_dir / f"{kind}{next(counter)}")
+        try:
+            handle = svc.start_episode(snap, task.id)
+            base = str(svc.surface(handle)["base_url"])
+            exploit_path, benign_path = exploit_and_benign(snap.graph, kind)
+            bodies = {
+                str(ep.attrs.get("path")): _fetch(base + str(ep.attrs["public_url"]))
+                for ep in benign_endpoints_of(snap.graph, sid)
+            }
+            try:
+                with urllib.request.urlopen(base + "/", timeout=10) as resp:
+                    root_ok = resp.status == 200
+            except urllib.error.HTTPError:
+                root_ok = False
+            return (
+                _fetch(base + exploit_path),
+                _fetch(base + benign_path),
+                bodies,
+                root_ok,
+            )
+        finally:
+            svc.close()
+
+    out = realize_service_surface(snap, service_id, propose_service, run_service_probes)
+    return out, str(snap.graph.nodes[service_id].attrs.get("name", service_id))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("claude", "codex"), default="claude")
     parser.add_argument("--kind", choices=REALIZABLE_KINDS, default=None)
+    parser.add_argument(
+        "--service",
+        action="store_true",
+        help="realize a whole service's benign surface instead of vuln handlers",
+    )
     args = parser.parse_args(argv)
 
     backend = ClaudeBackend() if args.backend == "claude" else CodexBackend()
@@ -111,10 +169,20 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         for kind in kinds:
-            realized = _realize(backend, kind, Path(tmp))
-            done = kind in realized.lineage["realized_handlers"]
-            status = "realized" if done else "fell back to template"
-            print(f"{kind}: {status} -> snapshot {realized.snapshot_id[:19]}")
+            if args.service:
+                realized, svc_name = _realize_service(backend, kind, Path(tmp))
+                eps = realized.lineage["realized_endpoints"]
+                status = (
+                    f"realized {len(eps)} endpoint(s) on {svc_name}: {list(eps)}"
+                    if eps
+                    else "fell back to stubs"
+                )
+                print(f"{kind} (service): {status} -> {realized.snapshot_id[:19]}")
+            else:
+                realized = _realize(backend, kind, Path(tmp))
+                done = kind in realized.lineage["realized_handlers"]
+                status = "realized" if done else "fell back to template"
+                print(f"{kind}: {status} -> snapshot {realized.snapshot_id[:19]}")
     return 0
 
 
