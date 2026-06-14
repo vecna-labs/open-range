@@ -13,6 +13,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import pytest
 from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
@@ -23,7 +24,7 @@ from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
 
-def _manifest(seed: int = 3) -> dict:
+def _manifest(seed: int = 3) -> dict[str, object]:
     return {
         "pack": {"id": "webapp"},
         "runtime": {"tick": {"mode": "off"}},
@@ -80,12 +81,14 @@ def _get(base: str, path: str, query: dict[str, str] | None = None) -> str:
         url += "?" + urllib.parse.urlencode(query)
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
-            return resp.read().decode()
+            return str(resp.read().decode())
     except urllib.error.HTTPError as exc:
         return exc.read().decode()
 
 
-def _follow_chain(base: str, ssrf_url: str, param: str, entry: str) -> dict:
+def _follow_chain(
+    base: str, ssrf_url: str, param: str, entry: str
+) -> dict[str, str | list[str]]:
     # Drive the chain the way an agent would: SSRF to the entry host, then keep reusing
     # each handed-over credential at the next host until one returns the flag. Records
     # the entry body, the terminal body, and a no-credential probe at every gated hop.
@@ -115,7 +118,9 @@ def _enables_chain_kinds(graph: WorldGraph) -> list[str]:
     # Walk the single enables path from the ssrf and return the kinds in order.
     by_id = {n.id: n for n in graph.by_kind("vulnerability")}
     out = {e.src: e.dst for e in graph.edges.values() if e.kind == "enables"}
-    node = next(v.id for v in by_id.values() if v.attrs.get("kind") == "ssrf")
+    node: str | None = next(
+        v.id for v in by_id.values() if v.attrs.get("kind") == "ssrf"
+    )
     kinds: list[str] = []
     seen: set[str] = set()
     while node is not None and node not in seen:
@@ -161,10 +166,11 @@ def test_lateral_chain_pivots_inward_by_tier() -> None:
     ep_of_vuln = {e.src: e.dst for e in graph.edges.values() if e.kind == "affects"}
     svc_of_ep = {e.dst: e.src for e in graph.edges.values() if e.kind == "exposes"}
     by_kind = {n.attrs.get("kind"): n.id for n in graph.by_kind("vulnerability")}
-    node = by_kind["credential_leak"]
+    node: str | None = by_kind["credential_leak"]
     tiers: list[int] = []
     while node is not None and graph.nodes.get(node) is not None:
-        svc = svc_of_ep.get(ep_of_vuln.get(node))
+        ep = ep_of_vuln.get(node)
+        svc = svc_of_ep.get(ep) if ep is not None else None
         if svc is not None:
             tiers.append(tier.get(str(graph.nodes[svc].attrs.get("kind")), 0))
         node = out.get(node)
@@ -178,7 +184,7 @@ def test_lateral_synthesizes_varied_depth() -> None:
     assert depths <= {1, 2, 3}
 
 
-def test_lateral_solves_on_process(tmp_path) -> None:
+def test_lateral_solves_on_process(tmp_path: Path) -> None:
     snap = _admit()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])

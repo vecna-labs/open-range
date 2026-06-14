@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
-from graphschema import WorldGraph
+from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, Snapshot
 
 from openrange.core.admit import admit
@@ -35,13 +35,13 @@ _DEFAULT_MANIFEST = {
 }
 
 
-def _admit(manifest: dict) -> Snapshot:
+def _admit(manifest: dict[str, object]) -> Snapshot:
     snap = admit(WebappPack(), manifest=manifest, max_repairs=3)
     assert isinstance(snap, Snapshot), snap
     return snap
 
 
-def _public_service(graph: WorldGraph):
+def _public_service(graph: WorldGraph) -> Node:
     return next(
         n for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
     )
@@ -96,7 +96,7 @@ def test_company_world_is_multi_service_and_segmented() -> None:
     assert set(networks) == {"dmz", "internal"}  # segmented, not one flat segment
     public = _public_service(graph)
 
-    def nets_of(svc):
+    def nets_of(svc: Node) -> set[str]:
         return {e.dst for e in graph.out_edges(svc.id, "connected_to")}
 
     assert nets_of(public) == {"net_dmz"}
