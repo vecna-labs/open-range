@@ -37,7 +37,13 @@ from openrange.llm import ClaudeBackend, CodexBackend
 _LOOT = {
     "command_injection": "file",
     "path_traversal": "file",
+    "xxe": "file",
+    "ssti": "file",
     "sql_injection": "db",
+    "idor": "db",
+    "broken_authz": "db",
+    "weak_credentials": "db",
+    "ssrf": "db",
 }
 
 

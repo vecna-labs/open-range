@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,11 @@ from cyber_webapp.llm_realize import (
 )
 from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.realize_admit import AdmissionVerdict, classify_admission
-from cyber_webapp.reference_solver import _vuln_of_kind, exploit_and_benign
+from cyber_webapp.reference_solver import (
+    _flag_record_key,
+    _vuln_of_kind,
+    exploit_and_benign,
+)
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import PackError, Snapshot
 
@@ -129,6 +134,296 @@ def _faithful_path(graph: WorldGraph) -> str:
     )
 
 
+def _faithful_xxe(graph: WorldGraph) -> str:
+    p = _vuln_of_kind(graph, "xxe").attrs["params"]
+    param = str(p["target_param"])
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import io",
+            "    import xml.sax",
+            "    import xml.sax.handler",
+            "    import xml.sax.xmlreader",
+            f"    doc = (query.get({param!r}, ['']) or [''])[0]",
+            "    files = state.get('files', {})",
+            "    class _R(xml.sax.handler.EntityResolver):",
+            "        def resolveEntity(self, public_id, system_id):",
+            "            src = xml.sax.xmlreader.InputSource()",
+            "            text = ''",
+            "            if system_id and 'file://' in system_id:",
+            "                path = system_id.split('file://', 1)[-1]",
+            "                text = files.get(path, '')",
+            "            src.setCharacterStream(io.StringIO(text))",
+            "            return src",
+            "    seen = []",
+            "    class _C(xml.sax.handler.ContentHandler):",
+            "        def __init__(self):",
+            "            self.depth = 0",
+            "        def startElement(self, name, attrs):",
+            "            self.depth += 1",
+            "        def endElement(self, name):",
+            "            self.depth -= 1",
+            "        def characters(self, content):",
+            "            if self.depth == 1:",
+            "                seen.append(content)",
+            "    try:",
+            "        parser = xml.sax.make_parser()",
+            "        parser.setFeature(xml.sax.handler.feature_external_ges, True)",
+            "        parser.setContentHandler(_C())",
+            "        parser.setEntityResolver(_R())",
+            "        parser.parse(io.StringIO(doc))",
+            "        out = ''.join(seen)",
+            "    except Exception as exc:",
+            "        out = 'error: ' + type(exc).__name__",
+            "    return 200, {'Content-Type': 'application/xml'}, out.encode()",
+        ]
+    )
+
+
+def _trivial_xxe(graph: WorldGraph) -> str:
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    files = state.get('files', {})",
+            "    dump = '\\n'.join(str(v) for v in files.values())",
+            "    return 200, {'Content-Type': 'application/xml'}, dump.encode()",
+        ]
+    )
+
+
+def _faithful_ssti(graph: WorldGraph) -> str:
+    p = _vuln_of_kind(graph, "ssti").attrs["params"]
+    param = str(p["target_param"])
+    sink = str(p.get("render_sink", "attribute"))
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    from jinja2.sandbox import SandboxedEnvironment",
+            f"    expr = (query.get({param!r}, ['']) or [''])[0]",
+            "    config = state.get('files', {})",
+            f"    sink = {sink!r}",
+            "    if sink == 'comment':",
+            "        source = '{# ' + expr + ' #}'",
+            "    elif sink == 'expr':",
+            "        source = \"{{ '[' ~ \" + expr + \" ~ ']' }}\"",
+            "    else:",
+            "        source = '{\"v\": \"' + expr + '\"}'",
+            "    try:",
+            "        env = SandboxedEnvironment()",
+            "        rendered = env.from_string(source).render(config=config)",
+            "    except Exception as exc:",
+            "        rendered = 'render error: ' + type(exc).__name__",
+            "    return 200, {'Content-Type': 'text/plain'}, rendered.encode()",
+        ]
+    )
+
+
+def _trivial_ssti(graph: WorldGraph) -> str:
+    flag_key = _flag_record_key(graph)
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    del query",
+            "    config = state.get('files', {})",
+            f"    body = str(config.get({flag_key!r}, ''))",
+            "    return 200, {'Content-Type': 'text/plain'}, body.encode()",
+        ]
+    )
+
+
+def _faithful_idor(graph: WorldGraph) -> str:
+    p = _vuln_of_kind(graph, "idor").attrs["params"]
+    param = str(p["target_param"])
+    ctx = str(p.get("ref_context", "direct"))
+    prefix = str(p.get("ref_prefix", "user-"))
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import base64",
+            "    import json",
+            f"    raw = (query.get({param!r}, ['']) or [''])[0]",
+            f"    ctx = {ctx!r}",
+            f"    prefix = {prefix!r}",
+            "    if ctx == 'base64':",
+            "        try:",
+            "            rid = base64.b64decode(raw).decode('utf-8')",
+            "        except Exception:",
+            "            rid = ''",
+            "    elif ctx == 'prefixed':",
+            "        rid = raw[len(prefix):] if raw.startswith(prefix) else ''",
+            "    else:",
+            "        rid = raw",
+            "    schema = state['schema']",
+            "    table = schema['table']",
+            "    key_col = schema['key_column']",
+            "    value_col = schema['value_column']",
+            "    cur = state['db'].cursor()",
+            "    sql = ("
+            '"SELECT " + key_col + ", " + value_col + " FROM " + table'
+            ' + " WHERE " + key_col + " = ?"',
+            "    )",
+            "    rows = [dict(r) for r in cur.execute(sql, (rid,)).fetchall()]",
+            "    return 200, {'Content-Type': 'application/json'}, "
+            "json.dumps({'record': rows}).encode()",
+        ]
+    )
+
+
+def _trivial_idor(graph: WorldGraph) -> str:
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import json",
+            "    schema = state['schema']",
+            "    table = schema['table']",
+            "    key_col = schema['key_column']",
+            "    value_col = schema['value_column']",
+            "    cur = state['db'].cursor()",
+            "    sql = 'SELECT ' + key_col + ', ' + value_col + ' FROM ' + table",
+            "    rows = [dict(r) for r in cur.execute(sql).fetchall()]",
+            "    return 200, {'Content-Type': 'application/json'}, "
+            "json.dumps({'record': rows}).encode()",
+        ]
+    )
+
+
+def _faithful_broken_authz(graph: WorldGraph) -> str:
+    p = _vuln_of_kind(graph, "broken_authz").attrs["params"]
+    header, expected = str(p["trust_header"]), str(p["expected_value"])
+    field, ctx = str(p["leak_field"]), str(p.get("trust_context", "single_token"))
+    confirm, gate_on = str(p["confirm_param"]), str(p["confirm_value"])
+    pool = list(p["confirm_pool"])
+    lines = [
+        "def handle(query, state):",
+        "    import json",
+        f"    role = (query.get({header!r}, ['']) or [''])[0]",
+        f"    present = any(n in query for n in {pool!r})",
+    ]
+    if ctx == "encoded_token":
+        lines.append(f"    ok = role == {expected!r}.encode().hex() and not present")
+    elif ctx == "dual_factor":
+        lines += [
+            f"    gate = (query.get({confirm!r}, ['']) or [''])[0]",
+            f"    ok = role == {expected!r} and gate == {gate_on!r}",
+        ]
+    else:  # single_token
+        lines.append(f"    ok = role == {expected!r} and not present")
+    lines += [
+        "    if not ok:",
+        "        return 403, {}, b'forbidden'",
+        f"    secret = state.get('secrets', {{}}).get({field!r}, '')",
+        f"    body = json.dumps({{{field!r}: secret}}).encode()",
+        "    return 200, {'Content-Type': 'application/json'}, body",
+    ]
+    return "\n".join(lines)
+
+
+def _trivial_broken_authz(graph: WorldGraph) -> str:
+    p = _vuln_of_kind(graph, "broken_authz").attrs["params"]
+    field = str(p["leak_field"])
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import json",
+            f"    secret = state.get('secrets', {{}}).get({field!r}, '')",
+            f"    body = json.dumps({{{field!r}: secret}}).encode()",
+            "    return 200, {'Content-Type': 'application/json'}, body",
+        ]
+    )
+
+
+def _faithful_weak_credentials(graph: WorldGraph) -> str:
+    p = _vuln_of_kind(graph, "weak_credentials").attrs["params"]
+    up, pp = str(p["user_param"]), str(p["password_param"])
+    wu, wp = str(p["weak_user"]), str(p["weak_password"])
+    fmt = str(p.get("cred_format", "pair"))
+    if fmt == "combined":
+        read = [
+            f"    raw = (query.get({pp!r}, ['']) or [''])[0]",
+            "    user, _, password = raw.partition(':')",
+        ]
+    elif fmt == "basic":
+        read = [
+            f"    token = (query.get({pp!r}, ['']) or [''])[0]",
+            "    try:",
+            "        creds = base64.b64decode(token, validate=True).decode()",
+            "    except Exception:",
+            "        creds = ''",
+            "    user, _, password = creds.partition(':')",
+        ]
+    else:
+        read = [
+            f"    user = (query.get({up!r}, ['']) or [''])[0]",
+            f"    password = (query.get({pp!r}, ['']) or [''])[0]",
+        ]
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import base64",
+            "    import json",
+            "    secrets = state.get('secrets', {})",
+            *read,
+            f"    if user == {wu!r} and password == {wp!r}:",
+            "        token = json.dumps({'token': secrets.get('flag', '')})",
+            "        return 200, {}, token.encode()",
+            "    return 401, {}, json.dumps({'error': 'unauthorized'}).encode()",
+        ]
+    )
+
+
+def _trivial_weak_credentials(graph: WorldGraph) -> str:
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import json",
+            "    secrets = state.get('secrets', {})",
+            "    token = json.dumps({'token': secrets.get('flag', '')})",
+            "    return 200, {}, token.encode()",
+        ]
+    )
+
+
+def _faithful_ssrf(graph: WorldGraph) -> str:
+    p = _vuln_of_kind(graph, "ssrf").attrs["params"]
+    param, host = str(p["target_param"]), str(p["internal_host"])
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import json",
+            "    from urllib.parse import urlparse",
+            f"    raw = (query.get({param!r}, ['']) or [''])[0]",
+            "    if not raw:",
+            "        return 400, {}, b'missing url'",
+            "    parsed = urlparse(raw)",
+            "    scheme = (parsed.scheme or '').lower()",
+            "    host = (parsed.hostname or '').lower()",
+            f"    internal_host = {host!r}",
+            "    if scheme in ('http', 'https'):",
+            "        return 403, {}, b'scheme not allowed'",
+            "    if scheme != 'gopher':",
+            "        return 502, {}, b'unsupported scheme'",
+            "    secret = ''",
+            "    if host == internal_host.lower():",
+            "        secret = state.get('secrets', {}).get('flag', '')",
+            "    return 200, {}, json.dumps({'data': secret}).encode()",
+        ]
+    )
+
+
+def _trivial_ssrf(graph: WorldGraph) -> str:
+    p = _vuln_of_kind(graph, "ssrf").attrs["params"]
+    param = str(p["target_param"])
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import json",
+            f"    _ = (query.get({param!r}, ['']) or [''])[0]",
+            "    secret = state.get('secrets', {}).get('flag', '')",
+            "    return 200, {}, json.dumps({'data': secret}).encode()",
+        ]
+    )
+
+
 _CONTEXTS = [
     ("command_injection", "file", "inj_context", "separator"),
     ("command_injection", "file", "inj_context", "substitution"),
@@ -139,6 +434,24 @@ _CONTEXTS = [
     ("path_traversal", "file", "confinement", "absolute_only"),
     ("path_traversal", "file", "confinement", "relative"),
     ("path_traversal", "file", "confinement", "dotdot_filter"),
+    ("xxe", "file", "entity_context", "element_content"),
+    ("xxe", "file", "entity_context", "wrapped_root"),
+    ("xxe", "file", "entity_context", "scheme_prefix"),
+    ("ssti", "file", "render_sink", "attribute"),
+    ("ssti", "file", "render_sink", "comment"),
+    ("ssti", "file", "render_sink", "expr"),
+    ("idor", "db", "ref_context", "direct"),
+    ("idor", "db", "ref_context", "base64"),
+    ("idor", "db", "ref_context", "prefixed"),
+    ("broken_authz", "db", "trust_context", "single_token"),
+    ("broken_authz", "db", "trust_context", "encoded_token"),
+    ("broken_authz", "db", "trust_context", "dual_factor"),
+    ("weak_credentials", "db", "cred_format", "pair"),
+    ("weak_credentials", "db", "cred_format", "combined"),
+    ("weak_credentials", "db", "cred_format", "basic"),
+    ("ssrf", "db", "ssrf_filter", "scheme_block"),
+    ("ssrf", "db", "ssrf_filter", "host_allowlist"),
+    ("ssrf", "db", "ssrf_filter", "decimal_ip"),
 ]
 
 
@@ -161,9 +474,18 @@ def test_realization_request_sqli_names_its_table() -> None:
 
 
 def test_realization_request_rejects_unrealized_kind() -> None:
-    # ssti has a vuln in the graph but no realization prompt yet.
+    # A real vuln kind with no realization prompt yet hits the no-prompt guard
+    # (config_disclosure is an internal chain primitive, not in REALIZABLE_KINDS).
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+    graph.add_node(
+        Node(
+            id="v",
+            kind="vulnerability",
+            attrs={"kind": "config_disclosure", "params": {}},
+        )
+    )
     with pytest.raises(PackError):
-        realization_request(_admit("file", "ssti").graph, "ssti")
+        realization_request(graph, "config_disclosure")
 
 
 def test_realization_request_rejects_non_mapping_params() -> None:
@@ -186,19 +508,57 @@ def test_handler_from_result() -> None:
     assert handler_from_result({"handler": 123}) == ""
 
 
-def test_gate_admits_a_realized_sqli_handler(tmp_path: Path) -> None:
-    snap = _admit("db", "sql_injection", context="single")
-    accepted = _gate(snap, "sql_injection", _faithful_sqli(snap.graph), tmp_path / "ok")
-    assert accepted.accepted, accepted.reason
-    rejected = _gate(
-        snap, "sql_injection", _trivial_sqli(snap.graph), tmp_path / "triv"
-    )
-    assert not rejected.accepted and rejected.trivial  # benign also leaks
+# kind, loot, context key, pinned context, faithful handler, trivial handler (or None).
+_GATE: list[
+    tuple[
+        str,
+        str,
+        str,
+        str,
+        Callable[[WorldGraph], str],
+        Callable[[WorldGraph], str] | None,
+    ]
+] = [
+    ("sql_injection", "db", "context", "single", _faithful_sqli, _trivial_sqli),
+    ("path_traversal", "file", "confinement", "absolute_only", _faithful_path, None),
+    ("xxe", "file", "entity_context", "element_content", _faithful_xxe, _trivial_xxe),
+    ("ssti", "file", "render_sink", "attribute", _faithful_ssti, _trivial_ssti),
+    ("idor", "db", "ref_context", "base64", _faithful_idor, _trivial_idor),
+    (
+        "broken_authz",
+        "db",
+        "trust_context",
+        "dual_factor",
+        _faithful_broken_authz,
+        _trivial_broken_authz,
+    ),
+    (
+        "weak_credentials",
+        "db",
+        "cred_format",
+        "pair",
+        _faithful_weak_credentials,
+        _trivial_weak_credentials,
+    ),
+    ("ssrf", "db", "ssrf_filter", "scheme_block", _faithful_ssrf, _trivial_ssrf),
+]
 
 
-def test_gate_admits_a_realized_path_handler(tmp_path: Path) -> None:
-    snap = _admit("file", "path_traversal", confinement="absolute_only")
-    accepted = _gate(
-        snap, "path_traversal", _faithful_path(snap.graph), tmp_path / "ok"
-    )
-    assert accepted.accepted, accepted.reason
+@pytest.mark.parametrize(("kind", "loot", "key", "ctx", "faithful", "trivial"), _GATE)
+def test_gate_admits_faithful_rejects_trivial(
+    kind: str,
+    loot: str,
+    key: str,
+    ctx: str,
+    faithful: Callable[[WorldGraph], str],
+    trivial: Callable[[WorldGraph], str] | None,
+    tmp_path: Path,
+) -> None:
+    # A hand-written handler vulnerable to the pinned context is admitted; one that
+    # leaks on a benign request is rejected — the gate generalizes across all classes.
+    snap = _admit(loot, kind, **{key: ctx})
+    ok = _gate(snap, kind, faithful(snap.graph), tmp_path / "ok")
+    assert ok.accepted, f"{kind}: {ok.reason}"
+    if trivial is not None:
+        bad = _gate(snap, kind, trivial(snap.graph), tmp_path / "bad")
+        assert not bad.accepted and bad.trivial, f"{kind}: trivial not rejected"
