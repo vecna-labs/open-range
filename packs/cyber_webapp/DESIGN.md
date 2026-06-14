@@ -2,32 +2,30 @@
 
 How this pack generates worlds, and why it generates them the way it does. The
 [README](README.md) shows *what* one built world looks like; this explains the
-*generator* behind it and the direction it's being taken: **staged, procedural,
-constraint-propagating generation** that produces a wide range of exploit types
-while staying solvable by construction.
+*generator* behind it: **staged, procedural, constraint-propagating generation**
+that produces a wide range of exploit types while staying solvable by construction.
 
-Audience: anyone extending the builder, the vulnerability catalog, or the
-ontology — and the sim-to-real study that depends on the gym being *broad*.
+Audience: anyone extending the builder, the vulnerability catalog, or the ontology —
+and the sim-to-real study that depends on the gym being *broad*.
 
 ---
 
-## 1. The bet, restated for generation
+## 1. The bet, and the constraints it forces
 
-The gym's job is to be a **cheap, reproducible, solvable source of training
-worlds** whose exploit skills transfer to real benchmarks. Three constraints
-fall straight out of that and decide the whole design:
+The gym is a **cheap, reproducible, solvable source of training worlds** whose exploit
+skills transfer to real benchmarks. Three constraints fall straight out of that and
+decide the whole design:
 
-- **Reproducible.** `snapshot_id = graph.content_hash()`. Same builder + manifest
-  + seed → the same world, byte for byte. A nondeterministic generator breaks the
-  thing OpenRange is built on.
-- **Cheap at scale.** The bet is worlds by the thousand. Per-world cost has to be
-  near zero.
-- **Solvable by construction.** Every task is admission-checked before an episode;
-  a generator that mostly produces unsolvable worlds and leans on
-  reject-and-repair is wasteful.
+- **Reproducible.** `snapshot_id = graph.content_hash()`. Same builder + manifest +
+  seed → the same world, byte for byte. A nondeterministic generator breaks the thing
+  OpenRange is built on.
+- **Cheap at scale.** The bet is worlds by the thousand, so per-world cost is near zero.
+- **Solvable by construction.** Every task is admission-checked before an episode; a
+  generator that mostly produces unsolvable worlds and leans on reject-and-repair is
+  wasteful.
 
 All three point the same way: **the correctness-critical core of generation is
-procedural, not LLM-driven.** This is not anti-LLM; it's where the line falls.
+procedural, not LLM-driven.** Not anti-LLM — it's where the line falls.
 
 ---
 
@@ -36,49 +34,33 @@ procedural, not LLM-driven.** This is not anti-LLM; it's where the line falls.
 | | owns | why |
 | --- | --- | --- |
 | **Procedural** (the core) | the vuln mechanic, exploitability, feasibility, chaining, flag placement, base parameterization | must be deterministic, cheap, reproducible, solvable-by-construction |
-| **LLM** (a later layer, *behind admission*) | open-ended structural diversity within a class, surface realism that pools can't cover | benefits from variety; a hallucination is **rejected by admission**, never trusted |
+| **LLM** (a layer behind admission) | open-ended structural diversity within a class, surface realism that pools can't cover | benefits from variety; a hallucination is **rejected by admission**, never trusted |
 
-The line is sharp: **the LLM never generates the thing that must be correct.**
-Admission is what makes any LLM use safe — generate, then verify the exploit
-actually fires; a bad generation is dropped, not shipped. This is the
-"self-verifying generation" the gym rests on.
+The line is sharp: **the LLM never generates the thing that must be correct.** Admission
+makes any LLM use safe — generate, then verify the exploit actually fires; a bad
+generation is dropped, not shipped. This is the "self-verifying generation" the gym
+rests on. The lineage is pre-LLM: **LAVA** (automated vulnerability addition) and **NIST
+Juliet/SARD** (procedurally generated CWE samples) injected exploitable bugs *with known
+triggers* — self-verifying by construction, already the OpenRange model.
 
-This is well-trodden ground. Pre-LLM, **LAVA** (automated vulnerability addition)
-and **NIST Juliet/SARD** (tens of thousands of procedurally generated CWE samples)
-injected exploitable bugs *with known triggers* — self-verifying by construction.
-That is already the OpenRange model.
-
-Note even *realism* is procedural-first: realistic names and content come a long
-way from curated pools sampled deterministically (`customer-portal`,
-`alice@corp.example`), no model required ([#192](https://github.com/vecna-labs/open-range/issues/192)).
-Reserve the LLM for diversity that pools and parameterized templates genuinely
-can't reach — and accept that an LLM in the build path trades pure seed-determinism
-for cache-keyed determinism (cache outputs by `(seed, prompt)`), which is a real
-cost to pay only where it buys something.
+Even *realism* is procedural-first: realistic names and content come a long way from
+curated pools sampled deterministically (`customer-portal`, `alice@corp.example`), no
+model required ([#192](https://github.com/vecna-labs/open-range/issues/192)). The LLM is
+reserved for diversity that pools and parameterized templates genuinely can't reach — and
+an LLM in the build path trades pure seed-determinism for cache-keyed determinism (cache
+by `(seed, prompt)`), a cost paid only where it buys something.
 
 ---
 
 ## 3. Staged, constraint-propagating generation
 
-The principle: **generate the world in ordered layers, each layer's output
-*bounding* the next layer's choices.** Top-down, not flat. This is what keeps a
-world coherent, makes feasibility hold incrementally instead of being discovered
-after the fact, and keeps each step a small sampling problem.
+The world is generated in **ordered layers, each layer's output bounding the next
+layer's choices** — top-down, not flat. This keeps a world coherent and makes
+feasibility hold incrementally instead of being discovered after the fact, and keeps
+each step a small sampling problem.
 
-The builder (`sampling.py::sample_graph`) **already does this in embryo.** It runs
-network → services → hosts/endpoints → data store → flag → accounts → vulns, and
-it already propagates one constraint: the flag's location fixes
-`oracle_service_id`, which the vuln stage consumes (the oracle vuln must land on
-the path to the flag).
-
-What's missing is that **one stage hardcodes a single choice.** Flag placement is
-always a DB record (`sample_graph`, the `record`/`data_store` block). That one
-decision is why all three vuln classes are "leak-via-DB-response": the loot is
-always a row, so only response-leak exploits can reach it. The narrowness is not
-"few templates" — it is *one loot stage with one shape.*
-
-The fix is to make loot placement a real layer that **picks a shape and emits it
-as the constraint** the rest of the pipeline already knows how to consume:
+`sampling.py::sample_graph` runs network → services → hosts/endpoints → loot →
+flag → accounts → vulns. The load-bearing propagation is loot → vuln:
 
 ```
 loot-placement → picks loot shape ∈ {db-row, file, exec-reachable}   ← the constraint
@@ -88,581 +70,398 @@ vuln-selection → picks an oracle vuln whose exploit reaches that shape
 realization    → renders the template + wires the exploit → flag path
 ```
 
-Because the vuln is *chosen to match the loot*, the chain is reachable **by
-construction** — no extra reject-and-repair. That is the deep win of staging:
-solvability is assembled layer by layer. The same pattern generalizes upward to
-enterprise scale ([#212](https://github.com/vecna-labs/open-range/issues/212)):
-org → team → service → data → vuln, each layer bounding the next.
+Because the oracle vuln is *chosen to match the loot*, the chain is reachable **by
+construction** — no reject-and-repair. That is the deep win of staging: solvability is
+assembled layer by layer. The same pattern generalizes upward to enterprise scale
+([#212](https://github.com/vecna-labs/open-range/issues/212)): org → team → service →
+data → vuln, each layer bounding the next.
 
 ---
 
 ## 4. Exploit *shapes*, not CWE names
 
-Organize the catalog by **exploit shape** — *how the flag is reached* — not by CWE
-label. The shape is the unit of real work (realizer + feasibility); classes within
-a shape are cheap templates on top.
+The catalog is organized by **exploit shape** — *how the flag is reached* — not by CWE
+label. The shape is the unit of real work (realizer + feasibility); classes within a
+shape are cheap templates on top. The shape is also the **agent capability** the study
+measures (H2, "which capabilities survive simulation," is per-shape by nature), so
+shape-organization is the study's axis, not tidiness.
 
-| shape | how the flag is reached | classes | loot |
-| --- | --- | --- | --- |
-| **response-leak** *(have)* | exploit returns the flag in an HTTP response | `sql_injection`, `ssrf`, `broken_authz` | DB row |
-| **file-read** *(new)* | exploit reads a file holding the flag | `path_traversal`, `lfi`, `xxe` | file |
-| **code-exec** *(new)* | exploit runs code that reads the flag | `command_injection`, `ssti`, `deserialization` | exec-reachable file/env |
+| shape | how the flag is reached | classes |
+| --- | --- | --- |
+| **response-leak** | exploit returns the flag in an HTTP response | `sql_injection`, `ssrf`, `broken_authz`, `idor`, `weak_credentials` |
+| **file-read** | exploit reads a file holding the flag | `path_traversal`, `xxe` |
+| **code-exec** | exploit runs code that reads the flag | `command_injection`, `ssti` |
 
-Shapes are also the **agent capability** the study measures: H2 ("which
-capabilities survive simulation") is per-shape by nature. So shape-organization is
-not tidiness — it is the study's axis.
-
----
-
-## 5. Ontology decision: reuse `data_store`, no new kind
-
-File-read and code-exec loot lives somewhere other than a DB row. The decision:
-**reuse `data_store`, not a new node kind** — and the ontology already
-accommodates it. `data_store.kind` is `{sql, kv, file, object}` and `engine` is
-`{sqlite, postgres, mysql, redis, fs, s3}` (`ontology.py`), so filesystem loot is
-just `kind=file, engine=fs`: **no ontology change, only realizer support.** Such a
-store materializes its record as a real file under the owning service;
-path-traversal reads it directly, command-injection `cat`s it. One shape, two
-exploit classes. (The current sampler only ever emits `kind=kv, engine=redis` — the
-filesystem values are unused, not unsupported.)
-
-Feasibility generalizes from today's DB-path check to "a loot path of the matching
-shape exists from the entrypoint" — the structural check stays per-*shape*, not
-per-*class*.
+Each class is proven end to end by a real HTTP exploit that recovers the flag
+(`tests/test_cyber_staged_generation.py`). Loot shape and class mix are
+manifest-configurable (`loot_shapes` / `vuln_kinds`).
 
 ---
 
-## 6. The narrowness this addressed (the starting point)
+## 5. Ontology: file/exec loot reuses `data_store`
 
-- **Was: 3 vuln classes, 1 shape.** `sql_injection`, `ssrf`, `broken_authz` —
-  all `family=code_web`, all targeting `endpoint`, all response-leak. The staged
-  pipeline took this to 9 classes across 3 shapes (see Status, §7).
-- **Was: structurally fixed templates → now payload-context diversity.** The
-  SQLi template used to be always `... WHERE key = '{input}'` — only names varied,
-  so an agent learns *the template*, not "SQL injection." Because the agent only
-  sees the HTTP surface (never server code), the fix is to vary the **injection
-  context** the exploit must adapt to, sampled per build. Crucially the three
-  contexts per class are **mutually exclusive**: the handler enforces each one's
-  requirement, so a payload that solves one build *fails* the other two — an agent
-  can't memorize one string and replay it. SQLi single/numeric/double quoting;
-  cmdi separator/substitution/quoted (each strips the others' vectors); path
-  traversal absolute-only/relative-`../`/`....//`-past-a-single-strip; SSTI
-  attribute/comment/expr sink; XXE element/wrapped-root/scheme-prefix; SSRF
-  scheme-block/host-allowlist/decimal-IP; IDOR direct/base64/prefixed; broken-authz
-  single/dual-factor/encoded; weak-creds pair/combined/basic. A live 3×3 replay
-  matrix per class confirms it: **all 9 classes are fully diagonal** (every
-  off-diagonal cell rejects), so the single-payload replay floor is **~33%, down
-  from ~67%** — an agent must learn all three techniques, not memorize one. (XXE's
-  `element_content` vs `wrapped_root` was the last superset cell; it's closed by
-  having `element_content` reflect only the root's *direct* text while
-  `wrapped_root` nests the entity a level deeper — distinct positions, not a
-  collapsed root-name swap.)
-
-  *Wrong-context feedback.* A neutralized but attack-shaped attempt returns a
-  response distinct from a benign miss (path traversal `403` vs `404`; cmdi
-  `"input rejected"` vs the diagnostic echo; ssti `"template directive ignored"`
-  vs a plain render) — so the agent learns it's hitting the right vuln class with
-  the wrong technique. These reshape only the *non-leak* responses, so the
-  replay matrix is unchanged.
-
-  *Structural variety, honestly.* Path traversal samples base dirs of **varied
-  depth (2–5)**, so the `../` count is build-specific structure the agent reads
-  off the world. But the asymmetry is partly intrinsic: SQLi embeds world state
-  (table + column) in the payload (≈108 distinct structures), while a file-read /
-  cmd-exec payload embeds only the discovered path (a handful) — those classes
-  carry their diversity in *three distinct techniques* per build, not in payload
-  structure. *Threat to validity (documented):* for `sql_injection`, `idor`, and
-  `weak_credentials` the three contexts are disjoint *serializations* of one skill
-  (a quote/encoding swap), not three distinct competencies — they defeat replay
-  but don't broaden the skill the way cmdi / path / ssti / xxe / ssrf /
-  broken-authz do. Richer structural variety and natural-language realism remain
-  the later LLM layer.
+File-read and code-exec loot lives somewhere other than a DB row, and the ontology
+already accommodates it: `data_store.kind` is `{sql, kv, file, object}` and `engine` is
+`{sqlite, postgres, mysql, redis, fs, s3}` (`ontology.py`). So filesystem loot is just
+`kind=file, engine=fs` — **no new node kind, only realizer support**. Such a store
+materializes its record as a real file under the owning service; path-traversal reads it
+directly, command-injection `cat`s it — one shape, two exploit classes. Feasibility is a
+per-*shape* structural check ("a loot path of the matching shape exists from the
+entrypoint"), not per-*class*.
 
 ---
 
-## 7. Goal — what this doc is here to make true
+## 6. Replay resistance: mutually-exclusive payload contexts
 
-> **Generalize the loot → vuln → realization staging so the gym produces 3 exploit
-> shapes (response-leak, file-read, code-exec) across ~8 vuln classes — every world
-> solvable by construction because the vuln is chosen to match the loot — keeping
-> every correctness-critical layer procedural, with the LLM diversity/realism layer
-> left as a later admission-gated stage.**
+A structurally fixed template teaches *the template*, not the technique: if SQLi is
+always `... WHERE key = '{input}'`, an agent memorizes one string and replays it. Since
+the agent only ever sees the HTTP surface (never server code), each class instead samples
+an **injection context** per build, and the three contexts of a class are **mutually
+exclusive** — the handler enforces each one's requirement, so a payload that solves one
+build *fails* the other two:
 
-### Work breakdown
+> SQLi single/numeric/double quoting; cmdi separator/substitution/quoted (each strips the
+> others' vectors); path traversal absolute-only / relative-`../` / `....//`-past-a-single-strip;
+> SSTI attribute/comment/expr sink; XXE element / wrapped-root / scheme-prefix; SSRF
+> scheme-block / host-allowlist / decimal-IP; IDOR direct/base64/prefixed; broken-authz
+> single/dual-factor/encoded; weak-creds pair/combined/basic.
 
-1. **Loot-placement stage.** Lift the hardcoded DB-record block into a staged
-   choice over loot shape (`db-row` / `file` / `exec-reachable`), prior-weighted,
-   emitting the shape as the constraint.
-2. **Filesystem loot.** Allow `data_store.engine = filesystem`; realizer
-   materializes its record as a real file on the owning service.
-3. **Shape-tagged catalog + selection.** Tag each `Vulnerability` with its shape;
-   the vuln stage picks an oracle whose shape matches the placed loot.
-4. **Two new shapes, end-to-end.** `path_traversal` (file-read) first — it stands
-   up the whole file-store pipeline at lower risk — then `command_injection`
-   (code-exec), which reuses the same in-memory file store for near-free.
-5. **Feasibility per shape.** Generalize the pentest structural check to verify the
-   matched loot→vuln path for each shape.
-6. **Tests + proof.** A real pentest episode recovering the flag for each new
-   shape; admission proves each world well-posed; determinism holds (same seed +
-   shape → same snapshot).
-7. **Fan-out.** `ssti`, `xxe`, `weak_credentials`, `idor` as cheap additions once
-   their shape's pipeline exists.
+A 3×3 live replay matrix per class is **fully diagonal** — every off-diagonal cell
+rejects — so the single-payload replay floor is ~33%, down from ~67%: an agent must learn
+all three techniques. (XXE's `element_content` vs `wrapped_root` is kept distinct by having
+`element_content` reflect only the root's *direct* text while `wrapped_root` nests the
+entity a level deeper.)
 
-### Status
+**Wrong-context feedback.** A neutralized but attack-shaped attempt returns a response
+distinct from a benign miss (path traversal `403` vs `404`; cmdi `"input rejected"` vs the
+diagnostic echo; ssti `"template directive ignored"` vs a plain render), so the agent
+learns it has the right vuln class but the wrong technique. These reshape only the
+*non-leak* responses, so the replay matrix is unchanged.
 
-Items 1–7 are **done** (`feat/cyber-staged-generation`): the staged loot→vuln
-pipeline, the in-memory file store, shape-tagged catalog + shape-matched oracle
-selection, and the fan-out. The gym now spans **3 exploit shapes across 9
-classes**, each proven end to end by a real HTTP exploit that recovers the flag
-(`tests/test_cyber_staged_generation.py`):
+**The honest limit.** SQLi embeds world state (table + column) in the payload (≈108
+distinct structures); a file-read / cmd-exec payload embeds only the discovered path. For
+`sql_injection`, `idor`, and `weak_credentials` the three contexts are disjoint
+*serializations* of one skill (a quote/encoding swap), not three distinct competencies —
+they defeat replay but don't broaden the skill the way cmdi / path / ssti / xxe / ssrf /
+broken-authz do. Richer structural variety is the LLM layer's job (§2).
 
-| shape | classes |
-| --- | --- |
-| response-leak | `sql_injection`, `ssrf`, `broken_authz`, `idor`, `weak_credentials` |
-| file-read | `path_traversal`, `xxe` |
-| code-exec | `command_injection`, `ssti` |
+---
 
-Loot shape and vuln-class mix are manifest-configurable (`loot_shapes` /
-`vuln_kinds`); decoy files are sampled into the content-addressed graph (not
-hardcoded), so they vary by seed. Every class also samples a **payload-context
-axis** per build (§6) so the correct exploit differs build-to-build, the flag
-path is **discovered via a planted config** rather than guessed (and randomized
-so brute force doesn't pay), and the 4 once-toy classes run **real engines**
-(Jinja / `xml.sax` / `shlex`). This tracks
-[#190](https://github.com/vecna-labs/open-range/issues/190) and lays the staging
-groundwork for [#212](https://github.com/vecna-labs/open-range/issues/212).
+## 7. What is real vs emulated, and the difficulty tiers
 
-### Default loot mix, and what stays an emulation
+At the `PROCESS` backing the loot store is an in-memory map (the flag never lands on
+disk), but the exploits run against **real engines** wherever one fits in-process: SQL
+injection hits a real sqlite engine, SSTI a real sandboxed Jinja environment (`{{7*7}}` →
+49, a context dump leaks the store), XXE a real SAX parser with external-entity resolution,
+path traversal a real `posixpath` resolve, command injection a real `shlex` tokenizer
+honoring separators, `$()`/backtick substitution, and quoting. So the *technique* — not a
+magic string — is what the agent must produce, which is what transfers. The one thing
+`PROCESS` emulates is a real OS shell/filesystem with RCE; the **`CONTAINER`** backing
+(§9) makes those real. The default loot mix weights response-leak (`db: 7`, `file: 3`),
+the most common real web-exploit class; it is a starting point, not a claim about the
+"right" distribution.
 
-The default weights the response-leak shape (`db: 7`, `file: 3`) — the most common
-real web-exploit class — while still producing file/exec worlds out of the box; a
-study targets a shape or class by overriding `loot_shapes` / `vuln_kinds`. The
-default is a starting point, not a claim about the "right" distribution.
-
-At the `PROCESS` backing the loot store is an in-memory map (the flag never
-lands on disk), but the exploits run against **real engines** wherever one fits
-in-process: SQL injection hits a real sqlite engine, SSTI a real sandboxed Jinja
-environment (`{{7*7}}` → 49, context dump leaks the store), XXE a real SAX parser
-with external-entity resolution (a well-formed DOCTYPE/ENTITY/reference is
-required), path traversal a real `posixpath` resolve, and command injection a
-real `shlex` tokenizer honoring separators, `$()`/backtick substitution, quoting,
-and arbitrary readers. So the *technique* — not a magic string — is what the
-agent must produce, which is what makes it transfer. The one thing still emulated
-is a real OS shell/filesystem with RCE escalation: a **container backing
-([#252](https://github.com/vecna-labs/open-range/issues/252))** provides that.
-Because no real shell executes at `PROCESS` (the interpreters only read the
-store), there is nothing to sandbox yet;
-exec-sandbox hardening ([#202](https://github.com/vecna-labs/open-range/issues/202))
-lands with the container backing, before adversarial training traffic.
-
-### Trainability: live-agent validation and the difficulty tier
-
-Scripted-oracle tests (which exploit using the flag path read straight from the
-graph) prove a world is *solvable by construction* — they do **not** prove a real
-agent can solve it. Driving a real LLM agent through the actual episode harness
-(`run.run_episode` with a `claude -p` solver) revealed that the validity-hardened
-**standard** tier is too hard for a fresh agent: it solved only ~2 of 9 classes,
-because the thin instruction left it unable to classify the vuln and the
-discovery recon chain made file-loot a two-stage exploit it couldn't walk
-(`command_injection` failed even with rich hints and a 20-minute budget). Validity
-(replay-resistance, discovery-not-brute-force) and trainability trade off, and the
-hardening pushed past one-step real-agent solvability.
-
-So the gym carries a `difficulty` manifest knob:
+Validity and trainability trade off: the replay-hardened, recon-required world is too
+hard for a fresh agent to solve in one step, so the gym carries a `difficulty` knob.
 
 | tier | instruction | use |
 | --- | --- | --- |
 | `standard` (default) | thin (endpoint only); blind recon + classification, mutually-exclusive contexts | the H2 transfer **measurement** target |
-| `easy` / `guided` | names the vuln class, the flag's exact location, the sampled context, and a one-step payload recipe | **bootstrapping** — an agent learns to *execute* exploits before it has to *discover* them |
+| `easy` / `guided` | names the vuln class, the flag's location, the sampled context, and a one-step payload recipe | **bootstrapping** — learn to *execute* exploits before having to *discover* them |
 
-The agent still crafts and executes the real exploit at `easy`; only the recon and
-classification are removed. A live-agent matrix (9 classes × 2 contexts, a real
-agent through the real harness) solves **18/18 at `easy`** versus ~3/22 at
-`standard` — the gym is real-agent-trainable via the `easy` tier and a
-manifest-driven easy→standard curriculum. (Auto-curriculum via `auto_evolve` and a
-richer default instruction are the natural next steps —
-[#258](https://github.com/vecna-labs/open-range/issues/258).)
-
-### Out of scope here
-
-Client-side shapes (XSS, CSRF) need a victim NPC and wait. The LLM intra-class
-diversity layer (§2) waits — params vary per build today, but the code *shape*
-per class is fixed; richer structural variety is the documented next step.
+At `easy` the agent still crafts and executes the real exploit; only recon and
+classification are removed. A live-agent matrix solves 18/18 at `easy` versus ~3/22 at
+`standard`, so the gym is real-agent-trainable via an `easy → standard`
+curriculum. Client-side shapes (XSS, CSRF) need a victim NPC and are out of scope here.
 
 ---
 
-## 8. The verifier is the ceiling — verification, reward, and the path past plant-by-construction
+## 8. The verifier is the ceiling
 
-§2 set the line: procedural owns correctness, the LLM owns variety behind
-admission. This section answers the three questions that line raises once you take
-it seriously — *what is the verifier, why does it set the agent's ceiling, and how
-does generation move to the LLM without losing the measurement* — and records the
-direction decided for the sim-to-real study.
+§2 set the line: procedural owns correctness, the LLM owns variety behind admission. This
+section answers what that line raises — *what the verifier is, why it sets the agent's
+ceiling, and how generation moves to the LLM without losing the measurement.*
 
 ### 8.1 Two ways to prove a world solvable
 
-A generated world is training data only if it is provably solvable, and the proof
-is always the same shape: exhibit a solution a checker accepts. Two places to put
-that proof:
+A generated world is training data only if it is provably solvable, and the proof always
+has the same shape: exhibit a solution a checker accepts. Two places to put that proof:
 
-- **Plant-by-construction** (today, §3; the LAVA / Juliet lineage). Staging plants
-  a known vuln so a known technique reaches a planted flag; `pentest.py::check_success`
-  confirms `submitted == flag.value_ref`. Deterministic, cheap, reproducible — and
-  **bounded by the catalog**: the agent can only learn the classes we plant.
-- **Generate-then-verify** (the AgentWorld lineage). An LLM writes the world *and*
-  a solver *and* a checker; admit if the solver passes the checker. General and
-  realistic — but the proof is only as trustworthy as the LLM that wrote it, and
-  **a generator and a verifier that are the same model share blind spots**: the toy
-  `{{7*7}}` engines our own audit caught (§6, since fixed) *passed their own tests*.
-  A self-checking LLM loop admits exactly those.
+- **Plant-by-construction** (§3; the LAVA / Juliet lineage). Staging plants a known vuln
+  so a known technique reaches a planted flag; `pentest.py::check_success` confirms
+  `submitted == flag.value_ref`. Deterministic, cheap, reproducible — and **bounded by the
+  catalog**: the agent can only learn the classes we plant.
+- **Generate-then-verify** (the AgentWorld lineage). An LLM writes the world *and* a solver
+  *and* a checker; admit if the solver passes the checker. General and realistic — but the
+  proof is only as trustworthy as the LLM that wrote it, and **a generator and a verifier
+  that are the same model share blind spots** (a self-checking loop admits exactly the toy
+  engines it can't see are toys).
 
-Neither is the answer alone. Plant-by-construction is measurement-grade but capped;
-generate-then-verify scales but self-certifies. The synthesis is to **take the
-LLM's generator and refuse its verifier-as-truth** — keep an independent verifier,
-and never let the model own the flag or the checker.
+Neither alone is the answer: plant-by-construction is measurement-grade but capped;
+generate-then-verify scales but self-certifies. The synthesis is to **take the LLM's
+generator and refuse its verifier-as-truth** — keep an independent verifier, and never let
+the model own the flag or the checker.
 
 ### 8.2 The verification ladder
 
-Order verifiers by trust, lowest ceiling to highest:
+Verifiers ordered by trust, lowest ceiling to highest:
 
 | rung | verifier | judge? | ceiling |
 | --- | --- | --- | --- |
-| 1 | **planted-flag match** (`check_success` today) | none | the catalog |
+| 1 | **planted-flag match** (`check_success`) | none | the catalog |
 | 2 | **report ↔ graph structure** — agent's `{kind, endpoint, technique}` vs the graph's `vulnerability` node + `affects` edge | none | declared vulns |
 | 3 | **invariant violation** — a `HIDDEN` value reaches output it shouldn't | none | the invariants you state |
 | 4 | **execution effect** — a real boundary crossed in a sandbox | none | what you instrument |
 | 5 | **LLM judge** | yes | the judge |
 
-The design rule: **push verification down this ladder, reserve the judge for the
-irreducible tail.** Rungs 1–4 are mechanical and judge-free; only genuinely
-ambiguous findings (subtle logic flaws, disclosure of debatable sensitivity) need
-rung 5. So the gym is *not* fundamentally capped at a judge — it is capped by how
-much of "what counts as a violation" we can mechanize, and rungs 3–4 mechanize most
-of security.
+The rule: **push verification down this ladder, reserve the judge for the irreducible
+tail.** Rungs 1–4 are mechanical and judge-free; only genuinely ambiguous findings (subtle
+logic flaws, debatable disclosure) need rung 5. So the gym is not fundamentally capped at a
+judge — it is capped by how much of "what counts as a violation" we mechanize, and rungs
+3–4 mechanize most of security. Rung 2 needs no new primitive: its ground truth is already
+in the graph as **edges** (`holds`, `affects`) and `Visibility.HIDDEN` on the secret.
 
-There is no `Claim` primitive in the graph (`_ir.py` has `Node`, `Edge`,
-`Visibility`, `Role`). Rung 2's "ground truth" is already present as **edges**:
-`holds` ("this record holds this secret in this field"), `affects` ("this vuln
-affects this endpoint"), and `Visibility.HIDDEN` on the secret. A report-vs-graph
-check matches against those — no new primitive, no judge.
+### 8.3 The spine: one check unifies the ladder
 
-### 8.3 The spine: one change unifies the ladder
+The whole architecture lands on a single generalization of `check_success`. Instead of
+*did the one planted flag appear in a response* (`submitted == flag.value_ref`), the
+consequence verifier (`consequence.py`) asks *did any `HIDDEN` value reach output it
+should not have* — so the same function serves rung 1 **and** rung 3. That one move:
 
-The whole architecture lands on a single generalization of code that already
-exists. `check_success` today asks *did the one planted flag appear in a response*:
-
-```
-expected = flag.attrs["value_ref"]; ok = submitted == expected
-```
-
-Generalize it to *did any `HIDDEN` value reach output it should not have* — and the
-same function becomes rung 1 **and** rung 3. That one move:
-
-- **keeps planted mode** (the planted flag is a `HIDDEN` value, so the check still
-  fires);
-- **unlocks emergent mode** (a leak the generator never planted still trips it — no
-  planted flag required);
-- **is the judge-free verifiable reward** a GRPO trainer needs (a programmatic
-  check — the cyber analog of "is the math answer correct");
+- **keeps planted mode** (the planted flag is a `HIDDEN` value, so the check still fires);
+- **unlocks emergent mode** (a leak the generator never planted still trips it);
+- **is the judge-free verifiable reward** a GRPO trainer needs (a programmatic check — the
+  cyber analog of "is the math answer correct");
 - **catches novel exploits**, because it watches the *consequence* (a hidden value
   escaped), not a *mechanism* (a specific CWE).
 
-This is the spine of everything below: a ~10-line generalization of
-`pentest.py::check_success`, validated against worlds we already trust. (Whether a
-leak came via the *intended* technique or a shortcut is a separate question — the
-mutual-exclusivity / no-shortcut probe of §6 is the validity gate; consequence
-verification supplies the *reward*, the shortcut probe supplies the *label*.)
+Whether a leak came via the *intended* technique or a shortcut is a separate question: the
+mutual-exclusivity / no-shortcut probe of §6 is the validity *gate* (the label),
+consequence verification supplies the *reward*.
 
 ### 8.4 Instrument consequences, not mechanisms
 
-Mechanisms are infinite and evolving; you cannot enumerate them, and enumerating
-them *is* the catalog ceiling. **Consequences are few and stable** — an
-unauthenticated read of `HIDDEN` data, a write across a boundary, code execution,
-exfil of a planted canary. Instrument the consequence and a mechanism that reaches
-it is confirmed regardless of how it got there — including one the generator never
-intended. That is how the gym exceeds the model that builds it.
+Mechanisms are infinite and evolving — enumerating them *is* the catalog ceiling.
+**Consequences are few and stable**: an unauthenticated read of `HIDDEN` data, a write
+across a boundary, code execution, exfil of a canary. Instrument the consequence and a
+mechanism that reaches it is confirmed regardless of how it got there — including one the
+generator never intended. That is how the gym exceeds the model that builds it.
 
-The honest qualifier: the oracle matches by substring, but it searches for the value
-**and its cheap reversible encodings** — base64, hex, percent-encoding — by encoding
-the *needle*, so a base64/hex/url-encoded exfil is caught, not only the literal form.
-Still out (these would need decoding the body, not encoding the needle): gzip/binary
-transforms, multibyte splits, bespoke schemes. The live per-response signal is raw and
-un-de-duplicated; the offline verifier and the grader (which hold the graph) apply
-containment de-duplication when multiple guarded values overlap.
+The oracle matches by substring, but searches for the value **and its cheap reversible
+encodings** (base64, hex, percent-encoding) by encoding the *needle*, so an encoded exfil
+is caught, not only the literal form. Out of reach (these need decoding the body, not
+encoding the needle): gzip/binary transforms, multibyte splits, bespoke schemes. The live
+per-response signal is raw; the offline verifier and grader (which hold the graph)
+de-duplicate by containment when guarded values overlap. How far the verifier reaches is
+gated by backing:
 
-How far this reaches is gated by backing (§"what stays an emulation"):
-
-- **At `PROCESS` (now):** the only observable consequence is a value reaching an
-  HTTP response — response-leak. `check_success`'s `flag_from_response` is already
-  this in embryo; generalizing it to *any* `HIDDEN` value (8.3) is in reach today.
-- **At `CONTAINER` ([#252](https://github.com/vecna-labs/open-range/issues/252) /
-  [#202](https://github.com/vecna-labs/open-range/issues/202), Docker-blocked
-  locally):** real OS effects — a file read outside web root, a process spawned —
-  become observable. File-read and code-exec consequences light up only here. This
-  is the gating dependency for the upper ladder, and it is the same container the
-  benchmarks ride on.
+- **At `PROCESS`:** the only observable consequence is a value reaching an HTTP response —
+  response-leak.
+- **At `CONTAINER`:** real OS effects — a file read outside web root, a process spawned —
+  become observable, so file-read and code-exec consequences light up — rung 4 is gated by
+  this backing ([#252](https://github.com/vecna-labs/open-range/issues/252)); until it
+  lands the verifier works at rungs 1–3.
 
 ### 8.5 Generation ≠ finding — why a mediocre builder is enough
 
-Producing software with real flaws is an easier, *different* competence than
-finding them (the generator/discriminator gap GANs and self-play exploit). A
-mediocre LLM writing a webapp leaks genuine bugs it never intended; finding those
-is real skill, uncorrelated with the builder's own finding ability. **The catch:**
-this only holds for *emergent* bugs. The moment we plant a catalog class the bug is
-not emergent and the ceiling is the catalog again. So the two modes coexist by
-design:
+Producing software with real flaws is an easier, *different* competence than finding them
+(the generator/discriminator gap GANs and self-play exploit). A mediocre LLM writing a
+webapp leaks genuine bugs it never intended; finding those is real skill, uncorrelated with
+the builder's own finding ability. The catch: this holds only for *emergent* bugs — the
+moment we plant a catalog class the bug is not emergent and the ceiling is the catalog
+again. So the two modes coexist by design:
 
 | mode | proof | reproducible? | ceiling | role |
 | --- | --- | --- | --- | --- |
 | **planted** | construction + flag-match | fully (seed) | catalog | the controlled H2 **measurement** axis |
 | **emergent** | consequence verification (8.3) | via build-time freeze | generated-software diversity | the ceiling-raising **research** axis |
 
-The consequence verifier (8.3) is what *unifies* them: planted mode checks "the
-planted value leaked," emergent mode checks "any hidden value leaked," same
-function. Emergent mode is a real departure from §3's plant-by-construction and is
-the new work; planted mode stays exactly as it is, because the study needs a
-reproducible, known-ground-truth axis to measure transfer against. An LLM in the
-build path trades pure seed-determinism for **generate-verify-freeze**: generate
-once, verify by consequence, freeze to a content-addressed snapshot — the study
-reads frozen worlds, so reproducibility holds.
+Emergent mode is a real departure from §3's plant-by-construction and is the new work;
+planted mode stays exactly as it is, because the study needs a reproducible,
+known-ground-truth axis to measure transfer against. The consequence verifier unifies them
+— planted mode checks "the planted value leaked," emergent mode checks "any hidden value
+leaked," same function. An LLM in the build path
+trades pure seed-determinism for **generate-verify-freeze**: generate once, verify by
+consequence, freeze to a content-addressed snapshot — the study reads frozen worlds, so
+reproducibility holds.
 
 ### 8.6 Where the reward and the trainer live — the boundary
 
-The gym builds, admits, and verifies worlds; it **never runs the agent or the RL
-loop**. So:
+The gym builds, admits, and verifies worlds; it **never runs the agent or the RL loop.**
 
-- **Gym (this pack):** the verdict surface — `check_success` and its generalization
-  (8.3), the report-vs-graph check (rung 2), the graph-wide invariant callables
-  `Ontology.validate` already accepts. This is the verifiable reward *source*.
+- **Gym (this pack):** the verdict surface — `check_success` and its consequence
+  generalization (8.3), the report-vs-graph check (rung 2), the graph-wide invariant
+  callables `Ontology.validate` accepts. This is the verifiable reward *source*.
 - **Trainer (`openrange_trl`, the consumer):** GRPO itself. GRPO removes the *value
   network*, not the reward — its judge-free property comes from the reward being
   *verifiable* (DeepSeek-R1-Zero: GRPO + rule reward, no critic, no reward model).
-  The gym supplies that verifiable reward; the trainer computes group-relative
-  advantage. `test_trl_cyber.py` already wires this: the world's held-out verdict,
-  graded over HTTP, is the reward, and GRPO needs only that different actions earn
-  different grades.
+  `test_trl_cyber.py` wires this: the world's held-out verdict, graded over HTTP, is the
+  reward; the trainer computes group-relative advantage.
 
-On reward *shape*: GRPO needs variance within a group, and a binary leak/no-leak
-signal is sparse. The pentest verdict already returns **three rungs**
-(`reached_endpoint → extracted_anything → matched_flag`, all graph-observable) —
-that graded surface is the variance GRPO learns from, and it generalizes with 8.3.
-(The exploit chain can densify further as potential-based shaping, but shaping
-toward the *planted* chain biases against novel paths — use it for the
-`easy`/bootstrapping tier, drop it when chasing emergent findings.)
-
-Keeping GRPO in the trainer and the verdict in the gym is not pedantry — putting
-rollout/eval in the gym is the category error this project has hit before.
+GRPO needs variance within a group, and a binary leak/no-leak signal is sparse. The
+pentest verdict already returns **three graded rungs** (`reached_endpoint →
+extracted_anything → matched_flag`, all graph-observable) — that surface is the variance
+GRPO learns from, and it generalizes with the spine (§8.3). (Potential-based shaping toward the *planted* chain biases against novel
+paths — use it for the `easy` tier, drop it when chasing emergent findings.) Putting
+rollout/eval in the gym is the category error to avoid.
 
 ### 8.7 So who sets the ceiling
 
-Not the builder's finding ability (generation ≠ finding). Not the judge (mechanize
-below it, rungs 1–4). The ceiling is **the diversity of software the generator can
-emit × the expressiveness of the consequences and invariants we instrument** — both
-higher and more honest limits than "a mediocre LLM" or "a judge's taste." The
-co-evolution is productive because of the asymmetry: bugs are *easy to make*, *hard
-to find*, *cheap to confirm once reached*, so generator and agent climb together
-without either being a great vuln-hunter. The genuine frontier limit is a novel
-*class* — a consequence type never instrumented; you cannot confirm a violation of
-a property you never stated. That is real and far-off: consequence instrumentation
-reaches novel *instances and chains* of known property-violations (most of real
-pentesting); new categories stay human-seeded. A fine place for the wall.
+Not the builder's finding ability (generation ≠ finding). Not the judge (mechanize below
+it, rungs 1–4). The ceiling is **the diversity of software the generator can emit × the
+expressiveness of the consequences and invariants we instrument.** The co-evolution is
+productive because of the asymmetry: bugs are *easy to make*, *hard to find*, *cheap to
+confirm once reached*, so generator and agent climb together without either being a great
+vuln-hunter. The genuine frontier limit is a novel *class* — a consequence type never
+instrumented; you cannot confirm a violation of a property you never stated. That is real
+and far-off: consequence instrumentation reaches novel *instances and chains* of known
+property-violations (most of real pentesting); new categories stay human-seeded.
 
-### 8.8 What the indictment experiment showed
+### 8.8 The admission gap
 
-A one-off experiment (2026-06-11, scaffolding not kept) validated a consequence verifier
-against known-good worlds, then used it to audit 89 LLM-generated worlds (world + solver
-+ self-checker) across four classes, guided and unguided. The durable finding: the
-self-check is a strong, necessary filter — it catches the dominant failure, *unsolvable*
-worlds — but leaves a small, consistent tail (**~2–4% of shipped worlds**) that it passes
-and an independent verifier rejects as trivial or unfaithful. The tail did not widen with
-harder classes, bigger N, or real LLM checkers. The genuinely hard part is the independent
-verifier itself: it mis-fires in both directions, and the reliable signals are
-**triviality** and **faked-engine**, not the generator's own wrong-vector. The tail still
-matters — a `command_injection` set even 2% arbitrary-file-read biases a per-class transfer
-number — which is the verifier's job to measure.
-
-### 8.9 State of this direction
-
-Built and validated on all 9 classes: the any-hidden-leak verifier (rungs 1+3 of the
-spine, `consequence.py`), wired into live `check_success` via runtime leak-capture; graded
-reward rungs for GRPO; the LLM kept strictly off the correctness path. Still ahead: the LLM
-generating the *world* itself (emergent mode, 8.5); report↔graph checks (rung 2, designed);
-execution-effect consequences (rung 4, blocked on the container,
-[#252](https://github.com/vecna-labs/open-range/issues/252)); novel-class discovery
-(far-future, human-seeded, 8.7).
+An independent consequence verifier, run against LLM-generated worlds (world + solver +
+self-checker; 89 audited across four classes, guided and unguided), shows the durable shape
+of generate-then-verify: the self-check is a strong,
+necessary filter — it catches the dominant failure, *unsolvable* worlds — but leaves a
+small, consistent tail (**~2–4% of shipped worlds**) that it passes and an independent
+verifier rejects as trivial or unfaithful. The tail does not widen with harder classes or
+real LLM checkers. The genuinely hard part is the independent verifier itself: it mis-fires
+in both directions, and the reliable signals are **triviality** and **faked-engine**, not
+the generator's own claimed wrong-vector. The tail still matters — a `command_injection` set
+even 2% arbitrary-file-read biases a per-class transfer number, which is the verifier's job
+to measure.
 
 ---
 
-## 9. Scaling up: LLM-realized services on the procedural graph
+## 9. LLM-realized services on the procedural graph
 
-§8 built the *verifier*. This is what it unlocks: stop templating worlds and let an
-LLM **realize** them — keeping procedural as the architect and the verifier as the
-gate, at rising realism.
+§8 builds the verifier; this is what it unlocks — stop templating worlds and let an LLM
+**realize** them, keeping procedural as the architect and the verifier as the gate, at
+rising realism. The invariant at every stage:
 
-The invariant at every stage: **procedural architects the graph** (topology, flag
-placement, the solvability skeleton — the controllable, scalable, solvable-by-
-construction part that is OpenRange's differentiator); **the LLM realizes each node**
-into a real, varied service; **admission verifies** (the consequence oracle + the
-shortcut/faithfulness probes of §8.8) that the realization is still solvable and not
-*trivially* so; **the result freezes** to a content-addressed snapshot, so the study
-stays reproducible even with an LLM in the build path.
+- **procedural architects the graph** — topology, flag placement, the solvability skeleton:
+  the controllable, scalable, solvable-by-construction part that is OpenRange's
+  differentiator;
+- **the LLM realizes each node** into a real, varied service;
+- **admission verifies** (the consequence oracle + the shortcut/faithfulness probes of §8.8)
+  that the realization is still solvable and not *trivially* so;
+- **the result freezes** to a content-addressed snapshot, so the study stays reproducible
+  even with an LLM in the build path.
 
-Why the mix, not pure-LLM: an LLM asked for "a vulnerable world" gives *one* world,
-low controllability, and — §8.8 measured this — mostly *broken* ones. The procedural
-engine is the controllable variation source; the LLM is realism *per node, behind
-admission*. The LLM never architects correctness.
+An LLM asked for "a vulnerable world" gives *one* world, low controllability, and mostly
+*broken* ones (§8.8). The procedural engine is the controllable variation source; the LLM is
+realism *per node, behind admission*, and never architects correctness. Each stage adds
+realism over the last, and is the sim-to-real progression (`PROCESS` → `CONTAINER` →
+cluster) the study measures on:
 
-Each stage adds realism over the last; each is tracked by its own issue:
-
-| the LLM realizes | runtime | tracked in |
+| the LLM realizes | runtime | issue |
 | --- | --- | --- |
-| a vuln *handler* — varied implementations within a class, admission-gated by running the exploit | `PROCESS` (today) | [#260](https://github.com/vecna-labs/open-range/issues/260) |
-| a node as a real **container** — real fs/shell, so file-read / RCE actually execute | `Backing.CONTAINER` | [#252](https://github.com/vecna-labs/open-range/issues/252) (hardening: [#265](https://github.com/vecna-labs/open-range/issues/265)) |
+| a vuln *handler* — varied implementations within a class, admission-gated by running the exploit | `PROCESS` | [#260](https://github.com/vecna-labs/open-range/issues/260) |
+| a node as a real **container** — real fs/shell, so file-read / RCE actually execute | `Backing.CONTAINER` | [#252](https://github.com/vecna-labs/open-range/issues/252) ([#265](https://github.com/vecna-labs/open-range/issues/265)) |
 | **multiple** networked services; graph edges become real links — SSRF→internal, pivot, credential reuse | containers + net | [#212](https://github.com/vecna-labs/open-range/issues/212), [#235](https://github.com/vecna-labs/open-range/issues/235) |
-| a **k8s** topology — pods/services/network-policies/RBAC; lateral movement + k8s-native classes (RBAC escalation, SA-token theft, netpol bypass, pod escape) | Kind | [#189](https://github.com/vecna-labs/open-range/issues/189) |
+| a **k8s** topology — pods / services / network-policies / RBAC; lateral movement + k8s-native classes | Kind | [#189](https://github.com/vecna-labs/open-range/issues/189) |
 
-The first stage ([#260](https://github.com/vecna-labs/open-range/issues/260)) is the
-realization *primitive* every later one builds on: the **dynamic admission gate** —
-render the LLM's realization, run the intended exploit, confirm the flag leaks via
-`consequence.detect_leak`, confirm a benign request does *not* — is what makes letting
-an LLM write the world safe. (Today's admission is *structural* — a graph-path check;
-an LLM realization needs *dynamic* admission, because the code might be wrong.)
-Exec-effect faithfulness rides the container sandbox
-([#202](https://github.com/vecna-labs/open-range/issues/202)). This is also the
-sim-to-real progression (`PROCESS` → `CONTAINER` → cluster) the study measures on.
+The first stage (#260) is the realization *primitive* every later one builds on: the
+**dynamic admission gate** — render the LLM's realization, run the intended exploit, confirm
+the flag leaks via `consequence.detect_leak`, confirm a benign request does *not*. (Today's
+structural admission is a graph-path check; an LLM realization needs *dynamic* admission,
+because the code might be wrong.)
 
-**Container backing — status.** It runs the *one* generated multi-service app (not a
-bespoke app per class). The container sets `OPENRANGE_REALFS`, which flips the rendered
-app's surfaces from in-memory emulation to the real container; `PROCESS` leaves it unset
-and stays byte-for-byte the emulation. **file_read** (path_traversal, xxe) becomes real
-with zero handler changes — the `files` surface is a real filesystem (`_RealFiles`, a real
-`open()` per path), so a traversal escape is real OS path resolution. **code_exec**
-command_injection runs a real `sh -c` (the §6 mutually-exclusive contexts preserved by the
-same naive per-context filter, now over a real shell). Both are proven live by docker-gated,
-context-parametrized tests. The world container — which now runs real RCE — is contained
-with dropped capabilities + no-new-privileges + memory/cpu/pid caps (`hardening_run_args`,
-verified live: `CapEff` all-zero inside, still exploitable under the flags).
+### The container backing
 
-This is wired as a real runtime: `ContainerWebappRuntime` runs the world as a container
-that episodes actually use, selected by `Backing.CONTAINER`. It reuses the subprocess
-runtime (`docker run` is the supervised child), resolves the published host port with
-`docker port`, and reads the leak signal out of the running container. The load-bearing
-check is **cross-backing parity**: the same snapshot + same exploit grades *identically*
-on `PROCESS` and `CONTAINER` — only fidelity changes, not the task surface. Scope: one
-container for the whole world; many per-service containers on a real network is the
-networked-services work ([#212](https://github.com/vecna-labs/open-range/issues/212) /
-[#235](https://github.com/vecna-labs/open-range/issues/235)).
+The `CONTAINER` backing runs the one generated app (not a bespoke app per class). It sets
+`OPENRANGE_REALFS`, which flips the rendered app's surfaces from in-memory emulation to the
+real container; `PROCESS` leaves it unset and stays byte-for-byte the emulation:
 
-The rest is tracked in [#265](https://github.com/vecna-labs/open-range/issues/265):
-read-only-rootfs, egress policy, flag-out-of-image, and ssti real (unsandboxed eval).
+- **file_read** (path_traversal, xxe) becomes real with zero handler changes — the `files`
+  surface is a real filesystem (`_RealFiles`, a real `open()` per path), so a traversal
+  escape is real OS path resolution.
+- **code_exec** command_injection runs a real `sh -c`, the §6 mutually-exclusive contexts
+  preserved by the same naive per-context filter over a real shell.
 
-**Two environments, not one (the world vs. the agent).** A generated world is the
-*target* the agent attacks, reached only over its HTTP surface (`base_url`); the agent
-never runs inside it. So the world image carries only what its OWN behavior needs: when a
-vuln runs a real OS command server-side — command_injection shelling out to a diagnostic
-tool like `ping`/`nslookup` — that tool is installed in the target container *because the
-server runs it*, and only in worlds that actually have that vuln (`required_apt_packages`
-in `container.py`; a file-read-only world installs nothing). A world is not a toolbox: we
-do not preinstall recon/exploit tooling "for the agent." The attacking agent is a separate
-environment the harness brings — its own sandbox (workspace = `solver_root`, its own
-tools), hitting the world only over the network. Hardening the world container that now
-runs real RCE (resource/privilege limits, egress, flag-out-of-image) is
-[#265](https://github.com/vecna-labs/open-range/issues/265); sandboxing the `exec`'d
-*verifier source* is the separate, host-side
+`ContainerWebappRuntime` is the runtime episodes use, selected by `Backing.CONTAINER`: it
+reuses the subprocess runtime (`docker run` is the supervised child), resolves the host port
+with `docker port`, and reads the leak signal out of the running container. The world
+container that runs attacker code is contained — capabilities dropped, no-new-privileges,
+memory/cpu/pid caps (`hardening_run_args`, `CapEff` all-zero inside yet still exploitable).
+The load-bearing check is **cross-backing parity**: the same snapshot + same exploit grades
+*identically* on `PROCESS` and `CONTAINER` — only fidelity changes, not the task surface.
+Remaining container hardening (read-only rootfs, egress policy, flag-out-of-image, unsandboxed
+ssti) is [#265](https://github.com/vecna-labs/open-range/issues/265); sandboxing the `exec`'d
+verifier source is the separate, host-side
 [#202](https://github.com/vecna-labs/open-range/issues/202).
+
+### Two environments, not one
+
+A generated world is the *target* the agent attacks over its HTTP surface (`base_url`); the
+agent never runs inside it. So the world image carries only what its OWN behavior needs:
+when a vuln runs a real OS command server-side (command_injection shelling to `ping` /
+`nslookup`), that tool is installed *because the server runs it*, and only in worlds with
+that vuln (`required_apt_packages`; a file-read-only world installs nothing). A world is not
+a toolbox — recon/exploit tooling lives in the attacking agent's own sandbox (`solver_root`),
+which the harness brings, hitting the world only over the network.
+
+---
 
 ## 10. Networked multi-service: real network position
 
-The single-container backing (§9) runs the whole world in one container, every service
-mounted by path prefix — so "internal" services are just `/svc/<name>` paths on the same
-server and SSRF is emulated in-process. This stage makes network position **real**.
-
-**The shape.** A real SSRF world is: a **public** service (the agent's only entry,
-published) holds the SSRF; an **internal** service (no published port, reachable only on
-the container network) holds the flag. The flag is reachable **only** by pivoting — the
-agent exploits the SSRF to make the public service fetch the internal service's URL,
-which returns the flag. Genuine networked exploitation, not a path lookup.
-
-**How it works.**
+The single-container backing (§9) mounts every service by path prefix on one server, so
+"internal" services are just `/svc/<name>` paths and SSRF is emulated in-process. This stage
+makes network position **real**: a **public** service (the agent's only entry, published)
+holds the SSRF; an **internal** service (no published port, reachable only on the container
+network) holds the flag. The flag is reachable **only** by pivoting — the agent exploits the
+SSRF to make the public service fetch the internal service's URL.
 
 - **Per-service realization** (`realize_services`) splits the world into one container per
-  `service` node, each carrying only its own endpoints and the state of the data_stores it
-  is `backed_by`. The flag stays in its owning internal service and never enters the public
-  image.
-- **The networked runtime** (`NetworkedContainerWebappRuntime`) runs those containers on a
-  real docker network, each reachable by name, publishing only the public service. The leak
-  signal aggregates across every service's request log, so the internal service detects
-  itself serving its own flag. `WebappPack.realize` routes here when a world is networked-
-  shaped (`_is_networked`).
-- **Generation** re-homes the SSRF onto the public service's endpoint and adds the internal
-  half — a `metadata_credential_leak` endpoint that serves the flag, which the SSRF
-  `enables`. Feasibility and entrypoint selection follow that pivot, so the agent starts at
-  the public endpoint and the internal flag service counts as reachable.
-- **The exploit is real.** Under `OPENRANGE_NETWORKED` the SSRF handler `urlopen`s the
-  internal host across the network. Docker-gated tests recover the flag only through the
-  pivot (a benign fetch and a direct hit on the internal path leak nothing) and confirm the
-  same exploit grades identically on `PROCESS` (in-process read) and the networked
-  `CONTAINER` (real fetch) — only fidelity changes.
+  `service` node, each carrying only its own endpoints and the state of the data_stores it is
+  `backed_by`. The flag stays in its owning internal service and never enters the public image.
+- **The networked runtime** (`NetworkedContainerWebappRuntime`) runs those containers on a real
+  docker network, each reachable by name, publishing only the public service. The leak signal
+  aggregates across every service's request log. `WebappPack.realize` routes here when a world
+  is networked-shaped (`_is_networked`).
+- **Generation** re-homes the SSRF onto the public endpoint and adds the internal half — a
+  `metadata_credential_leak` endpoint serving the flag, which the SSRF `enables`; feasibility
+  and entrypoint selection follow that pivot.
+- **The exploit is real.** Under `OPENRANGE_NETWORKED` the SSRF handler `urlopen`s the internal
+  host across the network. Docker-gated tests recover the flag only through the pivot (a benign
+  fetch and a direct hit on the internal path leak nothing) and confirm the same exploit grades
+  identically on `PROCESS` (in-process read) and the networked `CONTAINER` (real fetch) — only
+  fidelity changes.
 
-Later: real lateral movement / credential reuse, then enterprise scale (#212) + lazy
-realization (#235) on this runtime, then k8s (#189).
+---
 
-## 11. Company worlds: a believable multi-service estate
+## 11. Company worlds and synthesized credential chains
 
-§10 made network position real for a hand-shaped pair — one public service, one
-internal flag-bearer. A real target is not two services; it is a small company's
-estate, and the interesting part of the attack is finding the way in. This stage grows
-the generator from that pair to a believable medium-size company the agent recons and
-pivots through. It stays **fully realized** — every service is a real container —
-because the point right now is a stable world good enough to train an agent on. Spinning
-up only what the agent can reach (#235) is a later step, deferred on purpose until this
-ground is solid.
+A real target is not a hand-shaped pair of services; it is a small company's estate, and the
+interesting part of the attack is finding the way in. This stage grows the generator to a
+believable medium-size company the agent recons and pivots through — opt-in and additive (the
+direct-pivot worlds of §10 are untouched), fully realized (lazy realization #235 is deferred
+until this ground is stable).
 
-**The shape.** Procedural architects a coherent estate:
+**The shape.** Procedural architects a coherent estate: a public `web` portal in the `dmz`,
+and internal services on a separate segment (`api`, `auth`, one or more `db` — one bears the
+flag) plus off-path decoys, so the agent has to tell signal from noise. Names, hosts, and
+accounts are realistic (curated pools, §2); the internal services are unpublished real
+containers, reached only by name. The agent recons an over-sharing config endpoint for the
+internal hostnames, then drives the public SSRF to fetch one across the network. A benign
+internal fetch leaks nothing.
 
-- a public `web` portal in the `dmz` the agent enters;
-- internal services on a separate segment — `api`, `auth`, one or more `db` (one bears
-  the flag behind an internal metadata-style endpoint) — plus ordinary internal services
-  that are *not* on the path, so the estate is believable and the agent has to tell
-  signal from noise;
-- real hosts, zones, and `connected_to` wiring. "Internal" is already a real network
-  position — the networked runtime runs each service as its own container and leaves
-  the internal ones unpublished, reachable only by name, not a path prefix on one
-  server. The dmz/internal zone split is graph-level today (one docker network);
-  enforcing it as real per-zone isolation rides the later network work.
+**Synthesized credential chains.** The richest worlds, and the first *composed* rather than
+hand-shaped. The SSRF gains an opt-in *proxy* mode — the agent drives the pivot to any
+internal host by name (a real `urlopen` on `CONTAINER`; the same in-process `/svc/<host>`
+dispatch on `PROCESS`, so parity holds). On it the engine **synthesizes** a credential-reuse
+chain of *sampled depth* from one composable primitive: an entry host leaks a db credential,
+each gated host validates the credential leaked one hop back and relays the next, the last
+serves the flag — so one preset yields 1-, 2-, 3-hop chains, a distribution not a fixed shape.
+The flag is reachable ONLY through the final gate: the db record's value is a decoy, the real
+flag lives in the gated secret. That composable hop is the action a search-based sampler
+([#193](https://github.com/vecna-labs/open-range/issues/193)) composes and scores — the
+substrate for "synthesize, don't hand-shape."
 
-**The way in.** The flag sits on the internal metadata service, reachable only by
-pivoting from the public entry. The agent recons the public service — an over-sharing
-config disclosure names the internal metadata host and path — then drives the public
-service's SSRF to fetch that host across the network and read the flag. The pivot rides
-the §10 mechanic unchanged: the filter bypass is still the puzzle, the published service
-is the only entry, and the internal flag host is one of several the agent could aim at,
-so finding the right one is part of the work. A benign internal fetch leaks nothing.
-
-**Why procedural still owns it.** Topology, zones, flag placement, and the
-solvable-by-construction pivot stay procedural — the controllable, admission-checked
-part. Per-node realism (LLM-realized handlers, #260) and the consequence verifier ride
-on top unchanged. Feasibility already proves the flag reachable across services by
-following the SSRF `enables` chain (`_enable_closure`); cross-backing parity (`PROCESS`
-vs the networked `CONTAINER`) stays the load-bearing check — only fidelity changes, not
-the task.
-
-**Lateral movement: a synthesized credential chain (built on this ground).** The richest
-worlds this unlocks — and the first that are *composed* rather than hand-shaped. The SSRF
-gains an opt-in *proxy* mode: the agent drives the pivot — bypass the scheme filter to
-make the public service fetch ANY internal host by name and forward the path and query,
-so the internal estate is the agent's to explore (a real `urlopen` on the container
-backing; the same in-process `/svc/<host>` dispatch on `PROCESS`, so parity still holds).
-On top of it the engine **synthesizes** a credential-reuse chain of *sampled depth* from
-one composable primitive: an entry host leaks a db credential, each gated host validates
-the credential leaked one hop back and relays the next, and the last serves the flag. One
-preset therefore synthesizes 1-, 2-, 3-hop chains across seeds — a distribution, not a
-fixed shape. The flag is reachable ONLY through the final gate — the db record's value is
-a decoy and the real flag sits in the gated secret — so no default endpoint and no
-un-credentialed request can leak it. Genuine host-to-host lateral movement, the project's
-stated stage after §10; opt-in and additive (the direct-pivot worlds are untouched). The
-composable hop is exactly the action a search-based sampler (#193) would compose and
-score — the substrate for "synthesize, don't hand-shape."
-
-**What comes next, on this ground.** Graph-driven lazy realization (#235) once worlds
-outgrow what is cheap to fully realize; then k8s (#189).
+Correctness is as in §2–§3: procedural owns topology, flag placement, and the
+solvable-by-construction chain; feasibility proves reachability across services
+(`_enable_closure`); cross-backing parity stays the load-bearing check. The next stages on
+this ground are enterprise scale
+([#212](https://github.com/vecna-labs/open-range/issues/212)) via graph-driven lazy
+realization ([#235](https://github.com/vecna-labs/open-range/issues/235)), then k8s
+([#189](https://github.com/vecna-labs/open-range/issues/189)).
