@@ -1,14 +1,16 @@
-"""Reference tools for the TRL adapter — use them, extend them, or replace them.
+"""Reference tools for the in-process TRL training path.
+
+A TRL/GRPO policy is a model emitting tokens — it has **no shell**, so it can only
+call the function-tools the env reflects. To act at all it needs minimal shims: an
+``http_get`` to reach an HTTP world, a ``submit`` to declare its answer, file ops to
+edit a code world. These are *examples* a user copies or replaces for their own
+policy, **not** part of OpenRange — a sandboxed agent has its own bash/curl/python
+and brings its own tools, so it needs none of this.
 
 A tool is a plain callable taking the live episode ``surface`` first, then the
-model-supplied kwargs, returning an observation string. The adapter
-(:class:`openrange_trl.EpisodeEnv`) presents each to the policy — the schema is
-derived from the signature + Google docstring, and the live ``surface`` is
-injected at call time — so a tool fn never hard-codes a world. These cover the
-surfaces OpenRange packs ship today (HTTP + a file workspace); bring your own for
-anything else (a different HTTP verb, a SQL console, a debugger, a remote shell).
-
-Convenience bundles ``WEB_TOOLS`` / ``FILE_TOOLS`` group the common sets.
+model's kwargs; the adapter (``openrange_trl.EpisodeEnv``) turns each into a TRL
+tool (schema from the signature + docstring, surface injected at call).
+``WEB_TOOLS`` / ``FILE_TOOLS`` bundle the common sets.
 """
 
 from __future__ import annotations

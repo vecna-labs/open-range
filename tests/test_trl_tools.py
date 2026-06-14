@@ -17,8 +17,8 @@ import pytest
 from cyber_webapp import WebappPack
 from openrange_pack_sdk import Snapshot
 from openrange_trl import EpisodeEnv, Tool
-from openrange_trl.tools import WEB_TOOLS, http_get, submit
 
+from examples.tools import WEB_TOOLS, http_get, submit
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
@@ -121,7 +121,7 @@ def test_initial_observation_falls_back_for_an_opaque_surface(make_env: Any) -> 
 
 
 def test_run_tests_tool_reports_when_world_has_no_runner() -> None:
-    from openrange_trl.tools import run_tests
+    from examples.tools import run_tests
 
     assert run_tests({}, "").startswith("error:")  # no run_tests in the surface
 

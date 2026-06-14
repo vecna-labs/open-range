@@ -9,8 +9,9 @@ import ``trl`` / ``torch`` and build a real ``GRPOTrainer``.
 OpenRange owns the world + the grade; it owns nothing of the agent runtime. So
 the policy's **tools are brought by the caller** (the user's harness), not
 hard-coded here. A tool is a plain callable taking the live episode ``surface``
-first, then the model's kwargs (see ``openrange_trl.tools`` for a reusable,
-replaceable reference set). The core public pieces map onto TRL's agentic GRPO
+first, then the model's kwargs — this package ships the *mechanism* only, no
+tools (``examples/tools.py`` has reference shims for the shell-less in-process
+policy). The core public pieces map onto TRL's agentic GRPO
 (the ``environment_factory`` path, ``transformers>=5.2``):
 
 - ``EpisodeEnv`` — one rollout's environment over an ``EpisodeService`` episode.

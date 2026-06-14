@@ -35,8 +35,8 @@ from openrange_trl import (
     make_reward_func,
     reward_variance_policy,
 )
-from openrange_trl.tools import WEB_TOOLS
 
+from examples.tools import WEB_TOOLS
 from openrange.core.admit import admit
 from openrange.core.curriculum import auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService

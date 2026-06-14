@@ -31,8 +31,8 @@ from openrange_trl import (
     make_environment_factory,
     make_reward_func,
 )
-from openrange_trl.tools import FILE_TOOLS, WEB_TOOLS
 
+from examples.tools import FILE_TOOLS, WEB_TOOLS
 from openrange.core.admit import AdmissionFailure, admit
 
 

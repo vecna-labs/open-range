@@ -26,10 +26,10 @@ from openrange_trl import (
     make_reward_func,
     reward_variance_policy,
 )
-from openrange_trl.tools import FILE_TOOLS, FileWorkspaceTools, WorkspaceError
 from swe import SwePack
 from swe.instances import load_instance
 
+from examples.tools import FILE_TOOLS, FileWorkspaceTools, WorkspaceError
 from openrange.core.admit import AdmissionFailure, admit
 from openrange.core.curriculum import auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService
