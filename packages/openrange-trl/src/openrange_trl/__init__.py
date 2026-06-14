@@ -34,6 +34,7 @@ replaceable reference set). The core public pieces map onto TRL's agentic GRPO
 from __future__ import annotations
 
 import inspect
+import subprocess
 import types
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -97,6 +98,10 @@ class EpisodeEnv:
     bound to the live ``surface`` at ``reset``; tool calls are fail-soft (a bad
     call costs reward, not the run). The first read of ``env.reward`` (via the
     reward func) lazily stops + grades the episode.
+
+    With ``sandbox=True`` each episode gets its own throwaway :class:`AgentSandbox`
+    (the agent's machine), and the live ``surface`` carries a ``run`` capability so a
+    brought tool can run commands there — the trainer never runs an agent command.
     """
 
     def __init__(
@@ -106,6 +111,7 @@ class EpisodeEnv:
         snapshots: Mapping[str, Snapshot],
         tools: Sequence[Tool] = (),
         reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+        sandbox: bool = False,
     ) -> None:
         self.service = service
         self.snapshots = dict(snapshots)
@@ -116,6 +122,10 @@ class EpisodeEnv:
         self._handle: EpisodeHandle | None = None
         self._surface: Mapping[str, Any] | None = None
         self._finalized = False
+        self._use_sandbox = sandbox
+        self._sandbox: AgentSandbox | None = None
+        self._network: str | None = None
+        self._target_container: str | None = None
         self._tools: dict[str, Tool] = {}
         for fn in tools:
             if fn.__name__ in self._tools:
@@ -139,10 +149,12 @@ class EpisodeEnv:
         workspace listing the dataset can't know) is appended to the prompt.
         ``snapshot_id`` / ``task_id`` come from the dataset row.
         """
+        self._teardown_sandbox()
         snapshot = self._resolve_snapshot(snapshot_id)
         handle = self.service.start_episode(snapshot, task_id)
         self._handle = handle
-        self._surface = self.service.surface(handle)
+        surface = self.service.surface(handle)
+        self._surface = self._start_sandbox(surface) if self._use_sandbox else surface
         self.reward = 0.0
         self.turns = []
         self.report = None
@@ -173,6 +185,59 @@ class EpisodeEnv:
             raise RuntimeError("tool called before reset()")
         return self._surface
 
+    def _start_sandbox(self, surface: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Give the agent its own sandbox for this episode and hand it to the tools.
+
+        The agent's tools run here, never in the trainer. An HTTP world (``base_url``)
+        is a network target: the sandbox joins a private per-episode network the world
+        is also on, so the agent reaches it by alias over the wire (not the host). A
+        code world (``solver_root``) is mounted so the agent edits it as its own files.
+        Either way the live ``run`` is injected into the surface, so a brought tool can
+        call ``surface["run"](command)`` with the trainer unchanged.
+        """
+        base_url = surface.get("base_url")
+        if isinstance(base_url, str):
+            target = surface.get("target_container")
+            if not isinstance(target, str):
+                raise SandboxError(
+                    "a sandboxed HTTP world needs a containerized target (CONTAINER "
+                    "backing) so the sandbox can join its network and reach it by alias"
+                )
+            network = f"openrange-agent-net-{uuid.uuid4().hex[:12]}"
+            _run_docker("network", "create", network)
+            _run_docker("network", "connect", "--alias", "target", network, target)
+            self._network = network
+            self._target_container = target
+            target_url = f"http://target:{surface.get('target_port', '8000')}"
+            self._sandbox = AgentSandbox({"base_url": target_url}, network=network)
+            self._sandbox.start()
+            # The agent reaches the target by its in-network alias, not the host URL.
+            return {**surface, "base_url": target_url, "run": self._sandbox.run}
+        self._sandbox = AgentSandbox({"solver_root": surface.get("solver_root")})
+        self._sandbox.start()
+        return {**surface, "run": self._sandbox.run}
+
+    def _teardown_sandbox(self) -> None:
+        # Disposable: the sandbox dies with the episode so no state leaks to the next.
+        if self._sandbox is not None:
+            self._sandbox.close()
+            self._sandbox = None
+        if self._network is not None:
+            # Detach the world (best-effort: stop_episode usually removed it already),
+            # then drop the network so nothing dangles even on an un-finalized re-reset.
+            if self._target_container is not None:
+                _run_docker(
+                    "network",
+                    "disconnect",
+                    "-f",
+                    self._network,
+                    self._target_container,
+                    check=False,
+                )
+            _run_docker("network", "rm", self._network, check=False)
+            self._network = None
+            self._target_container = None
+
     def _finalize(self) -> None:
         # Idempotent: the reward func may read env.reward more than once, and
         # stop_episode caches, so a double read is safe.
@@ -183,6 +248,7 @@ class EpisodeEnv:
         report = self.service.stop_episode(self._handle)
         self.report = report
         self.reward = self.reward_fn(report).scalar
+        self._teardown_sandbox()
 
     def _resolve_snapshot(self, snapshot_id: str | None) -> Snapshot:
         if snapshot_id is not None:
@@ -211,6 +277,10 @@ class EpisodeEnv:
         self.turns.append(turn)
         if self._handle is not None:
             self.service.record_turn(self._handle, turn)
+
+
+def _run_docker(*args: str, check: bool = True) -> None:
+    subprocess.run(["docker", *args], check=check, capture_output=True, timeout=60)
 
 
 def build_grpo_dataset(snapshot: Snapshot, *, repeat: int = 1) -> list[dict[str, Any]]:
@@ -272,6 +342,7 @@ def make_environment_factory(
     tools: Sequence[Tool],
     reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
     backing: Backing = Backing.PROCESS,
+    sandbox: bool = False,
 ) -> Callable[[], EpisodeEnv]:
     """Build the zero-arg factory TRL calls once per rollout slot.
 
@@ -283,7 +354,9 @@ def make_environment_factory(
     next round by re-building the dataset + factory against the evolved snapshot.
     ``backing`` picks how each rollout realizes its world — PROCESS by default;
     CONTAINER (incl. the networked multi-service runtime) trains against the real
-    containerized target.
+    containerized target. ``sandbox=True`` runs each episode's tools in their own
+    throwaway :class:`AgentSandbox` (HTTP worlds need the CONTAINER backing so the
+    sandbox can join the target's network).
     """
     snap_map = {s.snapshot_id: s for s in snapshots}
     base = Path(run_root)
@@ -299,6 +372,7 @@ def make_environment_factory(
             snapshots=snap_map,
             tools=tool_list,
             reward_fn=reward_fn,
+            sandbox=sandbox,
         )
 
     return factory

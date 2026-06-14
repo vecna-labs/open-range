@@ -305,7 +305,15 @@ class ContainerWebappRuntime(WebappRuntime):
         host_port = mapping.splitlines()[0].rsplit(":", 1)[-1]
         self._base_url = f"http://127.0.0.1:{host_port}"
         self._log_offset = 0
-        return {"base_url": self._base_url}
+        # Also expose the world's container + in-container port so a harness can put an
+        # agent sandbox on the same docker network and let it reach the target by alias
+        # (over the wire, not via the host). Agent-invisible — the brief renders only
+        # base_url. See the openrange-trl AgentSandbox integration.
+        return {
+            "base_url": self._base_url,
+            "target_container": self._cname,
+            "target_port": _CONTAINER_PORT,
+        }
 
     def _read_log_bytes(self) -> bytes | None:
         if self._cname is None:
