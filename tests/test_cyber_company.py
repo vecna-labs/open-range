@@ -126,7 +126,6 @@ def test_company_solves_on_process(tmp_path: Path) -> None:
         assert flag_host in recon_body
         assert flag not in recon_body
 
-        # The reference solver pivots to the flag host; benign probes leak nothing.
         trace = solve_chain(graph, lambda p: _get(base, p)[1])
         assert flag in trace.terminal
         assert all(flag not in probe for probe in trace.probes)
@@ -228,7 +227,6 @@ def test_company_solves_across_real_containers() -> None:
         assert set(json.loads(recon_body)["upstreams"]) == internal_names
         assert flag not in recon_body
 
-        # Same reference solver, real containers: the flag crosses only via the pivot.
         trace = solve_chain(graph, lambda p: _get(base, p)[1])
         assert flag in trace.terminal
         assert all(flag not in probe for probe in trace.probes)

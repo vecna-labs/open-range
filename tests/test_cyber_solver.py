@@ -86,8 +86,6 @@ def _solve(snap: Snapshot, kind: str, workdir: Path) -> AdmissionVerdict:
 def test_reference_exploit_admits_each_shape(
     loot: str, kind: str, tmp_path: Path
 ) -> None:
-    # The intended exploit leaks the flag; a benign request to the same endpoint does
-    # not — so the world is solvable and not trivial.
     verdict = _solve(_admit(loot, kind), kind, tmp_path)
     assert verdict.solvable, f"{kind}: the intended exploit did not leak the flag"
     assert not verdict.trivial, f"{kind}: a benign request leaked the flag"
@@ -95,8 +93,7 @@ def test_reference_exploit_admits_each_shape(
 
 
 def test_reference_solver_corpus_solve_rate(tmp_path: Path) -> None:
-    # The paper's first measured number: per-shape solve rate over a frozen corpus.
-    # Solvable-by-construction means it is 1.0; anything less is a generator regression.
+    # Solvable-by-construction means every world solves: a 1.0 rate, or a regression.
     seeds = (7, 8)
     rate: dict[str, float] = {}
     for loot, kind in _CLASS_CASES:

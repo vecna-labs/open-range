@@ -137,8 +137,8 @@ def test_lateral_solves_on_process(tmp_path: Path) -> None:
         handle = svc.start_episode(snap, pentest.id)
         base = str(svc.surface(handle)["base_url"])
         trace = solve_chain(graph, lambda p: _get(base, p))
-        assert flag in trace.terminal  # reusing the credential chain opens the vault
-        assert all(flag not in probe for probe in trace.probes)  # gates deny w/o a key
+        assert flag in trace.terminal
+        assert all(flag not in probe for probe in trace.probes)
     finally:
         svc.close()
 
@@ -173,9 +173,7 @@ def test_lateral_solves_across_real_containers() -> None:
         runtime.reset()
         base = str(runtime.surface()["base_url"])
         trace = solve_chain(graph, lambda p: _get(base, p))
-        assert (
-            flag in trace.terminal
-        )  # recovered across containers via credential reuse
+        assert flag in trace.terminal
         assert all(flag not in probe for probe in trace.probes)
         assert "secret_flag" in runtime.collect()["leaked_secret_ids"]
     finally:
