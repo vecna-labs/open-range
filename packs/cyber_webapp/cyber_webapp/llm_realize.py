@@ -10,11 +10,12 @@ with `reference_solver.exploit_and_benign`), since running an episode is a host 
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from graphschema import WorldGraph
-from openrange_pack_sdk import LLMRequest, PackError
+from openrange_pack_sdk import LLMRequest, PackError, Snapshot
 
+from cyber_webapp.realize_admit import classify_admission
 from cyber_webapp.reference_solver import _flag_record_key, _vuln_of_kind
 
 # The classes a prompt exists for. command_injection is the first realized class (#266);
@@ -425,3 +426,47 @@ def handler_from_result(parsed_json: Mapping[str, object] | None) -> str:
     """The handler source out of an LLM result's parsed JSON, or '' if absent."""
     handler = (parsed_json or {}).get("handler")
     return handler if isinstance(handler, str) else ""
+
+
+def realize_world(
+    snapshot: Snapshot,
+    propose: Callable[[WorldGraph, str], str],
+    run_exploit: Callable[[str], tuple[str, str]],
+) -> Snapshot:
+    """Generate-verify-freeze: turn a procedural snapshot into an LLM-realized one.
+
+    For each realizable vuln: `propose` a handler, have the host `run_exploit` boot the
+    world and return the intended-exploit and benign response bodies, and keep the
+    handler only if the consequence verifier accepts it (leaks on the exploit, not on a
+    benign request) — otherwise fall back to the procedural template. The result is
+    re-frozen to a new content-addressed snapshot recording the realized kinds in
+    lineage. The host injects `propose` (the LLM) and `run_exploit` (booting an episode
+    is a host concern), so the pack stays transport-free. Mutates `snapshot.graph` — use
+    the returned snapshot.
+    """
+    graph = snapshot.graph
+    realized: list[str] = []
+    for kind in REALIZABLE_KINDS:
+        vuln = next(
+            (n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == kind),
+            None,
+        )
+        if vuln is None:
+            continue
+        handler = propose(graph, kind)
+        if not handler.strip():
+            continue
+        vuln.attrs["realized_handler"] = handler
+        exploit_body, benign_body = run_exploit(kind)
+        if classify_admission(graph, exploit_body, benign_body).accepted:
+            realized.append(kind)
+        else:
+            del vuln.attrs["realized_handler"]  # rejected — keep the template
+    return Snapshot(
+        snapshot_id=graph.content_hash(),
+        ontology_id=snapshot.ontology_id,
+        graph=graph,
+        tasks=snapshot.tasks,
+        lineage={**dict(snapshot.lineage), "realized_handlers": tuple(realized)},
+        history=snapshot.history,
+    )

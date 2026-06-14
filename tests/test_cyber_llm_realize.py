@@ -19,6 +19,7 @@ from cyber_webapp import WebappPack
 from cyber_webapp.llm_realize import (
     handler_from_result,
     realization_request,
+    realize_world,
 )
 from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.realize_admit import AdmissionVerdict, classify_admission
@@ -562,3 +563,51 @@ def test_gate_admits_faithful_rejects_trivial(
     if trivial is not None:
         bad = _gate(snap, kind, trivial(snap.graph), tmp_path / "bad")
         assert not bad.accepted and bad.trivial, f"{kind}: trivial not rejected"
+
+
+def _episode_runner(snap: Snapshot, base_dir: Path) -> Callable[[str], tuple[str, str]]:
+    # The host side realize_world injects: boot the (mutated) world and return the
+    # intended-exploit and benign response bodies.
+    counter = iter(range(1000))
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    def run_exploit(kind: str) -> tuple[str, str]:
+        svc = EpisodeService(WebappPack(), base_dir / f"e{next(counter)}")
+        try:
+            handle = svc.start_episode(snap, task.id)
+            base = str(svc.surface(handle)["base_url"])
+            exploit_path, benign_path = exploit_and_benign(snap.graph, kind)
+            return _fetch(base + exploit_path), _fetch(base + benign_path)
+        finally:
+            svc.close()
+
+    return run_exploit
+
+
+def test_realize_world_bakes_in_a_faithful_handler(tmp_path: Path) -> None:
+    snap = _admit("db", "sql_injection", context="single")
+    before = snap.graph.content_hash()  # live hash (the pin mutated the graph)
+    out = realize_world(
+        snap, lambda g, _k: _faithful_sqli(g), _episode_runner(snap, tmp_path)
+    )
+    assert "sql_injection" in out.lineage["realized_handlers"]
+    assert out.snapshot_id == out.graph.content_hash()  # re-frozen
+    assert out.snapshot_id != before  # the realized handler changed the world
+
+
+def test_realize_world_falls_back_on_a_trivial_handler(tmp_path: Path) -> None:
+    snap = _admit("db", "sql_injection", context="single")
+    before = snap.graph.content_hash()  # live hash (the pin mutated the graph)
+    out = realize_world(
+        snap, lambda g, _k: _trivial_sqli(g), _episode_runner(snap, tmp_path)
+    )
+    assert out.lineage["realized_handlers"] == ()  # rejected
+    assert out.snapshot_id == before  # template kept -> world unchanged
+
+
+def test_realize_world_skips_an_empty_proposal(tmp_path: Path) -> None:
+    snap = _admit("db", "sql_injection", context="single")
+    before = snap.graph.content_hash()  # live hash (the pin mutated the graph)
+    out = realize_world(snap, lambda _g, _k: "", _episode_runner(snap, tmp_path))
+    assert out.lineage["realized_handlers"] == ()
+    assert out.snapshot_id == before
