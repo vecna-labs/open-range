@@ -55,6 +55,7 @@ from openrange.training import (
     episode_reward,
     episode_trajectory,
 )
+from openrange_trl.sandbox import AgentSandbox, CommandResult, SandboxError
 
 Tool = Callable[..., str]
 
@@ -351,7 +352,10 @@ def _report_scalar(report: EpisodeReportLike) -> float:
 
 
 __all__ = [
+    "AgentSandbox",
+    "CommandResult",
     "EpisodeEnv",
+    "SandboxError",
     "Tool",
     "build_grpo_dataset",
     "env_trajectory",
