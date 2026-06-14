@@ -1,4 +1,4 @@
-"""The intended exploit for each procedurally-generated shape (DESIGN.md §8).
+"""The intended exploit for each procedurally-generated world (DESIGN.md §8).
 
 The generator builds the bug, so its winning move is known by construction. This
 module is the single source of truth for that move: `exploit_and_benign(graph, kind)`
@@ -12,9 +12,10 @@ its own exploit for a handler it realized, and the same gate confirms it. The re
 per shape selects the one technique the sampled injection context admits, so it stays
 in lockstep with what the guided difficulty tier teaches.
 
-The internal chain primitives (proxy-mode SSRF pivot, credential relays) are
-multi-request sequences, not a single URL, and are driven by the chain walker, not
-here.
+Multi-service worlds need more than one request: `solve_chain(graph, fetch)` drives the
+pivot across hosts — the networked direct pivot and the proxy-mode credential chain —
+reading each hop from the response. The host injects `fetch` so the pack stays
+transport-free.
 """
 
 from __future__ import annotations
