@@ -28,6 +28,9 @@ class AdmissionVerdict:
     solvable: bool  # the exploit leaked the flag
     trivial: bool  # a benign request leaked the flag (no exploit needed)
     reason: str
+    faithful: bool = (
+        True  # the control computed (vacuously true when no control applies)
+    )
 
 
 def classify_admission(
@@ -44,6 +47,33 @@ def classify_admission(
     else:
         reason = "rejected: a benign request leaks the flag (trivial)"
     return AdmissionVerdict(accepted, solvable, trivial, reason)
+
+
+def classify_admission_with_control(
+    graph: WorldGraph,
+    exploit_body: str,
+    benign_body: str,
+    control_body: str | None,
+    control_expected: str | None,
+) -> AdmissionVerdict:
+    """`classify_admission` plus a faithfulness control: a real handler must return
+    `control_expected` for the control request (it computed/fetched a known non-flag
+    value), so a flag-hard-coding handler fails it. No control -> faithful is True."""
+    solvable = detect_leak(graph, [exploit_body]).occurred
+    trivial = detect_leak(graph, [benign_body]).occurred
+    faithful = control_expected is None or (
+        control_body is not None and control_expected in control_body
+    )
+    accepted = solvable and not trivial and faithful
+    if accepted:
+        reason = "accepted: exploit leaks, benign does not, control computes"
+    elif not solvable:
+        reason = "rejected: the exploit did not leak the flag (not solvable)"
+    elif trivial:
+        reason = "rejected: a benign request leaks the flag (trivial)"
+    else:
+        reason = "rejected: the control did not compute (faked/hard-coded handler)"
+    return AdmissionVerdict(accepted, solvable, trivial, reason, faithful)
 
 
 def cmdi_exploit_and_benign(graph: WorldGraph) -> tuple[str, str]:

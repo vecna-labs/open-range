@@ -212,6 +212,93 @@ def exploit_and_benign(graph: WorldGraph, kind: str) -> tuple[str, str]:
 
 
 @dataclass(frozen=True)
+class Control:
+    """A faithfulness probe: a request a real handler must answer by computing or
+    fetching a known non-flag value, so a flag-hard-coding handler fails it."""
+
+    request: str
+    expected: str
+
+
+# A seeded non-flag db row (codegen.seeding._DECOY_ROWS); guarded by a drift test.
+_DB_DECOY = ("region", "us-east-1")
+# A distinctive product no faked handler would echo by chance (vs a short "42").
+_CONTROL_PRODUCT = "31337 * 1337"
+_CONTROL_RESULT = "41897569"
+
+
+def _graph_decoy_record(graph: WorldGraph) -> tuple[str, str] | None:
+    # A non-flag record (file path + content) the control reads through the same
+    # mechanic as the exploit. Skip anything containing the flag value, and require a
+    # value long enough to be a real signal.
+    flag_key = _flag_record_key(graph)
+    flag_node = graph.nodes.get("secret_flag")
+    flag = str(flag_node.attrs.get("value_ref", "")) if flag_node is not None else ""
+    for rec in graph.by_kind("record"):
+        key = str(rec.attrs.get("key", ""))
+        fields = rec.attrs.get("fields", {})
+        value = str(fields.get("value", "")) if isinstance(fields, Mapping) else ""
+        if (
+            key
+            and key != flag_key
+            and len(value) >= 8
+            and (not flag or flag not in value)
+        ):
+            return key, value
+    return None
+
+
+def control_request(graph: WorldGraph, kind: str) -> Control | None:
+    """A faithfulness control for `kind`, or None when none is computable.
+
+    The control answer is a known NON-flag value the handler must compute (sqli/ssti)
+    or genuinely fetch through the same mechanic (cmdi/path_traversal/xxe/idor). A
+    flag-hard-coding handler returns the flag or nothing instead, so it fails the
+    control. broken_authz/weak_credentials/ssrf have no computable control (pure gates
+    / no second value) and return None — they rely on the not-trivial check alone.
+    """
+    if kind in ("broken_authz", "weak_credentials", "ssrf"):
+        return None
+    vuln = _vuln_of_kind(graph, kind)
+    params = vuln.attrs["params"]
+    if not isinstance(params, Mapping):
+        return None
+    endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
+    ep = str(graph.nodes[endpoint_id].attrs["public_url"])
+
+    def with_param(value: str) -> str:
+        return f"{ep}?{params['target_param']}={urllib.parse.quote(value)}"
+
+    if kind == "sql_injection":
+        opener = {"numeric": "0", "double": '"'}.get(str(params.get("context")), "'")
+        union = f"UNION SELECT key, {_CONTROL_PRODUCT} FROM {params['table']} -- "
+        return Control(with_param(f"{opener} {union}"), _CONTROL_RESULT)
+    if kind == "ssti":
+        sink = params.get("render_sink", "attribute")
+        if sink == "comment":
+            payload = "#}{{ " + _CONTROL_PRODUCT + " }}{#"
+        elif sink == "expr":
+            payload = _CONTROL_PRODUCT
+        else:
+            payload = "{{ " + _CONTROL_PRODUCT + " }}"
+        return Control(with_param(payload), _CONTROL_RESULT)
+    if kind == "idor":
+        return Control(with_param(_idor_id(params, _DB_DECOY[0])), _DB_DECOY[1])
+
+    # cmdi / path_traversal / xxe: read a known non-flag file through the same mechanic.
+    decoy = _graph_decoy_record(graph)
+    if decoy is None:
+        return None
+    decoy_key, decoy_value = decoy
+    builder = {
+        "command_injection": _cmdi_payload,
+        "path_traversal": _path_payload,
+        "xxe": _xxe_payload,
+    }[kind]
+    return Control(with_param(builder(params, decoy_key)), decoy_value)
+
+
+@dataclass(frozen=True)
 class ChainTrace:
     """A multi-step solve: the response the flag must leak from, plus the probes (the
     entry leak and every no-credential request) it must not — feed both to the gate."""

@@ -15,8 +15,12 @@ from collections.abc import Callable, Mapping
 from graphschema import WorldGraph
 from openrange_pack_sdk import LLMRequest, PackError, Snapshot
 
-from cyber_webapp.realize_admit import classify_admission
-from cyber_webapp.reference_solver import _flag_record_key, _vuln_of_kind
+from cyber_webapp.realize_admit import classify_admission_with_control
+from cyber_webapp.reference_solver import (
+    _flag_record_key,
+    _vuln_of_kind,
+    control_request,
+)
 
 # The classes a prompt exists for. command_injection is the first realized class (#266);
 # sql_injection and path_traversal extend it across the response-leak and file-read
@@ -253,7 +257,8 @@ def _idor_prompt(param: str, flag_key: str, ctx: str, ref_prefix: str) -> str:
 def _broken_authz_prompt(
     header: str, expected: str, leak_field: str, ctx: str, params: Mapping[str, object]
 ) -> str:
-    pool = list(params.get("confirm_pool", []))
+    raw_pool = params.get("confirm_pool", [])
+    pool = list(raw_pool) if isinstance(raw_pool, list | tuple) else []
     confirm = str(params.get("confirm_param", "X-Confirm"))
     confirm_value = str(params.get("confirm_value", "1"))
     if ctx == "encoded_token":
@@ -431,18 +436,19 @@ def handler_from_result(parsed_json: Mapping[str, object] | None) -> str:
 def realize_world(
     snapshot: Snapshot,
     propose: Callable[[WorldGraph, str], str],
-    run_exploit: Callable[[str], tuple[str, str]],
+    run_probes: Callable[[str], tuple[str, str, str | None]],
 ) -> Snapshot:
     """Generate-verify-freeze: turn a procedural snapshot into an LLM-realized one.
 
-    For each realizable vuln: `propose` a handler, have the host `run_exploit` boot the
-    world and return the intended-exploit and benign response bodies, and keep the
-    handler only if the consequence verifier accepts it (leaks on the exploit, not on a
-    benign request) — otherwise fall back to the procedural template. The result is
-    re-frozen to a new content-addressed snapshot recording the realized kinds in
-    lineage. The host injects `propose` (the LLM) and `run_exploit` (booting an episode
-    is a host concern), so the pack stays transport-free. Mutates `snapshot.graph` — use
-    the returned snapshot.
+    For each realizable vuln: `propose` a handler, have the host `run_probes` boot the
+    world and return the (exploit, benign, control) response bodies, and keep the
+    handler only if the gate accepts it — the exploit leaks the flag, a benign request
+    does not, and the faithfulness control computes (so a faked/hard-coded handler is
+    rejected) — otherwise fall back to the procedural template. The result is re-frozen
+    to a new content-addressed snapshot recording the realized kinds in lineage. The
+    host injects `propose` (the LLM) and `run_probes` (booting an episode is a host
+    concern), so the pack stays transport-free. Mutates `snapshot.graph` — use the
+    returned snapshot.
     """
     graph = snapshot.graph
     realized: list[str] = []
@@ -457,8 +463,16 @@ def realize_world(
         if not handler.strip():
             continue
         vuln.attrs["realized_handler"] = handler
-        exploit_body, benign_body = run_exploit(kind)
-        if classify_admission(graph, exploit_body, benign_body).accepted:
+        exploit_body, benign_body, control_body = run_probes(kind)
+        control = control_request(graph, kind)
+        verdict = classify_admission_with_control(
+            graph,
+            exploit_body,
+            benign_body,
+            control_body,
+            control.expected if control else None,
+        )
+        if verdict.accepted:
             realized.append(kind)
         else:
             del vuln.attrs["realized_handler"]  # rejected — keep the template

@@ -27,7 +27,7 @@ from cyber_webapp.llm_realize import (
     realization_request,
     realize_world,
 )
-from cyber_webapp.reference_solver import exploit_and_benign
+from cyber_webapp.reference_solver import control_request, exploit_and_benign
 from graphschema import WorldGraph
 from openrange_pack_sdk import LLMBackend, Snapshot
 
@@ -84,17 +84,19 @@ def _realize(backend: LLMBackend, kind: str, base_dir: Path) -> Snapshot:
             backend.complete(realization_request(graph, k)).parsed_json
         )
 
-    def run_exploit(k: str) -> tuple[str, str]:
+    def run_probes(k: str) -> tuple[str, str, str | None]:
         svc = EpisodeService(WebappPack(), base_dir / f"{kind}{next(counter)}")
         try:
             handle = svc.start_episode(snap, task.id)
             base = str(svc.surface(handle)["base_url"])
             exploit_path, benign_path = exploit_and_benign(snap.graph, k)
-            return _fetch(base + exploit_path), _fetch(base + benign_path)
+            control = control_request(snap.graph, k)
+            control_body = _fetch(base + control.request) if control else None
+            return _fetch(base + exploit_path), _fetch(base + benign_path), control_body
         finally:
             svc.close()
 
-    return realize_world(snap, propose, run_exploit)
+    return realize_world(snap, propose, run_probes)
 
 
 def main(argv: list[str] | None = None) -> int:
