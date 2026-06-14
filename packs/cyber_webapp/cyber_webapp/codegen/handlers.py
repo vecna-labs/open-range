@@ -59,8 +59,14 @@ def build_handlers_and_routes(
             vuln_node = vulns_by_id[vuln_id]
             body = _render_vuln_body(vuln_node)
         else:
-            kind = str(service.attrs.get("kind", ""))
-            body = _default_handler_body(service_name, path, kind)
+            # A benign endpoint may carry an LLM-realized body (admitted by
+            # realize_service_surface) — prefer it over the flat default stub.
+            realized = endpoint.attrs.get("realized_handler")
+            if isinstance(realized, str) and realized.strip():
+                body = _extract_handle_body(realized)
+            else:
+                kind = str(service.attrs.get("kind", ""))
+                body = _default_handler_body(service_name, path, kind)
         docstring = f"Endpoint {service_name}{path}."
         handlers.append(
             {"name": handler_name, "body": body, "docstring": docstring},

@@ -17,15 +17,20 @@ from pathlib import Path
 import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.llm_realize import (
+    benign_endpoints_of,
     handler_from_result,
     realization_request,
+    realize_service_surface,
     realize_world,
+    service_handlers_from_result,
+    service_realization_request,
 )
 from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.realize_admit import (
     AdmissionVerdict,
     classify_admission,
     classify_admission_with_control,
+    classify_service_admission,
 )
 from cyber_webapp.reference_solver import (
     _flag_record_key,
@@ -802,6 +807,227 @@ def test_control_request_none_when_params_not_mapping() -> None:
         )
     )
     assert control_request(graph, "command_injection") is None
+
+
+def _service_with_benign_surface(graph: WorldGraph) -> str:
+    # The service exposing the most benign (non-vuln) endpoints — the richest surface.
+    return max(
+        (s.id for s in graph.by_kind("service")),
+        key=lambda sid: len(benign_endpoints_of(graph, sid)),
+    )
+
+
+def _benign_body() -> str:
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    del query, state",
+            "    return 200, {'Content-Type': 'application/json'}, b'{\"items\": []}'",
+        ]
+    )
+
+
+def _leaky_files_body() -> str:
+    # The sharp risk: a 'realistic' benign endpoint that dumps the shared file store,
+    # serving the flag with no exploit.
+    return "\n".join(
+        [
+            "def handle(query, state):",
+            "    import json",
+            "    return 200, {}, json.dumps(state.get('files', {})).encode()",
+        ]
+    )
+
+
+def _service_probes(
+    snap: Snapshot, oracle_kind: str, base_dir: Path
+) -> Callable[[str], tuple[str, str, dict[str, str], bool]]:
+    counter = iter(range(1000))
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    def run(service_id: str) -> tuple[str, str, dict[str, str], bool]:
+        svc = EpisodeService(WebappPack(), base_dir / f"s{next(counter)}")
+        try:
+            handle = svc.start_episode(snap, task.id)
+            base = str(svc.surface(handle)["base_url"])
+            ex_path, bn_path = exploit_and_benign(snap.graph, oracle_kind)
+            bodies = {
+                str(ep.attrs.get("path")): _fetch(base + str(ep.attrs["public_url"]))
+                for ep in benign_endpoints_of(snap.graph, service_id)
+            }
+            try:
+                with urllib.request.urlopen(base + "/", timeout=15) as resp:
+                    root_ok = resp.status == 200
+            except urllib.error.HTTPError:
+                root_ok = False
+            return _fetch(base + ex_path), _fetch(base + bn_path), bodies, root_ok
+        finally:
+            svc.close()
+
+    return run
+
+
+def test_realize_service_surface_admits_benign_and_rejects_leaky(
+    tmp_path: Path,
+) -> None:
+    snap = _admit("file", "command_injection")
+    sid = _service_with_benign_surface(snap.graph)
+    paths = [str(ep.attrs.get("path")) for ep in benign_endpoints_of(snap.graph, sid)]
+    assert paths  # the public service has a benign surface to realize
+    before = snap.graph.content_hash()
+    out = realize_service_surface(
+        snap,
+        sid,
+        lambda _g, _s: {p: _benign_body() for p in paths},
+        _service_probes(snap, "command_injection", tmp_path / "ok"),
+    )
+    assert set(out.lineage["realized_endpoints"]) == set(paths)
+    assert out.snapshot_id != before  # re-frozen with the realized benign surface
+
+    # The sharp risk: one benign endpoint dumps the file store -> the whole service
+    # realization is rejected, all-or-nothing, and nothing is left realized.
+    snap2 = _admit("file", "command_injection")
+    sid2 = _service_with_benign_surface(snap2.graph)
+    paths2 = [
+        str(ep.attrs.get("path")) for ep in benign_endpoints_of(snap2.graph, sid2)
+    ]
+    before2 = snap2.graph.content_hash()
+    leaky = {paths2[0]: _leaky_files_body()}
+    leaky.update({p: _benign_body() for p in paths2[1:]})
+    out2 = realize_service_surface(
+        snap2,
+        sid2,
+        lambda _g, _s: leaky,
+        _service_probes(snap2, "command_injection", tmp_path / "bad"),
+    )
+    assert out2.lineage["realized_endpoints"] == ()
+    assert out2.snapshot_id == before2  # all-or-nothing: graph unchanged
+    assert all(
+        "realized_handler" not in ep.attrs
+        for ep in benign_endpoints_of(snap2.graph, sid2)
+    )
+
+
+def test_classify_service_admission_reasons() -> None:
+    graph = _admit("file", "command_injection").graph
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    ok = classify_service_admission(
+        graph,
+        oracle_exploit_body=flag,
+        oracle_benign_body="clean",
+        benign_endpoint_bodies={"/a": "clean"},
+        root_ok=True,
+    )
+    assert ok.accepted
+    leak = classify_service_admission(
+        graph,
+        oracle_exploit_body=flag,
+        oracle_benign_body="clean",
+        benign_endpoint_bodies={"/a": flag},
+        root_ok=True,
+    )
+    assert not leak.accepted and "leak" in leak.reason and "/a" in leak.reason
+    unsolv = classify_service_admission(
+        graph,
+        oracle_exploit_body="clean",
+        oracle_benign_body="clean",
+        benign_endpoint_bodies={},
+        root_ok=True,
+    )
+    assert not unsolv.accepted and "solvable" in unsolv.reason
+    triv = classify_service_admission(
+        graph,
+        oracle_exploit_body=flag,
+        oracle_benign_body=flag,
+        benign_endpoint_bodies={},
+        root_ok=True,
+    )
+    assert not triv.accepted and "trivial" in triv.reason
+    noboot = classify_service_admission(
+        graph,
+        oracle_exploit_body=flag,
+        oracle_benign_body="clean",
+        benign_endpoint_bodies={},
+        root_ok=False,
+    )
+    assert not noboot.accepted and "boot" in noboot.reason
+
+
+def test_benign_endpoints_of() -> None:
+    graph = _admit("db", "sql_injection").graph
+    sid = _service_with_benign_surface(graph)
+    eps = benign_endpoints_of(graph, sid)
+    assert eps  # the public service exposes benign endpoints
+    vuln_eps = {
+        e.dst
+        for v in graph.by_kind("vulnerability")
+        for e in graph.out_edges(v.id, "affects")
+    }
+    assert all(ep.id not in vuln_eps for ep in eps)  # never the vuln endpoint
+
+
+def test_service_realization_request_and_parse() -> None:
+    graph = _admit("db", "sql_injection").graph
+    sid = _service_with_benign_surface(graph)
+    req = service_realization_request(graph, sid)
+    assert "def handle" in req.prompt and "do NOT read" in req.prompt
+    parsed = service_handlers_from_result(
+        {"endpoints": {"/x": "def handle(): ...", "/y": 5, "/z": "  "}}
+    )
+    assert parsed == {"/x": "def handle(): ..."}
+    assert service_handlers_from_result(None) == {}
+    assert service_handlers_from_result({"endpoints": "nope"}) == {}
+
+
+def test_realize_service_surface_skips_malformed_and_empty(tmp_path: Path) -> None:
+    snap = _admit("file", "command_injection")
+    sid = _service_with_benign_surface(snap.graph)
+    before = snap.graph.content_hash()
+    paths = [str(ep.attrs.get("path")) for ep in benign_endpoints_of(snap.graph, sid)]
+    # A proposal that is not valid handler source is skipped; nothing is realized.
+    out = realize_service_surface(
+        snap,
+        sid,
+        lambda _g, _s: {paths[0]: "not python @@@"},
+        _service_probes(snap, "command_injection", tmp_path / "x"),
+    )
+    assert out.lineage["realized_endpoints"] == ()
+    assert out.snapshot_id == before
+
+
+def test_benign_endpoints_of_edge_cases() -> None:
+    # A service-level vuln owns every endpoint -> no benign surface.
+    g = WorldGraph(ontology=ONTOLOGY_ID)
+    g.add_node(Node(id="s", kind="service", attrs={"name": "s"}))
+    g.add_node(
+        Node(id="api", kind="endpoint", attrs={"path": "/api", "public_url": "/api"})
+    )
+    g.add_edge(Edge(id="e", kind="exposes", src="s", dst="api", attrs={}))
+    g.add_node(Node(id="v", kind="vulnerability", attrs={"kind": "x", "params": {}}))
+    g.add_edge(Edge(id="av", kind="affects", src="v", dst="s", attrs={}))
+    assert benign_endpoints_of(g, "s") == []
+
+    # Endpoint-level only: / and /openapi.json are framework routes, excluded.
+    g2 = WorldGraph(ontology=ONTOLOGY_ID)
+    g2.add_node(Node(id="s", kind="service", attrs={"name": "s"}))
+    for eid, p in [("root", "/"), ("oa", "/openapi.json"), ("list", "/list")]:
+        g2.add_node(Node(id=eid, kind="endpoint", attrs={"path": p, "public_url": p}))
+        g2.add_edge(Edge(id="x" + eid, kind="exposes", src="s", dst=eid, attrs={}))
+    assert [str(e.attrs["path"]) for e in benign_endpoints_of(g2, "s")] == ["/list"]
+
+
+def test_realize_service_surface_ignores_unknown_path(tmp_path: Path) -> None:
+    snap = _admit("file", "command_injection")
+    sid = _service_with_benign_surface(snap.graph)
+    before = snap.graph.content_hash()
+    out = realize_service_surface(
+        snap,
+        sid,
+        lambda _g, _s: {"/not-an-endpoint": _benign_body()},
+        _service_probes(snap, "command_injection", tmp_path / "u"),
+    )
+    assert out.lineage["realized_endpoints"] == ()
+    assert out.snapshot_id == before
 
 
 def test_db_decoy_matches_seeding() -> None:

@@ -14,6 +14,7 @@ the orchestration lives with the caller, not here.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from graphschema import WorldGraph
@@ -74,6 +75,39 @@ def classify_admission_with_control(
     else:
         reason = "rejected: the control did not compute (faked/hard-coded handler)"
     return AdmissionVerdict(accepted, solvable, trivial, reason, faithful)
+
+
+def classify_service_admission(
+    graph: WorldGraph,
+    *,
+    oracle_exploit_body: str,
+    oracle_benign_body: str,
+    benign_endpoint_bodies: Mapping[str, str],
+    root_ok: bool,
+) -> AdmissionVerdict:
+    """Admit a whole-service benign realization: the world's oracle still fires (its
+    exploit leaks, a benign request does not), NO realized benign endpoint leaks the
+    flag, and the world still boots (GET / is 200). Any benign endpoint that serves the
+    flag would make the world trivially winnable, so it rejects the realization."""
+    solvable = detect_leak(graph, [oracle_exploit_body]).occurred
+    trivial = detect_leak(graph, [oracle_benign_body]).occurred
+    leaking = sorted(
+        path
+        for path, body in benign_endpoint_bodies.items()
+        if detect_leak(graph, [body]).occurred
+    )
+    accepted = solvable and not trivial and not leaking and root_ok
+    if accepted:
+        reason = "accepted: oracle holds, no benign endpoint leaks, world boots"
+    elif not solvable:
+        reason = "rejected: the exploit did not leak the flag (not solvable)"
+    elif trivial:
+        reason = "rejected: a benign request leaks the flag (trivial)"
+    elif leaking:
+        reason = f"rejected: benign endpoint(s) leak the flag: {', '.join(leaking)}"
+    else:
+        reason = "rejected: the world did not boot (GET / not 200)"
+    return AdmissionVerdict(accepted, solvable, trivial, reason)
 
 
 def cmdi_exploit_and_benign(graph: WorldGraph) -> tuple[str, str]:
