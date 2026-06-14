@@ -24,9 +24,37 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from graphschema import WorldGraph
+from openrange_pack_sdk import Backing
 
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.codegen.entrypoint import APP_FILE_NAME, SEED_FILE_NAME
+from cyber_webapp.vulnerabilities import CATALOG
+
+# Exploit shapes whose blackbox solution needs a real OS filesystem/shell — a real
+# ``open()`` / ``sh -c`` — not the PROCESS backing's in-memory emulation. Under PROCESS
+# the loot file sits at a randomized path in an in-memory dict with no listing
+# primitive, so a blackbox agent cannot DISCOVER it (reward stays 0). The CONTAINER
+# backing's real fs/shell restores enumeration (``ls`` / globs), making these solvable.
+_REAL_SUBSTRATE_SHAPES = frozenset({"file_read", "code_exec"})
+
+
+def minimum_backing(graph: WorldGraph) -> Backing:
+    """The least-fidelity backing under which this world is blackbox-agent-solvable.
+
+    ``PROCESS`` for worlds whose vulns all leak in-band through the HTTP response
+    (sql_injection, idor, ssrf, …): those carry their own discovery channel. A world
+    with any file-read / code-exec vuln (path_traversal, xxe, command_injection, ssti)
+    needs ``CONTAINER`` — only a real filesystem/shell lets a blackbox agent enumerate
+    the randomized loot path it must read. Solvable-by-construction is unchanged either
+    way (cross-backing parity); this is about agent *reachability*, so a training
+    harness can pick the cheapest backing that still leaves the world winnable.
+    """
+    for vuln in graph.by_kind("vulnerability"):
+        entry = CATALOG.get(str(vuln.attrs.get("kind")))
+        if entry is not None and entry.shape in _REAL_SUBSTRATE_SHAPES:
+            return Backing.CONTAINER
+    return Backing.PROCESS
+
 
 # A fixed in-container port (the host maps it to an ephemeral port at run time, the way
 # the PROCESS backing binds port 0).

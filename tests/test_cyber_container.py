@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
-from cyber_webapp import ContainerWebappRuntime, WebappPack
+from cyber_webapp import ContainerWebappRuntime, WebappPack, minimum_backing
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.container import (
     BASE_IMAGE,
@@ -126,6 +126,46 @@ def test_every_sampled_base_command_has_an_apt_package() -> None:
     from cyber_webapp.sampling import _COMMAND_INJECTION_BASE
 
     assert set(_COMMAND_INJECTION_BASE) <= set(_CMDI_APT_PACKAGES)
+
+
+def _admit_sqli() -> Snapshot:
+    snap = admit(
+        WebappPack(),
+        manifest={
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "seed": 7,
+            "loot_shapes": {"db": 1, "file": 0},
+            "vuln_kinds": {"sql_injection": 1},
+        },
+        max_repairs=3,
+    )
+    assert isinstance(snap, Snapshot), snap
+    return snap
+
+
+def test_minimum_backing_is_container_for_file_and_code_shapes() -> None:
+    # A file-read / code-exec world's loot sits at a randomized path the PROCESS
+    # emulation gives no way to enumerate — so it is only blackbox-solvable on a real
+    # filesystem/shell, i.e. CONTAINER.
+    assert minimum_backing(_admit_cmdi().graph) is Backing.CONTAINER
+    assert minimum_backing(_admit_path_traversal().graph) is Backing.CONTAINER
+
+
+def test_minimum_backing_is_process_for_in_band_response_leak() -> None:
+    # SQLi leaks in-band through the response (the agent enumerates via the query
+    # itself), so PROCESS already leaves the world winnable — no container needed.
+    assert minimum_backing(_admit_sqli().graph) is Backing.PROCESS
+
+
+def test_minimum_backing_ignores_unknown_vuln_kinds() -> None:
+    # A vuln node whose kind is not in the catalog must not force CONTAINER (nor crash);
+    # the decision falls through to PROCESS.
+    graph = _admit_sqli().graph
+    vuln = next(iter(graph.by_kind("vulnerability")))
+    vuln.attrs["kind"] = "not_a_real_vuln"
+    assert minimum_backing(graph) is Backing.PROCESS
 
 
 def _docker_available() -> bool:

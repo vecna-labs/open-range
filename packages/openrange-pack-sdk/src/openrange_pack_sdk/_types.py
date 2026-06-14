@@ -25,7 +25,7 @@ class Backing(StrEnum):
 
     A Pack's ``realize(graph, backing)`` branches over this value; packs
     raise ``NotImplementedError`` for backings they do not support (the
-    cyber webapp realizer supports only ``PROCESS``).
+    cyber webapp realizer supports ``PROCESS`` and ``CONTAINER``).
     """
 
     PROCESS = "process"

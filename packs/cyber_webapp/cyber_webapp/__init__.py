@@ -14,6 +14,7 @@ from openrange_pack_sdk import (
 )
 
 from cyber_webapp.builder import WebappBuilder
+from cyber_webapp.container import minimum_backing
 from cyber_webapp.families import WebappBuild, WebappPentest
 from cyber_webapp.invariants import (
     no_orphan_nodes,
@@ -99,6 +100,7 @@ __all__ = [
     "WebappPentest",
     "WebappRuntimeError",
     "WebappRuntime",
+    "minimum_backing",
     "no_orphan_nodes",
     "oracle_path_exists",
     "secret_must_be_held",

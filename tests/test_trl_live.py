@@ -307,3 +307,104 @@ def test_live_grpo_one_step_cyber_container(tmp_path: Path) -> None:
     finally:
         for env in envs:
             env.service.close()
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_live_grpo_one_step_cyber_container_file_loot(tmp_path: Path) -> None:
+    """One real GRPO step over a FILE-LOOT cyber world on the CONTAINER backing.
+
+    command_injection is a ``code_exec`` shape: under PROCESS its loot file sits at a
+    randomized path in an in-memory dict with no listing primitive, so a blackbox agent
+    can't discover it (untrainable). ``minimum_backing`` therefore routes it to
+    CONTAINER, where a real ``sh -c`` restores enumeration. This asserts the
+    auto-selected backing and that the GRPO loop runs end-to-end against the real
+    container — the trainability the file-loot family only has under CONTAINER."""
+    datasets = pytest.importorskip("datasets")
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+    trl = pytest.importorskip("trl")
+
+    from cyber_webapp import WebappPack, minimum_backing
+
+    pack = WebappPack()
+    snapshot = admit(
+        pack,
+        manifest={
+            "world": {"goal": "recover the flag"},
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "seed": 7,
+            "loot_shapes": {"file": 1, "db": 0},
+            "vuln_kinds": {"command_injection": 1},
+        },
+        max_repairs=3,
+    )
+    assert not isinstance(snapshot, AdmissionFailure)
+    # The harness picks the cheapest backing that leaves the world winnable; a
+    # file-loot world must come back CONTAINER (PROCESS can't be solved blackbox).
+    backing = minimum_backing(snapshot.graph)
+    assert backing is Backing.CONTAINER
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(_MODEL)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(_MODEL)
+    lora = peft.LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        task_type="CAUSAL_LM",
+    )
+
+    num_generations = 2
+    rows = [
+        row
+        for row in build_grpo_dataset(snapshot, repeat=2, tool_guide=WEB_TOOL_GUIDE)
+        if "pentest" in row["task_id"]
+    ]
+    dataset = datasets.Dataset.from_list(rows)
+    factory = make_web_environment_factory(
+        pack, [snapshot], tmp_path / "envs", backing=backing
+    )
+    config = trl.GRPOConfig(
+        output_dir=str(tmp_path / "trainer"),
+        per_device_train_batch_size=num_generations,
+        num_generations=num_generations,
+        steps_per_generation=1,
+        gradient_accumulation_steps=1,
+        max_steps=1,
+        beta=0.0,
+        temperature=1.0,
+        max_completion_length=128,
+        max_tool_calling_iterations=3,
+        use_vllm=False,
+        log_completions=False,
+        report_to="none",
+        save_strategy="no",
+        bf16=False,
+        fp16=False,
+    )
+    trainer = trl.GRPOTrainer(
+        model=model,
+        reward_funcs=[make_reward_func()],
+        args=config,
+        train_dataset=dataset,
+        processing_class=tokenizer,
+        environment_factory=factory,
+        peft_config=lora,
+    )
+
+    envs: list[EpisodeEnv] = list(trainer.environments or ())
+    try:
+        trainer.train()
+
+        graded = [env for env in envs if env.report is not None]
+        assert graded, "no rollout reached grading on the CONTAINER backing"
+        for env in graded:
+            assert env.service.backing is Backing.CONTAINER
+            trajectory = env_trajectory(env)
+            assert trajectory.snapshot_id == snapshot.snapshot_id
+            assert 0.0 <= trajectory.reward.scalar <= 1.0
+    finally:
+        for env in envs:
+            env.service.close()
