@@ -1,7 +1,7 @@
-"""The cyber webapp pack, trained through the TRL adapter's ``WebTargetEnv``.
+"""The cyber webapp pack, trained through the TRL adapter's generic ``EpisodeEnv``.
 
 Live but **torch-free**: each test boots the pack's real HTTP server (no model)
-and drives ``WebTargetEnv``'s tools by hand, exactly as a GRPO rollout would.
+and drives the env's reference tools (``WEB_TOOLS``) by hand, as a rollout would.
 Pins ``seed=0`` — a deterministic world whose pentest entrypoint is a
 SQL-injection at ``GET /svc/db/records`` — so the reward surface is reproducible.
 
@@ -28,14 +28,14 @@ import pytest
 from cyber_webapp import WebappPack
 from openrange_pack_sdk import EpisodeResult, Snapshot, TaskSpec
 from openrange_trl import (
-    WEB_TOOL_GUIDE,
-    WebTargetEnv,
+    EpisodeEnv,
     build_grpo_dataset,
     env_trajectory,
+    make_environment_factory,
     make_reward_func,
-    make_web_environment_factory,
     reward_variance_policy,
 )
+from openrange_trl.tools import WEB_TOOLS
 
 from openrange.core.admit import admit
 from openrange.core.curriculum import auto_evolve
@@ -54,7 +54,7 @@ _MANIFEST = {
     "vuln_kinds": {"sql_injection": 1},
 }
 
-EnvMaker = Callable[[], WebTargetEnv]
+EnvMaker = Callable[[], EpisodeEnv]
 
 
 @pytest.fixture(scope="module")
@@ -68,10 +68,12 @@ def snapshot() -> Snapshot:
 def make_env(snapshot: Snapshot, tmp_path: Path) -> Iterator[EnvMaker]:
     services: list[EpisodeService] = []
 
-    def _make() -> WebTargetEnv:
+    def _make() -> EpisodeEnv:
         svc = EpisodeService(WebappPack(), tmp_path / f"svc{len(services)}")
         services.append(svc)
-        return WebTargetEnv(service=svc, snapshots={snapshot.snapshot_id: snapshot})
+        return EpisodeEnv(
+            service=svc, snapshots={snapshot.snapshot_id: snapshot}, tools=WEB_TOOLS
+        )
 
     yield _make
     for svc in services:
@@ -105,11 +107,11 @@ def _sqli_params(snapshot: Snapshot) -> Mapping[str, object]:
     raise AssertionError("seed=0 should plant a sql_injection vulnerability")
 
 
-def _start(env: WebTargetEnv, snapshot: Snapshot, task: TaskSpec) -> str:
+def _start(env: EpisodeEnv, snapshot: Snapshot, task: TaskSpec) -> str:
     return env.reset(snapshot_id=snapshot.snapshot_id, task_id=task.id)
 
 
-def _grade(env: WebTargetEnv) -> float:
+def _grade(env: EpisodeEnv) -> float:
     env._finalize()
     return env.reward
 
@@ -174,9 +176,9 @@ class TestWebTargetLifecycle:
         out = env.http_get("/no/such/route")
         assert out.startswith("status=") and "error" not in out.split("\n")[0]
 
-    def test_http_get_before_reset_reports_no_target(self, make_env: EnvMaker) -> None:
-        # No episode started yet -> no base_url -> fail-soft, not a crash.
-        assert make_env().http_get("/") == "error: this world exposes no web target"
+    def test_http_get_before_reset_is_fail_soft(self, make_env: EnvMaker) -> None:
+        # No episode started yet -> no surface -> fail-soft, not a crash.
+        assert make_env().http_get("/").startswith("error:")
 
     def test_submit_before_reset_is_fail_soft(self, make_env: EnvMaker) -> None:
         assert make_env().submit('{"flag": "x"}').startswith("error:")
@@ -240,11 +242,15 @@ class TestSeams:
         assert traj.task_id == task.id
         assert 0.0 <= traj.reward.scalar <= 1.0
 
-    def test_dataset_uses_the_web_tool_guide(self, snapshot: Snapshot) -> None:
-        rows = build_grpo_dataset(snapshot, repeat=2, tool_guide=WEB_TOOL_GUIDE)
+    def test_dataset_rows_carry_instruction_and_snapshot(
+        self, snapshot: Snapshot
+    ) -> None:
+        # Tools reach the policy via TRL's tool schemas, not the prompt text, so a
+        # row is just the task instruction + its snapshot/task tags.
+        rows = build_grpo_dataset(snapshot, repeat=2)
         assert len(rows) == 2 * len(snapshot.tasks)
-        content = rows[0]["prompt"][0]["content"]
-        assert "http_get" in content and "submit" in content
+        contents = [row["prompt"][0]["content"] for row in rows]
+        assert _pentest_task(snapshot).instruction in contents
         assert all(row["snapshot_id"] == snapshot.snapshot_id for row in rows)
 
     def test_reward_func_grades_web_envs_in_order(
@@ -264,14 +270,14 @@ class TestSeams:
         rewards = make_reward_func()([], [], environments=[solved, floored])
         assert rewards == [1.0, 0.0]
 
-    def test_web_factory_builds_isolated_web_envs(
+    def test_factory_builds_isolated_envs(
         self, snapshot: Snapshot, tmp_path: Path
     ) -> None:
-        factory = make_web_environment_factory(
-            WebappPack(), [snapshot], tmp_path / "factory-envs"
+        factory = make_environment_factory(
+            WebappPack(), [snapshot], tmp_path / "factory-envs", tools=WEB_TOOLS
         )
         env = factory()
-        assert isinstance(env, WebTargetEnv)
+        assert isinstance(env, EpisodeEnv)
         task = _pentest_task(snapshot)
         try:
             obs = env.reset(snapshot_id=snapshot.snapshot_id, task_id=task.id)

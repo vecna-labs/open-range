@@ -25,14 +25,13 @@ from pathlib import Path
 import pytest
 from openrange_pack_sdk import Backing
 from openrange_trl import (
-    WEB_TOOL_GUIDE,
     EpisodeEnv,
     build_grpo_dataset,
     env_trajectory,
     make_environment_factory,
     make_reward_func,
-    make_web_environment_factory,
 )
+from openrange_trl.tools import FILE_TOOLS, WEB_TOOLS
 
 from openrange.core.admit import AdmissionFailure, admit
 
@@ -85,7 +84,9 @@ def test_live_grpo_one_step(tmp_path: Path) -> None:
 
     num_generations = 2
     dataset = datasets.Dataset.from_list(build_grpo_dataset(snapshot, repeat=2))
-    factory = make_environment_factory(pack, [snapshot], tmp_path / "envs")
+    factory = make_environment_factory(
+        pack, [snapshot], tmp_path / "envs", tools=FILE_TOOLS
+    )
     config = trl.GRPOConfig(
         output_dir=str(tmp_path / "trainer"),
         per_device_train_batch_size=num_generations,
@@ -166,11 +167,13 @@ def test_live_grpo_one_step_cyber(tmp_path: Path) -> None:
     # Only the pentest task suits the HTTP action surface (build is code-gen).
     rows = [
         row
-        for row in build_grpo_dataset(snapshot, repeat=2, tool_guide=WEB_TOOL_GUIDE)
+        for row in build_grpo_dataset(snapshot, repeat=2)
         if "pentest" in row["task_id"]
     ]
     dataset = datasets.Dataset.from_list(rows)
-    factory = make_web_environment_factory(pack, [snapshot], tmp_path / "envs")
+    factory = make_environment_factory(
+        pack, [snapshot], tmp_path / "envs", tools=WEB_TOOLS
+    )
     config = trl.GRPOConfig(
         output_dir=str(tmp_path / "trainer"),
         per_device_train_batch_size=num_generations,
@@ -258,12 +261,12 @@ def test_live_grpo_one_step_cyber_container(tmp_path: Path) -> None:
     num_generations = 2
     rows = [
         row
-        for row in build_grpo_dataset(snapshot, repeat=2, tool_guide=WEB_TOOL_GUIDE)
+        for row in build_grpo_dataset(snapshot, repeat=2)
         if "pentest" in row["task_id"]
     ]
     dataset = datasets.Dataset.from_list(rows)
-    factory = make_web_environment_factory(
-        pack, [snapshot], tmp_path / "envs", backing=Backing.CONTAINER
+    factory = make_environment_factory(
+        pack, [snapshot], tmp_path / "envs", tools=WEB_TOOLS, backing=Backing.CONTAINER
     )
     config = trl.GRPOConfig(
         output_dir=str(tmp_path / "trainer"),
@@ -359,12 +362,12 @@ def test_live_grpo_one_step_cyber_container_file_loot(tmp_path: Path) -> None:
     num_generations = 2
     rows = [
         row
-        for row in build_grpo_dataset(snapshot, repeat=2, tool_guide=WEB_TOOL_GUIDE)
+        for row in build_grpo_dataset(snapshot, repeat=2)
         if "pentest" in row["task_id"]
     ]
     dataset = datasets.Dataset.from_list(rows)
-    factory = make_web_environment_factory(
-        pack, [snapshot], tmp_path / "envs", backing=backing
+    factory = make_environment_factory(
+        pack, [snapshot], tmp_path / "envs", tools=WEB_TOOLS, backing=backing
     )
     config = trl.GRPOConfig(
         output_dir=str(tmp_path / "trainer"),

@@ -14,6 +14,7 @@ from typing import Protocol, cast
 
 from openrange_pack_sdk import LLMResult, OpenRangeError, Snapshot, TaskSpec
 
+from examples._briefing import agent_briefing
 from openrange.core.episode import AgentTurn
 from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig
 
@@ -72,7 +73,7 @@ def run_task(
     run: OpenRangeRun,
 ) -> dict[str, object]:
     def solve(ctx: EpisodeContext) -> AgentTurn:
-        result = harness.run(ctx.task.instruction, ctx.root)
+        result = harness.run(agent_briefing(ctx), ctx.root)
         return AgentTurn(message=result.text)
 
     ep = run.run_episode(snapshot, solve, task_id=task.id)

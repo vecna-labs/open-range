@@ -22,12 +22,16 @@ constructing a real `GRPOTrainer` needs the `train` extra. End-to-end tutorials:
 
 ## Surface
 
-- `OpenRangeEnv` / `WebTargetEnv` — one rollout's env over an `EpisodeService`
-  episode (file tools / HTTP tools); `EpisodeEnv` is the shared base.
-- `build_grpo_dataset`, `make_reward_func`, `make_environment_factory`,
-  `make_web_environment_factory`, `env_trajectory` — the TRL-shaped dataset,
-  reward bridge, per-rollout factory, and trajectory export.
+- `EpisodeEnv` — one rollout's env over an `EpisodeService` episode. The policy's
+  tools are **brought by the caller** (the user's harness), bound to the live world
+  surface, and reflected to TRL as the action surface — OpenRange owns the bridge,
+  not the tools. `openrange_trl.tools` ships a reference set (`WEB_TOOLS`,
+  `FILE_TOOLS`) you can use, extend, or replace.
+- `build_grpo_dataset`, `make_reward_func`, `make_environment_factory(..., tools=)`,
+  `env_trajectory` — the TRL-shaped dataset, reward bridge, per-rollout factory (you
+  pass the `tools` the policy gets), and trajectory export.
 - `reward_variance_policy` — a curriculum policy keyed on the reward spread GRPO consumes.
 
-All reward/trajectory logic defers to OpenRange's pack-agnostic `episode_reward` /
-`episode_trajectory`; none is reinvented here.
+A tool is a plain callable taking the live `surface` first, then the model's kwargs
+(see `openrange_trl/tools.py`). All reward/trajectory logic defers to OpenRange's
+pack-agnostic `episode_reward` / `episode_trajectory`; none is reinvented here.
