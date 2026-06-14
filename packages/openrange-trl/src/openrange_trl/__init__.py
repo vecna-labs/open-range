@@ -56,26 +56,20 @@ from openrange.training import (
     episode_trajectory,
 )
 
-# A tool: takes the live episode ``surface`` first, then the model-supplied kwargs,
-# and returns an observation string. See ``openrange_trl.tools`` for examples.
 Tool = Callable[..., str]
 
-# Tail tool output so a chatty surface can't flood a tiny model's context window.
+# Tail tool output so a chatty surface can't flood the context window.
 _OUTPUT_TAIL = 2000
 
 
 def _tool_method(env: EpisodeEnv, fn: Tool) -> Any:
-    """Synthesize a TRL-introspectable bound method from a user tool fn.
+    """Build a TRL-introspectable bound method from a user tool fn.
 
-    TRL's agentic GRPO discovers tools by reflecting an env's public methods and
-    derives each schema from the method signature + Google docstring
-    (``transformers.utils.get_json_schema``). A tool fn takes the live ``surface``
-    as its first parameter; we present TRL a method with that parameter dropped
-    (the model never supplies it) and inject ``env._surface`` at call time. Real
-    annotation objects (not stringified) ride through so generics like
-    ``list[str]`` survive.
+    TRL reflects an env's public methods into tools (schema from the signature +
+    docstring). The tool takes the live ``surface`` first; we hand TRL the same
+    method with that parameter dropped and inject ``self._surface`` at call time.
     """
-    params = list(inspect.signature(fn).parameters.values())[1:]  # drop ``surface``
+    params = list(inspect.signature(fn).parameters.values())[1:]
     ns: dict[str, Any] = {"_fn": fn}
     decl, forward = "", ""
     for p in params:
@@ -96,21 +90,12 @@ def _tool_method(env: EpisodeEnv, fn: Tool) -> Any:
 
 
 class EpisodeEnv:
-    """One GRPO rollout's environment over a single ``EpisodeService`` episode.
+    """One GRPO rollout over a single ``EpisodeService`` episode.
 
-    The pack-agnostic lifecycle (``reset`` → act → lazy grade) plus the caller's
-    tools. Each supplied tool becomes a public method TRL reflects as a tool;
-    everything else is underscore-prefixed (TRL skips it) or a plain data
-    attribute (``reward`` / ``turns`` / ``report``). Tool calls are **fail-soft**
-    (``_invoke`` wraps the body in ``_safe``) — a weak model's bad call costs
-    reward, not the run.
-
-    Lifecycle (mirrors TRL's agentic loop): ``reset(**row)`` starts a fresh
-    episode (each ``start_episode`` realizes its own ``solver_root`` / target, so
-    a group of N concurrent envs never collides), caches the live ``surface`` the
-    tools bind against, and returns ``_initial_observation`` (appended to the
-    prompt). The first ``_finalize`` (via the reward func) stops + grades the
-    *final* state into ``self.reward``.
+    Each caller-supplied tool becomes a public method TRL reflects as a tool,
+    bound to the live ``surface`` at ``reset``; tool calls are fail-soft (a bad
+    call costs reward, not the run). The first read of ``env.reward`` (via the
+    reward func) lazily stops + grades the episode.
     """
 
     def __init__(
@@ -138,10 +123,8 @@ class EpisodeEnv:
             setattr(self, fn.__name__, _tool_method(self, fn))
 
     if TYPE_CHECKING:
-        # Tool methods are attached dynamically from the caller's list, so the
-        # type checker can't see them; declare that any such access is a
-        # string-returning tool call. Runtime keeps normal attribute lookup
-        # (missing names still raise ``AttributeError``).
+        # Tools are attached dynamically, so the type checker can't see them;
+        # declare any such access as a string-returning tool call.
         def __getattr__(self, name: str) -> Callable[..., str]: ...
 
     def reset(
@@ -151,12 +134,9 @@ class EpisodeEnv:
         task_id: str | None = None,
         **_: object,
     ) -> str:
-        """Start a fresh episode and return the initial observation.
-
-        ``snapshot_id`` / ``task_id`` come straight from the dataset row (extra
-        columns absorbed by ``**_``). The returned text is appended to the prompt
-        by TRL — it carries the *live* interface (a target URL, a workspace
-        listing) the dataset can't know, since the world is realized only here.
+        """Start a fresh episode; the returned observation (the live target URL or
+        workspace listing the dataset can't know) is appended to the prompt.
+        ``snapshot_id`` / ``task_id`` come from the dataset row.
         """
         snapshot = self._resolve_snapshot(snapshot_id)
         handle = self.service.start_episode(snapshot, task_id)
