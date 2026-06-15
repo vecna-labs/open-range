@@ -40,7 +40,7 @@ dev = [
     "openrange-cyber-webapp",
     "openrange-trading",
     "openrange-swe",
-    "openrange-trl",
+    "openrange-trl[engine]",
 ]
 
 [tool.uv.workspace]

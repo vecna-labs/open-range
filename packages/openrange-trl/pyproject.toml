@@ -29,6 +29,9 @@ train = [
     "peft>=0.14",
     "jmespath>=1.0",
 ]
+engine = [
+    "httpx>=0.27",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openrange_trl"]

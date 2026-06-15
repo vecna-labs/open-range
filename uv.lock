@@ -1204,7 +1204,7 @@ dev = [
     { name = "openrange-cyber-webapp" },
     { name = "openrange-swe" },
     { name = "openrange-trading" },
-    { name = "openrange-trl" },
+    { name = "openrange-trl", extra = ["engine"] },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -1227,7 +1227,7 @@ dev = [
     { name = "openrange-cyber-webapp", editable = "packs/cyber_webapp" },
     { name = "openrange-swe", editable = "packs/swe" },
     { name = "openrange-trading", editable = "packs/trading" },
-    { name = "openrange-trl", editable = "packages/openrange-trl" },
+    { name = "openrange-trl", extras = ["engine"], editable = "packages/openrange-trl" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.15.6" },
 ]
@@ -1302,6 +1302,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+engine = [
+    { name = "httpx" },
+]
 train = [
     { name = "accelerate" },
     { name = "datasets" },
@@ -1316,6 +1319,7 @@ train = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'train'", specifier = ">=1.0" },
     { name = "datasets", marker = "extra == 'train'", specifier = ">=4.0" },
+    { name = "httpx", marker = "extra == 'engine'", specifier = ">=0.27" },
     { name = "jmespath", marker = "extra == 'train'", specifier = ">=1.0" },
     { name = "openrange", editable = "." },
     { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
@@ -1324,7 +1328,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'train'", specifier = ">=5.2" },
     { name = "trl", marker = "extra == 'train'", specifier = ">=1.5" },
 ]
-provides-extras = ["train"]
+provides-extras = ["train", "engine"]
 
 [[package]]
 name = "opentelemetry-api"
