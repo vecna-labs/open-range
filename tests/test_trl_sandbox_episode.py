@@ -1,11 +1,11 @@
 """The sandbox, wired into the bring-your-own-tools seam (#288) through ``EpisodeEnv``.
 
-This is the #290 close: a *brought* tool runs in the episode's own throwaway sandbox,
-the trainer runs no agent command, and it plugs into the same ``tools=`` seam with the
-trainer unchanged. The shell tool below is the user's — the package ships none; it just
-reads the ``run`` capability the env injects into the live surface. The gated test boots
-a REAL cyber episode on the CONTAINER backing and an agent recovers the flag with its
-OWN curl, over the network, from its sandbox — then the real grader returns 1.0.
+A *brought* tool runs in the episode's own throwaway sandbox, the trainer runs no agent
+command, and it plugs into the same ``tools=`` seam (#288) with the trainer unchanged.
+The shell tool below is the user's — the package ships none; it just reads the ``run``
+capability the env injects into the live surface. The gated test boots a REAL cyber
+episode on the CONTAINER backing and an agent recovers the flag with its OWN curl, over
+the network, from its sandbox — then the real grader returns 1.0.
 """
 
 from __future__ import annotations
@@ -144,9 +144,9 @@ def _bind_mount_writeback_works() -> bool:
 
 @gated
 def test_byo_shell_tool_exploits_a_real_episode_in_its_sandbox(tmp_path: Path) -> None:
-    # The #290 close, end to end through the real harness: a real CONTAINER cyber world,
-    # the agent in its OWN sandbox exploits it with its OWN curl over the network, the
-    # trainer runs no agent command, and the real grader returns full reward.
+    # End to end through the real harness: a real CONTAINER cyber world. The agent, in
+    # its OWN sandbox, exploits it with its OWN curl over the network; the trainer runs
+    # no agent command, and the real grader returns full reward.
     snap = _admit_cmdi()
     graph = snap.graph
     exploit_path, _benign = cmdi_exploit_and_benign(graph)
@@ -178,9 +178,9 @@ def test_byo_shell_tool_exploits_a_real_episode_in_its_sandbox(tmp_path: Path) -
 def test_the_sandbox_can_reach_the_target_but_not_the_host_or_internet(
     tmp_path: Path,
 ) -> None:
-    # #290 criterion 1 ENFORCED, not just claimed: the per-episode net is --internal, so
-    # the agent (untrusted code) reaches the target by alias but has no route off the
-    # network — no host, no internet, no other episode's published ports.
+    # The per-episode net is --internal — no gateway — so the agent (untrusted code)
+    # reaches the target by alias but has no route off the network: no host, no
+    # internet, no other episode's published ports.
     snap = _admit_cmdi()
     service = EpisodeService(WebappPack(), tmp_path / "svc", backing=Backing.CONTAINER)
     env = EpisodeEnv(

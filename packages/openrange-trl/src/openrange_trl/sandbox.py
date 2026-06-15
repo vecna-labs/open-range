@@ -184,8 +184,8 @@ class AgentSandbox:
 
 
 def _build_agent_image() -> str:
-    """Build the agent image once and reuse it: a content-derived tag means a second
-    sandbox finds the image already present and skips the build."""
+    # Content-derived tag: built once and reused. A second sandbox finds it already
+    # present and skips the build.
     digest = hashlib.sha256(_AGENT_DOCKERFILE.encode()).hexdigest()[:12]
     tag = f"openrange-agent:{digest}"
     present = subprocess.run(["docker", "image", "inspect", tag], capture_output=True)
