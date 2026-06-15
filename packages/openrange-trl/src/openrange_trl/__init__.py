@@ -56,7 +56,14 @@ from openrange.training import (
     episode_reward,
     episode_trajectory,
 )
-from openrange_trl.sandbox import AgentSandbox, CommandResult, SandboxError
+from openrange_trl.sandbox import (
+    SANDBOX_LABEL,
+    AgentSandbox,
+    CommandResult,
+    SandboxError,
+    track_resource,
+    untrack_resource,
+)
 
 Tool = Callable[..., str]
 
@@ -206,10 +213,14 @@ class EpisodeEnv:
             network = f"openrange-agent-net-{uuid.uuid4().hex[:12]}"
             # --internal: the network has no gateway, so the sandbox (running untrusted
             # agent code) can reach the target by alias yet CANNOT reach the host, the
-            # internet, or other episodes' host-published ports. Record the name before
-            # connect so a failed connect still tears the network down.
-            _run_docker("network", "create", "--internal", network)
+            # internet, or other episodes' host-published ports. The label makes a
+            # leaked network prunable; record + track the name before connect so a
+            # failed connect still tears it down (here and via the atexit sweep).
+            _run_docker(
+                "network", "create", "--internal", "--label", SANDBOX_LABEL, network
+            )
             self._network = network
+            track_resource("network", network)
             _run_docker("network", "connect", "--alias", "target", network, target)
             self._target_container = target
             target_url = f"http://target:{surface.get('target_port', '8000')}"
@@ -239,6 +250,7 @@ class EpisodeEnv:
                     check=False,
                 )
             _run_docker("network", "rm", self._network, check=False)
+            untrack_resource("network", self._network)
             self._network = None
             self._target_container = None
 
@@ -430,6 +442,7 @@ def _report_scalar(report: EpisodeReportLike) -> float:
 
 
 __all__ = [
+    "SANDBOX_LABEL",
     "AgentSandbox",
     "CommandResult",
     "EpisodeEnv",

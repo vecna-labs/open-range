@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from cyber_webapp.container import hardening_run_args, image_files
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from openrange_pack_sdk import Snapshot
 from openrange_trl import AgentSandbox, SandboxError
+from openrange_trl import sandbox as sandbox_mod
 
 from openrange.core.admit import admit
 
@@ -68,6 +70,22 @@ class TestLifecycleGuards:
 
     def test_close_before_start_is_a_noop(self) -> None:
         AgentSandbox({}).close()  # nothing started — must not raise
+
+
+class TestLeakSafety:
+    def test_track_and_untrack_manage_the_sweep_set(self) -> None:
+        # track_resource records a (kind, name) for the atexit sweep; untrack_resource
+        # drops it once teardown removed the resource. Pure set logic — no docker.
+        sandbox_mod._TRACKED.clear()
+        try:
+            sandbox_mod.track_resource("container", "c-x")
+            sandbox_mod.track_resource("network", "n-x")
+            assert ("container", "c-x") in sandbox_mod._TRACKED
+            assert ("network", "n-x") in sandbox_mod._TRACKED
+            sandbox_mod.untrack_resource("container", "c-x")
+            assert ("container", "c-x") not in sandbox_mod._TRACKED
+        finally:
+            sandbox_mod._TRACKED.clear()
 
 
 # --- gated: the real engine (build + run real containers) -----------------------------
@@ -284,3 +302,76 @@ def test_sandbox_is_hardened_reuses_the_image_and_cleans_up(tmp_path: Path) -> N
         ["docker", "inspect", cname], capture_output=True, text=True, timeout=10
     )
     assert gone.returncode != 0  # close() removed the container
+
+
+@gated
+def test_the_atexit_sweep_removes_a_tracked_container_and_network(
+    tmp_path: Path,
+) -> None:
+    # The shutdown safety net: the sweep force-removes every resource this process
+    # tracked but didn't tear down. Track a real container (via start) and a real
+    # network, sweep, and assert both are gone and the set is cleared — no test doubles.
+    sandbox_mod._TRACKED.clear()
+    network = f"openrange-agent-net-sweep-{uuid.uuid4().hex[:8]}"
+    subprocess.run(
+        ["docker", "network", "create", network],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    sandbox = AgentSandbox({"solver_root": str(tmp_path)})
+    sandbox.start()
+    cname = sandbox._cname
+    assert cname is not None
+    sandbox_mod.track_resource("network", network)
+    try:
+        sandbox_mod._sweep_tracked()
+        assert not sandbox_mod._TRACKED  # the sweep clears what it handled
+        assert (
+            subprocess.run(
+                ["docker", "inspect", cname], capture_output=True, timeout=10
+            ).returncode
+            != 0
+        )
+        assert (
+            subprocess.run(
+                ["docker", "network", "inspect", network],
+                capture_output=True,
+                timeout=10,
+            ).returncode
+            != 0
+        )
+    finally:
+        sandbox_mod._TRACKED.clear()
+        subprocess.run(["docker", "rm", "-f", cname], capture_output=True)
+        subprocess.run(["docker", "network", "rm", network], capture_output=True)
+
+
+@gated
+def test_a_leaked_sandbox_is_discoverable_by_its_label(tmp_path: Path) -> None:
+    # The interruption backstop on the real engine: even without a clean teardown the
+    # container is found by the documented label filter, so an operator (or the one-line
+    # prune) can reclaim it. We start without closing, then assert the filter finds it.
+    sandbox = AgentSandbox({"solver_root": str(tmp_path)})
+    sandbox.start()
+    cname = sandbox._cname
+    assert cname is not None
+    try:
+        listed = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-q",
+                "--filter",
+                "label=openrange.sandbox=1",
+                "--filter",
+                f"name={cname}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        assert listed.strip(), "labelled sandbox not found by the documented filter"
+    finally:
+        sandbox.close()

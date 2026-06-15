@@ -35,3 +35,17 @@ constructing a real `GRPOTrainer` needs the `train` extra. End-to-end tutorials:
 A tool is a plain callable taking the live `surface` first, then the model's kwargs
 (see `openrange_trl/tools.py`). All reward/trajectory logic defers to OpenRange's
 pack-agnostic `episode_reward` / `episode_trajectory`; none is reinvented here.
+
+## Sandbox cleanup
+
+With `sandbox=True` each episode runs the agent's tools in a throwaway container on a
+private per-episode network, both torn down when the episode ends. A best-effort
+`atexit` sweep also reclaims this process's own sandboxes if a run unwinds past teardown
+(an unhandled exception or Ctrl-C) — but `atexit` can't fire on `SIGKILL`. So every
+container and network is labelled `openrange.sandbox=1`; if a hard-killed run leaks one,
+reclaim it with:
+
+```bash
+docker ps   -aq --filter label=openrange.sandbox=1 | xargs -r docker rm -f
+docker network ls -q --filter label=openrange.sandbox=1 | xargs -r docker network rm
+```

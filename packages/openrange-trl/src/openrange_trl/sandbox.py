@@ -19,11 +19,14 @@ reachable only on the episode network — and never in the trainer process.
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import hashlib
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -54,6 +57,60 @@ _HARDENING = [
     "--pids-limit",
     "256",
 ]
+
+# Every sandbox container and every per-episode network carries this label, so the
+# resources an interrupted run leaks (a detached ``sleep infinity`` agent container and
+# its ``openrange-agent-net-*`` network) stay discoverable and prunable by an operator:
+#   docker ps -aq      --filter label=openrange.sandbox=1 | xargs -r docker rm -f
+#   docker network ls -q --filter label=openrange.sandbox=1 | xargs -r docker network rm
+# The same string works as both ``--label openrange.sandbox=1`` and the filter value.
+SANDBOX_LABEL = "openrange.sandbox=1"
+
+# Best-effort, in-process safety net for the *common* interruption — an unhandled
+# exception or a Ctrl-C that unwinds past ``close``/``_teardown_sandbox`` before the
+# resources are removed. Everything this process created but didn't tear down is swept
+# at normal interpreter shutdown via ``atexit`` (which installs no signal handler, so
+# the trainer's own signal handling is untouched). It removes only *this* process's
+# tracked resources, never another concurrent trainer's. ``atexit`` does not run on
+# SIGKILL — the label above is the backstop there. Entries are ``(kind, name)``, kind
+# a "container" or "network".
+_TRACKED: set[tuple[str, str]] = set()
+_TRACKED_LOCK = threading.Lock()
+_SWEEP_ARMED = False
+
+
+def track_resource(kind: str, name: str) -> None:
+    """Track a resource so the atexit sweep removes it if teardown is skipped."""
+    global _SWEEP_ARMED
+    with _TRACKED_LOCK:
+        _TRACKED.add((kind, name))
+        if not _SWEEP_ARMED:
+            atexit.register(_sweep_tracked)
+            _SWEEP_ARMED = True
+
+
+def untrack_resource(kind: str, name: str) -> None:
+    """Drop a resource from the sweep set once it has been removed normally."""
+    with _TRACKED_LOCK:
+        _TRACKED.discard((kind, name))
+
+
+def _sweep_tracked() -> None:
+    with _TRACKED_LOCK:
+        leaked = list(_TRACKED)
+        _TRACKED.clear()
+    # Containers first: a network still holding an attached container won't remove.
+    leaked.sort(key=lambda kn: 0 if kn[0] == "container" else 1)
+    for kind, name in leaked:
+        argv = (
+            ["docker", "rm", "-f", name]
+            if kind == "container"
+            else ["docker", "network", "rm", name]
+        )
+        # A shutdown sweep never raises on the way out (a wedged daemon, a docker that
+        # has gone away); the labelled resource stays prunable by hand regardless.
+        with contextlib.suppress(Exception):
+            subprocess.run(argv, capture_output=True, timeout=30)
 
 
 class SandboxError(RuntimeError):
@@ -120,6 +177,9 @@ class AgentSandbox:
                 "-d",
                 "--name",
                 cname,
+                # Label every container so a leak from an interrupted run is prunable.
+                "--label",
+                SANDBOX_LABEL,
                 *_HARDENING,
                 "--user",
                 user,
@@ -134,6 +194,7 @@ class AgentSandbox:
             timeout=60,
         )
         self._cname = cname
+        track_resource("container", cname)
 
     def run(self, command: str, *, timeout: float = 120.0) -> CommandResult:
         """Run one shell command in the sandbox and return its exit code + output.
@@ -152,11 +213,11 @@ class AgentSandbox:
         """Remove the sandbox container (its network, if any, is the caller's)."""
         if self._cname is None:
             return
+        cname = self._cname
         # Bounded so a wedged daemon can't hang teardown (this is the only docker call
         # on the code-world teardown path); best-effort, so no check.
-        subprocess.run(
-            ["docker", "rm", "-f", self._cname], capture_output=True, timeout=60
-        )
+        subprocess.run(["docker", "rm", "-f", cname], capture_output=True, timeout=60)
+        untrack_resource("container", cname)
         self._cname = None
 
     def _surface_bindings(self, cname: str) -> list[str]:
