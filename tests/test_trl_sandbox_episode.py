@@ -175,6 +175,37 @@ def test_byo_shell_tool_exploits_a_real_episode_in_its_sandbox(tmp_path: Path) -
 
 
 @gated
+def test_the_sandbox_can_reach_the_target_but_not_the_host_or_internet(
+    tmp_path: Path,
+) -> None:
+    # #290 criterion 1 ENFORCED, not just claimed: the per-episode net is --internal, so
+    # the agent (untrusted code) reaches the target by alias but has no route off the
+    # network — no host, no internet, no other episode's published ports.
+    snap = _admit_cmdi()
+    service = EpisodeService(WebappPack(), tmp_path / "svc", backing=Backing.CONTAINER)
+    env = EpisodeEnv(
+        service=service,
+        snapshots={snap.snapshot_id: snap},
+        tools=[shell, submit],
+        sandbox=True,
+    )
+    try:
+        env.reset(snapshot_id=snap.snapshot_id, task_id=_pentest_task_id(snap))
+        reachable = env.shell(
+            "curl -s -o /dev/null -w '%{http_code}' http://target:8000/"
+        )
+        assert "200" in reachable, reachable  # the target is reachable on the net
+        # No route off the internal network: 1.1.1.1 needs no DNS, --max-time bounds a
+        # hang, and any non-zero exit means egress was refused. A bare (non-internal)
+        # network would connect (EXIT=0) and fail this — that is the regression guard.
+        egress = env.shell("curl --max-time 5 -s http://1.1.1.1; echo EXIT=$?")
+        assert "EXIT=0" not in egress, egress
+        env._finalize()
+    finally:
+        service.close()
+
+
+@gated
 def test_a_code_world_is_edited_through_the_sandbox(tmp_path: Path) -> None:
     # The same seam is domain-agnostic: a code world mounts into the sandbox, so a
     # brought shell tool edits the workspace and the change lands on the host tree the

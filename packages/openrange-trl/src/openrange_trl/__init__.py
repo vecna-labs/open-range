@@ -204,9 +204,13 @@ class EpisodeEnv:
                     "backing) so the sandbox can join its network and reach it by alias"
                 )
             network = f"openrange-agent-net-{uuid.uuid4().hex[:12]}"
-            _run_docker("network", "create", network)
-            _run_docker("network", "connect", "--alias", "target", network, target)
+            # --internal: the network has no gateway, so the sandbox (running untrusted
+            # agent code) can reach the target by alias yet CANNOT reach the host, the
+            # internet, or other episodes' host-published ports. Record the name before
+            # connect so a failed connect still tears the network down.
+            _run_docker("network", "create", "--internal", network)
             self._network = network
+            _run_docker("network", "connect", "--alias", "target", network, target)
             self._target_container = target
             target_url = f"http://target:{surface.get('target_port', '8000')}"
             self._sandbox = AgentSandbox({"base_url": target_url}, network=network)

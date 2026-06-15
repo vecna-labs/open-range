@@ -152,7 +152,11 @@ class AgentSandbox:
         """Remove the sandbox container (its network, if any, is the caller's)."""
         if self._cname is None:
             return
-        subprocess.run(["docker", "rm", "-f", self._cname], capture_output=True)
+        # Bounded so a wedged daemon can't hang teardown (this is the only docker call
+        # on the code-world teardown path); best-effort, so no check.
+        subprocess.run(
+            ["docker", "rm", "-f", self._cname], capture_output=True, timeout=60
+        )
         self._cname = None
 
     def _surface_bindings(self, cname: str) -> list[str]:
