@@ -20,10 +20,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from openrange_pack_sdk import Backing
+from openrange_pack_sdk import Backing, EpisodeReportLike
 from openrange_trl import (
     EpisodeEnv,
     build_grpo_dataset,
@@ -34,6 +35,7 @@ from openrange_trl import (
 
 from examples.tools import FILE_TOOLS, WEB_TOOLS
 from openrange.core.admit import AdmissionFailure, admit
+from openrange.core.curriculum import Direction, auto_evolve
 
 
 def _docker_available() -> bool:
@@ -411,3 +413,100 @@ def test_live_grpo_one_step_cyber_container_file_loot(tmp_path: Path) -> None:
     finally:
         for env in envs:
             env.service.close()
+
+
+def _always_harden(reports: Sequence[EpisodeReportLike]) -> Direction:
+    # A tiny laptop model won't drive a reward spread, so force the direction: this
+    # proves the *loop* (re-root + carry the model across rounds), not learning.
+    del reports
+    return "harden"
+
+
+def test_live_grpo_curriculum_evolves_between_rounds(tmp_path: Path) -> None:
+    """Two real GRPO rounds with the world evolving between them.
+
+    Each round trains a real ``GRPOTrainer`` on the current world, grades it, and
+    ``auto_evolve`` forks a child snapshot the next round re-roots onto — carrying
+    the LoRA model forward. This is the curriculum loop the notebook teaches, here
+    against a real trainer; *learning* the exploit is the GPU-scale step.
+    """
+    datasets = pytest.importorskip("datasets")
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+    trl = pytest.importorskip("trl")
+
+    from cyber_webapp import WebappPack
+
+    pack = WebappPack()
+    snapshot = admit(
+        pack,
+        manifest={
+            "world": {"goal": "recover the hidden flag"},
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "seed": 0,
+            "loot_shapes": {"db": 1, "file": 0},
+            "vuln_kinds": {"sql_injection": 1},
+        },
+    )
+    assert not isinstance(snapshot, AdmissionFailure)
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(_MODEL)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(_MODEL)
+    lora = peft.LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        task_type="CAUSAL_LM",
+    )
+    config = trl.GRPOConfig(
+        output_dir=str(tmp_path / "trainer"),
+        per_device_train_batch_size=2,
+        num_generations=2,
+        steps_per_generation=1,
+        max_steps=1,
+        beta=0.0,
+        max_completion_length=128,
+        max_tool_calling_iterations=3,
+        use_vllm=False,
+        report_to="none",
+        save_strategy="no",
+        bf16=False,
+        fp16=False,
+    )
+
+    # The curriculum loop, inline: train a round -> grade -> evolve -> re-root, with
+    # the first round wrapping the model in LoRA and later rounds carrying it.
+    lineage = [snapshot]
+    snap, wrapped = snapshot, False
+    for _ in range(2):
+        rows = [
+            r for r in build_grpo_dataset(snap, repeat=2) if "pentest" in r["task_id"]
+        ]
+        factory = make_environment_factory(
+            pack, [snap], tmp_path / snap.snapshot_id[-12:], tools=WEB_TOOLS
+        )
+        trainer = trl.GRPOTrainer(
+            model=model,
+            reward_funcs=[make_reward_func()],
+            args=config,
+            train_dataset=datasets.Dataset.from_list(rows),
+            processing_class=tokenizer,
+            environment_factory=factory,
+            peft_config=None if wrapped else lora,
+        )
+        trainer.train()
+        model, wrapped = trainer.model, True
+        reports = [
+            e.report for e in (trainer.environments or ()) if e.report is not None
+        ]
+        assert reports, "a real GRPO round produced no graded rollout"
+        evolved = auto_evolve(snap, *reports, pack=pack, policy=_always_harden)
+        assert evolved is not None and evolved.snapshot_id != snap.snapshot_id
+        snap = evolved
+        lineage.append(snap)
+
+    # Three distinct worlds: the curriculum advanced as a chain across the rounds.
+    assert len({s.snapshot_id for s in lineage}) == 3

@@ -312,3 +312,35 @@ class TestCurriculum:
         assert evolved is not None
         assert evolved.snapshot_id != snapshot.snapshot_id
         assert any(event.phase == "evolve" for event in evolved.history)
+
+    def test_curriculum_chains_distinct_worlds_across_rounds(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        # Solving every round collapses the spread -> harden -> a fresh admitted
+        # world; the lineage advances as a chain of distinct snapshots round over
+        # round, not one fixed task. This is the loop the cyber notebook teaches.
+        pack = WebappPack()
+        snap = snapshot
+        chain = [snap.snapshot_id]
+        for i in range(3):
+            task = _pentest_task(snap)
+            reports = []
+            for j in range(2):
+                svc = EpisodeService(pack, tmp_path / f"r{i}s{j}")
+                env = EpisodeEnv(
+                    service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS
+                )
+                env.reset(snapshot_id=snap.snapshot_id, task_id=task.id)
+                env.http_get(_exploit_path(snap, task))
+                env.submit(json.dumps({"flag": _truth_flag(snap, task)}))
+                env._finalize()
+                assert env.report is not None and env.report.passed
+                reports.append(env.report)
+                svc.close()
+            evolved = auto_evolve(
+                snap, *reports, pack=pack, policy=reward_variance_policy
+            )
+            assert evolved is not None and evolved.snapshot_id not in chain
+            snap = evolved
+            chain.append(snap.snapshot_id)
+        assert len(set(chain)) == 4  # root + three evolved, all distinct
