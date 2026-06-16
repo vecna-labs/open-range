@@ -22,6 +22,7 @@ import json
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import cast
 
 from cyber_webapp import WebappPack
 from openrange_pack_sdk import Snapshot
@@ -319,21 +320,40 @@ def test_topology_carries_new_snapshot_id_and_no_artifact_paths() -> None:
 
 
 def test_lineage_uses_history_and_lineage_mapping() -> None:
-    """``lineage()`` ships ``history`` and the ``lineage`` mapping.
+    """``lineage()`` ships the evolution ``nodes`` chain plus the current
+    world's ``history`` and flat ``lineage`` mapping.
 
     Published fields:
       - ``snapshot_id``: the content-addressed id
+      - ``nodes``: the evolution chain (one entry per admitted world); a
+        fresh single snapshot is a one-node chain rooted at itself
       - ``history``: phases ``admit()`` recorded (build / validate /
         feasibility / freeze + any repair attempts)
       - ``lineage``: the flat provenance mapping (manifest, pack
         id+version, attempt count)
-      - ``parent_snapshot_id``: forward-compat hook.
+      - ``parent_snapshot_id``: the parent this world evolved from
+        (``None`` for an initial build).
     """
     snap = _admit_seed_snapshot()
     view = DashboardView(snap)
     try:
         payload = view.lineage()
         assert payload["snapshot_id"] == snap.snapshot_id
+        nodes = payload["nodes"]
+        assert isinstance(nodes, list) and len(nodes) == 1
+        node = nodes[0]
+        assert node["id"] == snap.snapshot_id
+        assert node["parent_id"] is None
+        assert node["builder_summary"] == "Initial build"
+        assert node["pack"] == {"id": "webapp", "version": "v2"}
+        # The full node-link graph rides along so the evolution view can draw
+        # and diff it. Counts must match the admitted graph exactly.
+        graph = node["graph"]
+        assert isinstance(graph, Mapping)
+        assert len(graph["nodes"]) == len(snap.graph.nodes)
+        assert len(graph["edges"]) == len(snap.graph.edges)
+        first = graph["nodes"][0]
+        assert set(first.keys()) == {"id", "kind", "zone", "label", "public", "attrs"}
         lineage = payload["lineage"]
         assert isinstance(lineage, Mapping)
         assert lineage["pack"] == "webapp"
@@ -345,6 +365,43 @@ def test_lineage_uses_history_and_lineage_mapping() -> None:
         assert phases[0] == "build"
         assert phases[-1] == "freeze"
         assert payload["parent_snapshot_id"] is None
+    finally:
+        view.close()
+
+
+def test_lineage_chain_grows_across_evolution() -> None:
+    """``register_snapshot`` extends the chain so the dashboard can show how
+    a world changed per evolution: each evolved world is a node whose
+    ``parent_id`` points at the world it came from."""
+    from openrange.core import auto_evolve
+
+    class _Report:
+        passed = True
+        final_state: dict[str, list[str]] = {"requests_made": []}
+
+    pack = WebappPack()
+    snap = _admit_seed_snapshot()
+    view = DashboardView(snap)
+    try:
+        produced = [snap.snapshot_id]
+        prev = snap
+        for _ in range(3):
+            evolved = auto_evolve(prev, _Report(), pack=pack)
+            if evolved is None:
+                break
+            view.register_snapshot(evolved)
+            produced.append(evolved.snapshot_id)
+            prev = evolved
+
+        nodes = cast(list[dict[str, object]], view.lineage()["nodes"])
+        assert [n["id"] for n in nodes] == produced
+        # First node is the root; every later node links to the one before it.
+        assert nodes[0]["parent_id"] is None
+        for child, parent in zip(nodes[1:], nodes[:-1], strict=True):
+            assert child["parent_id"] == parent["id"]
+            assert child["evolve"] is not None
+        # The view now reflects the latest world, not the first.
+        assert view.lineage()["snapshot_id"] == produced[-1]
     finally:
         view.close()
 

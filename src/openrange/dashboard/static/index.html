@@ -21,11 +21,23 @@
   <canvas id="sim-canvas" aria-label="OpenRange episode simulation"></canvas>
   <div class="label-layer" id="sim-label-layer" aria-hidden="true"></div>
 
+  <!-- Evolution graph stage: the whole world as a node-link graph, scrubbed
+       across evolution steps. Hidden until the Evolution view is selected. -->
+  <div class="evo-stage" id="evo-stage" hidden>
+    <svg class="evo-graph" id="evo-graph" aria-label="World evolution graph"></svg>
+    <div class="evo-legend" id="evo-legend" aria-hidden="true"></div>
+    <div class="evo-emptymsg" id="evo-emptymsg" hidden>No evolution recorded yet.</div>
+  </div>
+
   <!-- Top bar: minimal. Brand · run picker · status · live-clock · play/pause. -->
   <header class="topbar" id="topbar">
     <div class="topbar-brand">
       <span class="topbar-mark"></span>
       <span class="topbar-name">OpenRange</span>
+    </div>
+    <div class="view-toggle" id="view-toggle" role="tablist" aria-label="View">
+      <button class="view-toggle-btn is-active" data-view="office" role="tab">Office</button>
+      <button class="view-toggle-btn" data-view="evolution" role="tab">Evolution</button>
     </div>
     <button
       class="topbar-pill"
@@ -158,6 +170,21 @@
     </div>
     <button class="build-banner-cta" id="build-banner-cta">Open</button>
     <button class="build-banner-dismiss" id="build-banner-dismiss" title="Dismiss">×</button>
+  </div>
+
+  <!-- Evolution scrubber: step back/forth through the lineage chain. -->
+  <div class="evo-scrubber" id="evo-scrubber" hidden>
+    <button class="evo-nav" id="evo-prev" aria-label="Previous evolution">&#8249;</button>
+    <div class="evo-scrubber-mid">
+      <div class="evo-scrubber-head">
+        <span class="evo-step-label" id="evo-step-label">Initial world</span>
+        <span class="evo-step-snap" id="evo-step-snap"></span>
+      </div>
+      <div class="evo-step-summary" id="evo-step-summary"></div>
+      <div class="evo-step-changes" id="evo-step-changes"></div>
+      <div class="evo-dots" id="evo-dots"></div>
+    </div>
+    <button class="evo-nav" id="evo-next" aria-label="Next evolution">&#8250;</button>
   </div>
 
   <!-- Toasts: short-lived persona speech / agent action highlights. -->

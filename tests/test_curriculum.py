@@ -431,6 +431,73 @@ def test_auto_evolve_picks_highest_relevance_in_direction() -> None:
     assert evolve_meta["note"] == "high"
 
 
+def test_auto_evolve_gate_skips_rejected_candidate() -> None:
+    """A gate vetoing the top candidate (e.g. a 'harden' add that actually
+    leaks the flag → easier) makes auto_evolve fall through to the next."""
+    low_patch = GraphPatch(
+        nodes_added=[Node("ep.low", "endpoint", attrs={"path": "/low"})],
+        edges_added=[Edge("e.low", "exposes", "repo.a", "ep.low")],
+    )
+    high_patch = GraphPatch(
+        nodes_added=[Node("ep.high", "endpoint", attrs={"path": "/high"})],
+        edges_added=[Edge("e.high", "exposes", "repo.a", "ep.high")],
+    )
+    family = _StubFamily(
+        mutations=(
+            Mutation(
+                patch=low_patch,
+                direction="harden",
+                relevance=0.2,
+                family="stub.family",
+                note="low",
+            ),
+            Mutation(
+                patch=high_patch,
+                direction="harden",
+                relevance=0.9,
+                family="stub.family",
+                note="high",
+            ),
+        ),
+    )
+    snap, pack = _build_stub_snapshot(family)
+
+    seen: list[str] = []
+
+    def gate(evolved: Snapshot, mutation: Mutation) -> bool:
+        seen.append(mutation.note)
+        return mutation.note != "high"  # reject the leaking top pick
+
+    out = auto_evolve(snap, _Report(True), pack=pack, gate=gate)
+    assert isinstance(out, Snapshot), out
+    # The vetoed high-relevance add was skipped; the legitimate one landed.
+    assert "ep.high" not in out.graph.nodes
+    assert "ep.low" in out.graph.nodes
+    assert seen == ["high", "low"]  # tried highest-relevance first, then fell through
+
+
+def test_auto_evolve_gate_rejecting_all_returns_none() -> None:
+    """If the gate vetoes every candidate and no grow is possible, evolution
+    legitimately stalls (None) rather than landing a mislabelled world."""
+    patch = GraphPatch(
+        nodes_added=[Node("ep.x", "endpoint", attrs={"path": "/x"})],
+        edges_added=[Edge("e.x", "exposes", "repo.a", "ep.x")],
+    )
+    family = _StubFamily(
+        mutations=(
+            Mutation(
+                patch=patch,
+                direction="harden",
+                relevance=0.9,
+                family="stub.family",
+                note="x",
+            ),
+        ),
+    )
+    snap, pack = _build_stub_snapshot(family)
+    assert auto_evolve(snap, _Report(True), pack=pack, gate=lambda *_: False) is None
+
+
 def test_auto_evolve_custom_policy() -> None:
     """Trainer can override the direction policy."""
     diversify_patch = GraphPatch(

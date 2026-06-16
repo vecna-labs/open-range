@@ -462,6 +462,7 @@ def test_dashboard_http_server_can_start_without_snapshot() -> None:
     }
     empty_lineage: dict[str, object] = {
         "snapshot_id": None,
+        "nodes": [],
         "lineage": {},
         "history": [],
         "parent_snapshot_id": None,

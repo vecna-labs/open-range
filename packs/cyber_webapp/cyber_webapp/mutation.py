@@ -81,14 +81,17 @@ def _harden_add_absent_mutations(
     services = list(graph.by_kind("service"))
     if not endpoints and not services:
         return []
+    # Prefer off-oracle surfaces for the decoy: a record-reading vuln on the
+    # flag's own surface can become a second path to it (easier). Only a
+    # preference — auto_evolve's consequence gate is the actual safeguard.
     oracle_endpoints, oracle_services = _oracle_path_targets(graph)
-    endpoints_oracle_first = sorted(
+    endpoints_decoy_first = sorted(
         endpoints,
-        key=lambda n: (0 if n.id in oracle_endpoints else 1, n.id),
+        key=lambda n: (1 if n.id in oracle_endpoints else 0, n.id),
     )
-    services_oracle_first = sorted(
+    services_decoy_first = sorted(
         services,
-        key=lambda n: (0 if n.id in oracle_services else 1, n.id),
+        key=lambda n: (1 if n.id in oracle_services else 0, n.id),
     )
 
     existing_kinds_by_target = _existing_kinds_by_target(graph)
@@ -102,9 +105,9 @@ def _harden_add_absent_mutations(
         target_kinds = catalog_entry.target_kinds
         candidates: Sequence[Node]
         if "endpoint" in target_kinds:
-            candidates = endpoints_oracle_first
+            candidates = endpoints_decoy_first
         elif "service" in target_kinds:
-            candidates = services_oracle_first
+            candidates = services_decoy_first
         else:
             continue
         target = next(

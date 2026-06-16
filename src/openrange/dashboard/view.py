@@ -29,6 +29,7 @@ from openrange.dashboard.summaries import (
 )
 from openrange.dashboard.topology import (
     empty_runtime_topology,
+    graph_projection,
     normalized_runtime_topology,
     public_world,
     stored_entrypoints,
@@ -114,6 +115,9 @@ class DashboardView:
         self.bridge = bridge or EventBridge()
         self._running = False
         self._lock = threading.Lock()
+        self._lineage_nodes: list[dict[str, object]] = (
+            [] if snapshot is None else [_lineage_node(snapshot)]
+        )
         self._event_log_path = None if event_log_path is None else Path(event_log_path)
         self._state_path = None if state_path is None else Path(state_path)
         self._stored_dashboard = (
@@ -177,6 +181,19 @@ class DashboardView:
             **runtime_topology,
         }
 
+    def register_snapshot(self, snapshot: Snapshot) -> None:
+        """Re-bind to ``snapshot`` and append it to the lineage chain.
+
+        Re-binding keeps topology reflecting the current world, not the one the
+        view was created with; the appended node is what makes the evolution
+        history viewable. A repeated id is a no-op.
+        """
+        self.snapshot = snapshot
+        last = self._lineage_nodes[-1]["id"] if self._lineage_nodes else None
+        if last != snapshot.snapshot_id:
+            self._lineage_nodes.append(_lineage_node(snapshot))
+        self._write_configured_state()
+
     def lineage(self) -> Mapping[str, object]:
         if self.snapshot is None:
             stored = self._stored_section("lineage")
@@ -184,16 +201,17 @@ class DashboardView:
                 return stored
             return {
                 "snapshot_id": None,
+                "nodes": [],
                 "lineage": {},
                 "history": [],
                 "parent_snapshot_id": None,
             }
-        parent_id = self.snapshot.lineage.get("parent_snapshot_id")
         return {
             "snapshot_id": self.snapshot.snapshot_id,
+            "nodes": [dict(node) for node in self._lineage_nodes],
             "lineage": dict(self.snapshot.lineage),
             "history": [event.to_dict() for event in self.snapshot.history],
-            "parent_snapshot_id": parent_id if isinstance(parent_id, str) else None,
+            "parent_snapshot_id": _parent_snapshot_id(self.snapshot.lineage),
         }
 
     def state(self) -> Mapping[str, object]:
@@ -406,6 +424,60 @@ def _manifest_from_lineage(lineage: Mapping[str, object]) -> Mapping[str, object
     if isinstance(manifest, Mapping):
         return cast(Mapping[str, object], manifest)
     return {}
+
+
+def _evolve_block(lineage: Mapping[str, object]) -> Mapping[str, object]:
+    # A grow step records ``_evolve`` at the top level; a patch step nests it
+    # under the manifest.
+    top = lineage.get("_evolve")
+    if isinstance(top, Mapping):
+        return cast(Mapping[str, object], top)
+    manifest = _manifest_from_lineage(lineage)
+    nested = manifest.get("_evolve")
+    if isinstance(nested, Mapping):
+        return cast(Mapping[str, object], nested)
+    return {}
+
+
+def _parent_snapshot_id(lineage: Mapping[str, object]) -> str | None:
+    parent = _evolve_block(lineage).get("parent_snapshot_id")
+    return parent if isinstance(parent, str) else None
+
+
+# "harden"/"soften" collide with security-hardening (the opposite); the UI
+# shows the agent-difficulty sense instead.
+_DIRECTION_LABEL = {"harden": "harder", "soften": "easier", "diversify": "varied"}
+
+
+def _evolve_summary(evolve: Mapping[str, object]) -> str:
+    if not evolve:
+        return "Initial build"
+    direction = str(evolve.get("direction") or "evolved")
+    word = _DIRECTION_LABEL.get(direction, direction)
+    family = evolve.get("family")
+    note = evolve.get("note")
+    head = f"{word} · {family}" if family else word
+    return f"{head} — {note}" if note else head
+
+
+def _lineage_node(snapshot: Snapshot) -> dict[str, object]:
+    lineage = snapshot.lineage
+    evolve = _evolve_block(lineage)
+    manifest = dict(_manifest_from_lineage(lineage))
+    # Drop _evolve so the Build tab's manifest delta shows authoring changes.
+    manifest.pop("_evolve", None)
+    difficulty = lineage.get("curriculum_difficulty")
+    curriculum = dict(difficulty) if isinstance(difficulty, Mapping) else {}
+    return {
+        "id": snapshot.snapshot_id,
+        "parent_id": _parent_snapshot_id(lineage),
+        "builder_summary": _evolve_summary(evolve),
+        "manifest": manifest,
+        "pack": {"id": lineage.get("pack"), "version": lineage.get("pack_version")},
+        "curriculum": curriculum,
+        "evolve": dict(evolve) if evolve else None,
+        "graph": graph_projection(snapshot.graph),
+    }
 
 
 def _task_to_dict(task: TaskSpec) -> dict[str, object]:

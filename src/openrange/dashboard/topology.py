@@ -224,6 +224,67 @@ def _services_from_graph(graph: WorldGraph) -> list[dict[str, object]]:
     return services
 
 
+def graph_projection(graph: WorldGraph) -> dict[str, object]:
+    """Every node and edge of the world, with display hints only — never a
+    secret's value — so the evolution view can draw and diff the full graph.
+    """
+    host_zone = {
+        n.id: str(n.attrs.get("zone", ""))
+        for n in graph.nodes.values()
+        if n.kind == "host"
+    }
+    service_host: dict[str, str] = {}
+    endpoint_service: dict[str, str] = {}
+    for edge in graph.edges.values():
+        if edge.kind == "runs_on":
+            service_host[edge.src] = edge.dst
+        elif edge.kind == "exposes":
+            endpoint_service[edge.dst] = edge.src
+
+    def zone_for(node: object) -> str:
+        kind = node.kind  # type: ignore[attr-defined]
+        node_id = node.id  # type: ignore[attr-defined]
+        if kind == "host":
+            return host_zone.get(node_id, "")
+        if kind == "service":
+            return host_zone.get(service_host.get(node_id, ""), "")
+        if kind == "endpoint":
+            svc = endpoint_service.get(node_id, "")
+            return host_zone.get(service_host.get(svc, ""), "")
+        return ""
+
+    def tuning_attrs(node: object) -> dict[str, object]:
+        # Numeric knobs only (e.g. build_level): strings are skipped so a secret
+        # value can't ride along. bool is an int subclass, so int|float covers it.
+        out: dict[str, object] = {}
+        for key, value in node.attrs.items():  # type: ignore[attr-defined]
+            if isinstance(value, int | float) and not sensitive_world_key(str(key)):
+                out[str(key)] = value
+        return out
+
+    nodes = [
+        {
+            "id": n.id,
+            "kind": n.kind,
+            "zone": zone_for(n),
+            "label": str(
+                n.attrs.get("name") or n.attrs.get("path") or n.attrs.get("kind") or ""
+            ),
+            "public": bool(n.kind == "service" and n.attrs.get("exposure") == "public"),
+            "attrs": tuning_attrs(n),
+        }
+        for n in graph.nodes.values()
+    ]
+    edges = [
+        {"id": e.id, "kind": e.kind, "src": e.src, "dst": e.dst}
+        for e in graph.edges.values()
+    ]
+    return {
+        "nodes": sorted(nodes, key=lambda row: str(row["id"])),
+        "edges": sorted(edges, key=lambda row: str(row["id"])),
+    }
+
+
 def _edges_from_graph(graph: WorldGraph) -> list[dict[str, object]]:
     service_name = {
         n.id: str(n.attrs.get("name", n.id))

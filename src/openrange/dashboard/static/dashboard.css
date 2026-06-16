@@ -970,3 +970,80 @@ button { font: inherit; cursor: pointer; }
   .topbar { flex-wrap: wrap; }
   .topbar-spacer { flex-basis: 100%; height: 0; }
 }
+
+.view-toggle {
+  display: inline-flex; gap: 2px; background: var(--bg-2);
+  border: 1px solid var(--line); border-radius: 9px; padding: 2px;
+}
+.view-toggle-btn {
+  font: 500 12px var(--f-ui); color: var(--ink-2); background: transparent;
+  border: 0; border-radius: 7px; padding: 5px 12px; cursor: pointer;
+}
+.view-toggle-btn.is-active {
+  background: var(--bg-1-solid); color: var(--ink-0); box-shadow: var(--shadow-1);
+}
+
+.evo-stage {
+  position: absolute; inset: 0; z-index: 4;
+  background: radial-gradient(circle at 50% 36%, #f3eedf 0%, #e6dec8 72%);
+}
+.evo-graph { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.evo-graph.grabbing { cursor: grabbing; }
+.evo-graph .evo-edge { stroke: var(--line); stroke-width: 1.2; transition: opacity .35s ease; }
+.evo-graph .evo-edge.affects { stroke: #8d3f3a; stroke-opacity: .55; stroke-dasharray: 4 3; }
+.evo-graph .evo-edge.gone { opacity: 0; }
+.evo-graph .evo-edge.added { stroke: #9e7232; stroke-width: 2.6; stroke-opacity: 1; stroke-dasharray: none; }
+.evo-graph .evo-node { transition: opacity .35s ease; cursor: pointer; }
+.evo-graph .evo-node.gone { opacity: 0; pointer-events: none; }
+.evo-graph .evo-node.removed { opacity: .5; }
+.evo-graph .evo-node.removed .main { fill-opacity: .25; stroke: #8d3f3a; stroke-width: 2; stroke-dasharray: 3 2; }
+.evo-graph .evo-edge.removed { stroke: #8d3f3a; stroke-opacity: .55; stroke-dasharray: 3 2; }
+.evo-graph .evo-node .halo,
+.evo-graph .evo-node .mod { opacity: 0; transition: opacity .3s ease; }
+.evo-graph .evo-node.added .halo { opacity: 1; }
+.evo-graph .evo-node.modified .mod { opacity: 1; }
+.evo-graph .nlab { font: 500 11px var(--f-mono); fill: var(--ink-1); pointer-events: none; }
+.evo-graph .nlab.strong { fill: var(--ink-0); }
+.evo-graph .nsub { font: 400 9px var(--f-mono); fill: var(--ink-3); pointer-events: none; }
+.evo-graph .npill { font: 500 9px var(--f-ui); fill: #7a571f; opacity: 0; transition: opacity .3s ease; pointer-events: none; }
+.evo-graph .evo-node.added .npill { opacity: 1; }
+
+.evo-legend {
+  position: absolute; top: 72px; right: 18px; display: flex; flex-direction: column;
+  gap: 5px; background: var(--bg-1); border: 1px solid var(--line);
+  border-radius: 11px; padding: 10px 12px; box-shadow: var(--shadow-1);
+}
+.evo-legend .row { display: flex; align-items: center; gap: 7px; font: 500 11px var(--f-ui); color: var(--ink-2); }
+.evo-legend .sw { width: 11px; height: 11px; border-radius: 50%; flex: 0 0 auto; }
+.evo-legend .sw.ring { background: transparent; border: 2.5px solid #9e7232; }
+.evo-legend .sw.ring.amber { border-color: #b88521; }
+
+.evo-emptymsg {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; font: 500 15px var(--f-ui); color: var(--ink-3);
+}
+
+.evo-scrubber {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 60px; z-index: 9;
+  display: flex; align-items: stretch; gap: 10px; width: min(640px, calc(100% - 48px));
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: 15px;
+  padding: 12px 14px; box-shadow: var(--shadow-2);
+}
+.evo-nav {
+  flex: 0 0 auto; width: 46px; border: 1px solid var(--line); background: var(--bg-1-solid);
+  border-radius: 10px; font-size: 22px; line-height: 1; color: var(--ink-1); cursor: pointer;
+}
+.evo-nav:disabled { opacity: .32; cursor: default; }
+.evo-scrubber-mid { flex: 1; min-width: 0; }
+.evo-scrubber-head { display: flex; align-items: baseline; gap: 8px; }
+.evo-step-label { font: 600 14px var(--f-ui); color: var(--ink-0); }
+.evo-step-snap { font: 400 11px var(--f-mono); color: var(--ink-3); }
+.evo-step-summary { font: 400 12.5px var(--f-ui); color: var(--ink-2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.evo-step-changes { font: 500 12px var(--f-ui); margin-top: 3px; }
+.evo-step-changes .add { color: #5e7c3d; }
+.evo-step-changes .rm { color: #8d3f3a; }
+.evo-step-changes .mod { color: #b88521; }
+.evo-step-changes .neutral { color: var(--ink-3); }
+.evo-dots { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.evo-dot { width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-1-solid); cursor: pointer; padding: 0; }
+.evo-dot.on { background: var(--accent); border-color: var(--accent); }

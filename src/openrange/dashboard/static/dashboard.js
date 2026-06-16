@@ -1547,9 +1547,10 @@ function showBuildBanner(node) {
   const title = node.builder_summary
     || (isFirst ? `Built world ${(node.id || "").slice(-10)}` : `Mutated → ${(node.id || "").slice(-10)}`);
   document.getElementById("build-banner-title").textContent = shortText(title, 90);
+  const direction = evoDirectionWord(node.evolve?.direction);
   const sub = node.parent_id
-    ? `from ${(node.parent_id || "").slice(-10)} · ${plural((node.touched_files || []).length, "file")}`
-    : `${plural((node.touched_files || []).length, "file")} touched`;
+    ? `${direction ? `${direction} · ` : ""}from …${(node.parent_id || "").slice(-10)}`
+    : "starting world";
   document.getElementById("build-banner-sub").textContent = sub;
   bannerEl.hidden = false;
   // Mark the build tab so the user notices it.
@@ -2019,13 +2020,13 @@ function renderLineagePanel() {
     nodes.map((node, idx) => {
       const isActive = node.id === rail.selectedLineageId
         || (rail.selectedLineageId == null && idx === nodes.length - 1);
-      const ops = (node.curriculum?.ops || node.curriculum?.mutation_ops || []).join(", ");
-      const summary = node.builder_summary || node.prompt || "";
+      const summary = evoSummaryText(node) || node.prompt || "";
+      const stepLabel = idx === 0 ? "Initial world" : `Evolution ${idx}`;
+      const direction = evoDirectionWord(node.evolve?.direction);
       return `<li class="lineage-node ${isActive ? "is-active" : ""}" data-node-id="${escapeHtml(node.id)}">
-        <h4>${escapeHtml(node.id)}</h4>
+        <h4>${escapeHtml(stepLabel)} · …${escapeHtml((node.id || "").slice(-10))}</h4>
         ${summary ? `<p class="summary">${escapeHtml(shortText(summary, 200))}</p>` : ""}
-        ${ops ? `<p class="meta">ops: ${escapeHtml(ops)}</p>` : ""}
-        <p class="meta">${plural((node.touched_files || []).length, "file")}${node.parent_id ? ` · from ${(node.parent_id || "").slice(-10)}` : ""}</p>
+        <p class="meta">${direction ? `<span class="zone-pill">${escapeHtml(direction)}</span> ` : ""}${node.parent_id ? `from …${escapeHtml((node.parent_id || "").slice(-10))}` : "root"}</p>
       </li>`;
     }).join("")
   }</ul>`;
@@ -2129,6 +2130,423 @@ function emptyCard(message) {
   return `<div class="empty-card">${escapeHtml(message)}</div>`;
 }
 
+// One layout over the union of all worlds, so a node added by an evolution
+// pops in at a fixed spot instead of reshuffling the whole graph.
+
+const SVGNS = "http://www.w3.org/2000/svg";
+
+const EVO_FILL = {
+  network: "#6e5e44", host: "#9e8e72",
+  service: "#3d6a8a", endpoint: "#6f9bb5",
+  data_store: "#5e7c3d", record: "#7c9456",
+  secret: "#b88521", account: "#6e5a85", credential: "#8a7aa0",
+  vulnerability: "#8d3f3a",
+};
+const EVO_R = {
+  network: 12, host: 9, service: 12, endpoint: 6.5, data_store: 10,
+  record: 6, secret: 10, account: 8, credential: 6.5, vulnerability: 7.5,
+};
+const EVO_BAND = {
+  network: 0, host: 0, service: 1, endpoint: 2,
+  vulnerability: 3, data_store: 4, record: 4, secret: 4, account: 4, credential: 4,
+};
+const EVO_LABELED = new Set([
+  "network", "host", "service", "endpoint", "data_store", "secret",
+  "account", "credential", "vulnerability",
+]);
+const EVO_LEGEND = [
+  ["infrastructure", "#9e8e72"], ["service", "#3d6a8a"], ["endpoint", "#6f9bb5"],
+  ["data / records", "#5e7c3d"], ["secret", "#b88521"], ["account / cred", "#6e5a85"],
+  ["vulnerability", "#8d3f3a"], ["added this step", "ring"], ["changed this step", "ring-amber"],
+];
+
+const evo = {
+  active: false,
+  step: 0,
+  chainKey: "",
+  mounted: false,
+  W: 1280, H: 760,
+  nodes: [], edges: [], steps: [],
+  stepNodeSets: [], stepEdgeSets: [], stepAttrs: [],
+  nodeEls: new Map(), edgeEls: new Map(),
+  view: { x: 0, y: 0, k: 1 },
+};
+
+function evoNodeLabel(n) {
+  const L = (n.label || "").trim();
+  if (L) return L;
+  const id = n.id || "";
+  if (n.kind === "network") return "network";
+  if (n.kind === "host") return "host";
+  if (n.kind === "secret") return "flag";
+  if (n.kind === "service") return id.replace(/^svc_/, "");
+  if (n.kind === "vulnerability") return id.replace(/^vuln_/, "").replace(/_\d+$/, "");
+  if (n.kind === "data_store") return id.replace(/^ds_/, "");
+  if (n.kind === "account") return "account";
+  if (n.kind === "credential") return "cred";
+  return "";
+}
+
+function setEvoView(mode) {
+  evo.active = (mode === "evolution");
+  document.querySelectorAll(".view-toggle-btn").forEach((b) =>
+    b.classList.toggle("is-active", b.dataset.view === mode));
+  const stage = document.getElementById("evo-stage");
+  const scrub = document.getElementById("evo-scrubber");
+  if (stage) stage.hidden = !evo.active;
+  const canvas = document.getElementById("sim-canvas");
+  const labels = document.getElementById("sim-label-layer");
+  if (canvas) canvas.style.visibility = evo.active ? "hidden" : "visible";
+  if (labels) labels.style.visibility = evo.active ? "hidden" : "visible";
+  if (evo.active) {
+    evo.chainKey = "";        // force a rebuild from current model
+    renderEvoView();
+    if (scrub) scrub.hidden = (evo.steps.length === 0);
+  } else if (scrub) {
+    scrub.hidden = true;
+  }
+}
+
+function buildEvo() {
+  const steps = ((model.lineage || {}).nodes || []).filter((n) => n && n.graph);
+  const key = steps.map((s) => s.id).join("|");
+  if (key === evo.chainKey) return false;
+  evo.chainKey = key;
+  evo.steps = steps;
+  const unodes = new Map(), uedges = new Map();
+  steps.forEach((s) => {
+    (s.graph.nodes || []).forEach((n) => { if (!unodes.has(n.id)) unodes.set(n.id, { ...n }); });
+    (s.graph.edges || []).forEach((e) => { if (!uedges.has(e.id)) uedges.set(e.id, { ...e }); });
+  });
+  evo.nodes = [...unodes.values()];
+  evo.edges = [...uedges.values()];
+  evo.stepNodeSets = steps.map((s) => new Set((s.graph.nodes || []).map((n) => n.id)));
+  evo.stepEdgeSets = steps.map((s) => new Set((s.graph.edges || []).map((e) => e.id)));
+  evo.stepAttrs = steps.map((s) => {
+    const m = new Map();
+    (s.graph.nodes || []).forEach((n) => m.set(n.id, n.attrs || {}));
+    return m;
+  });
+  if (evo.step > steps.length - 1) evo.step = Math.max(0, steps.length - 1);
+  layoutEvo();
+  evo.mounted = false;
+  return true;
+}
+
+function layoutEvo() {
+  const padX = 110, padY = 60, W = evo.W, H = evo.H;
+  const bands = 5;
+  const colX = (b) => padX + b * ((W - 2 * padX) / (bands - 1));
+  const byId = new Map(evo.nodes.map((n) => [n.id, n]));
+  const nbrs = new Map(evo.nodes.map((n) => [n.id, []]));
+  evo.edges.forEach((e) => {
+    if (byId.has(e.src) && byId.has(e.dst)) {
+      nbrs.get(e.src).push(e.dst);
+      nbrs.get(e.dst).push(e.src);
+    }
+  });
+  const cols = Array.from({ length: bands }, () => []);
+  evo.nodes.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).forEach((n) => {
+    n.band = EVO_BAND[n.kind] ?? 4;
+    cols[n.band].push(n);
+  });
+  const assignY = () => cols.forEach((arr, b) => {
+    const n = arr.length;
+    arr.forEach((node, i) => {
+      node.x = colX(b);
+      node.y = n <= 1 ? H / 2 : padY + i * ((H - 2 * padY) / (n - 1));
+    });
+  });
+  assignY();
+  for (let it = 0; it < 12; it++) {
+    cols.forEach((arr) => {
+      arr.forEach((node) => {
+        const ns = nbrs.get(node.id).map((id) => byId.get(id)).filter(Boolean);
+        node._k = ns.length ? ns.reduce((s, m) => s + m.y, 0) / ns.length : node.y;
+      });
+      arr.sort((a, b) => a._k - b._k);
+    });
+    assignY();
+  }
+}
+
+function mountEvoGraph() {
+  const svg = document.getElementById("evo-graph");
+  if (!svg) return;
+  svg.setAttribute("viewBox", `0 0 ${evo.W} ${evo.H}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.innerHTML = "";
+  evo.nodeEls.clear();
+  evo.edgeEls.clear();
+
+  const vp = document.createElementNS(SVGNS, "g");
+  vp.setAttribute("id", "evo-viewport");
+  svg.appendChild(vp);
+  const gEdges = document.createElementNS(SVGNS, "g");
+  const gNodes = document.createElementNS(SVGNS, "g");
+  vp.appendChild(gEdges); vp.appendChild(gNodes);
+  evo._vp = vp;
+
+  const byId = new Map(evo.nodes.map((n) => [n.id, n]));
+  evo.edges.forEach((e) => {
+    const s = byId.get(e.src), t = byId.get(e.dst);
+    if (!s || !t) return;
+    const ln = document.createElementNS(SVGNS, "line");
+    ln.setAttribute("x1", s.x); ln.setAttribute("y1", s.y);
+    ln.setAttribute("x2", t.x); ln.setAttribute("y2", t.y);
+    ln.setAttribute("class", "evo-edge" + (e.kind === "affects" ? " affects" : ""));
+    gEdges.appendChild(ln);
+    evo.edgeEls.set(e.id, ln);
+  });
+
+  evo.nodes.forEach((n) => {
+    const g = document.createElementNS(SVGNS, "g");
+    g.setAttribute("class", "evo-node");
+    g.setAttribute("transform", `translate(${n.x},${n.y})`);
+    const r = EVO_R[n.kind] || 7;
+    const halo = document.createElementNS(SVGNS, "circle");
+    halo.setAttribute("r", r + 5); halo.setAttribute("class", "halo");
+    halo.setAttribute("fill", "none"); halo.setAttribute("stroke", "#9e7232");
+    halo.setAttribute("stroke-width", "2.6");
+    g.appendChild(halo);
+    const mod = document.createElementNS(SVGNS, "circle");
+    mod.setAttribute("r", r + 5); mod.setAttribute("class", "mod");
+    mod.setAttribute("fill", "none"); mod.setAttribute("stroke", "#b88521");
+    mod.setAttribute("stroke-width", "2.6");
+    g.appendChild(mod);
+    const c = document.createElementNS(SVGNS, "circle");
+    c.setAttribute("r", r); c.setAttribute("class", "main");
+    c.setAttribute("fill", EVO_FILL[n.kind] || "#9e8e72");
+    c.setAttribute("stroke", n.public ? "#4f3a1f" : "#faf7ee");
+    c.setAttribute("stroke-width", n.public ? "2.6" : "1.4");
+    g.appendChild(c);
+    const title = document.createElementNS(SVGNS, "title");
+    title.textContent = `${n.id}  ·  ${n.kind}${n.zone ? "  ·  " + n.zone : ""}${n.public ? "  ·  public" : ""}`;
+    g.appendChild(title);
+    const lab = evoNodeLabel(n);
+    if (lab && (EVO_LABELED.has(n.kind) || n.public)) {
+      const side = (n.kind === "endpoint" || n.kind === "host");
+      const t = document.createElementNS(SVGNS, "text");
+      if (side) {
+        t.setAttribute("x", r + 5); t.setAttribute("y", 3.2); t.setAttribute("text-anchor", "start");
+        t.setAttribute("class", "nsub");
+      } else {
+        t.setAttribute("x", 0); t.setAttribute("y", r + 12); t.setAttribute("text-anchor", "middle");
+        t.setAttribute("class", "nlab" + (n.kind === "service" || n.kind === "secret" || n.kind === "vulnerability" ? " strong" : ""));
+      }
+      t.textContent = lab;
+      g.appendChild(t);
+      let sub = "";
+      if (n.kind === "service" && n.zone) sub = n.public ? n.zone + " · public" : n.zone;
+      else if (n.kind === "network") sub = "network";
+      if (sub) {
+        const z = document.createElementNS(SVGNS, "text");
+        z.setAttribute("x", 0); z.setAttribute("y", r + 23); z.setAttribute("text-anchor", "middle");
+        z.setAttribute("class", "nsub");
+        z.textContent = sub;
+        g.appendChild(z);
+      }
+    }
+    const pill = document.createElementNS(SVGNS, "text");
+    pill.setAttribute("x", r + 4); pill.setAttribute("y", -r - 2);
+    pill.setAttribute("class", "npill"); pill.textContent = "new";
+    g.appendChild(pill);
+    gNodes.appendChild(g);
+    evo.nodeEls.set(n.id, g);
+  });
+
+  mountEvoLegend();
+  mountEvoDots();
+  wireEvoPanZoom(svg);
+  fitEvoView();
+  evo.mounted = true;
+}
+
+function mountEvoLegend() {
+  const el = document.getElementById("evo-legend");
+  if (!el) return;
+  el.innerHTML = EVO_LEGEND.map(([name, color]) => {
+    const isRing = color === "ring" || color === "ring-amber";
+    const cls = color === "ring-amber" ? " ring amber" : color === "ring" ? " ring" : "";
+    const style = isRing ? "" : ` style="background:${color}"`;
+    return `<div class="row"><span class="sw${cls}"${style}></span>${escapeHtml(name)}</div>`;
+  }).join("");
+}
+
+function mountEvoDots() {
+  const wrap = document.getElementById("evo-dots");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  evo.steps.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.className = "evo-dot";
+    b.setAttribute("aria-label", i === 0 ? "Initial world" : "Evolution " + i);
+    b.addEventListener("click", () => { evo.step = i; renderEvoStep(); });
+    wrap.appendChild(b);
+  });
+}
+
+// Fit into the band between the top bar and scrubber (both float over the SVG).
+function fitEvoView() {
+  const svg = document.getElementById("evo-graph");
+  if (!svg || !evo.nodes.length) return;
+  const xs = evo.nodes.map((n) => n.x), ys = evo.nodes.map((n) => n.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const tx0 = 70, ty0 = 86, tx1 = evo.W - 70, ty1 = evo.H - 152;
+  const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
+  const k = Math.min((tx1 - tx0) / bw, (ty1 - ty0) / bh, 1.5);
+  evo.view.k = k;
+  evo.view.x = tx0 + ((tx1 - tx0) - k * bw) / 2 - k * minX;
+  evo.view.y = ty0 + ((ty1 - ty0) - k * bh) / 2 - k * minY;
+  applyEvoTransform();
+}
+
+function applyEvoTransform() {
+  if (evo._vp) {
+    evo._vp.setAttribute("transform",
+      `translate(${evo.view.x},${evo.view.y}) scale(${evo.view.k})`);
+  }
+}
+
+function wireEvoPanZoom(svg) {
+  let dragging = false, lx = 0, ly = 0;
+  svg.onpointerdown = (e) => { dragging = true; lx = e.clientX; ly = e.clientY; svg.classList.add("grabbing"); svg.setPointerCapture(e.pointerId); };
+  svg.onpointermove = (e) => {
+    if (!dragging) return;
+    evo.view.x += e.clientX - lx; evo.view.y += e.clientY - ly;
+    lx = e.clientX; ly = e.clientY; applyEvoTransform();
+  };
+  svg.onpointerup = (e) => { dragging = false; svg.classList.remove("grabbing"); try { svg.releasePointerCapture(e.pointerId); } catch (_) {} };
+  svg.onwheel = (e) => {
+    e.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const scale = evo.W / rect.width;                  // client px → viewBox units
+    const mx = (e.clientX - rect.left) * scale, my = (e.clientY - rect.top) * scale;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const nk = Math.max(0.4, Math.min(4, evo.view.k * factor));
+    evo.view.x = mx - (mx - evo.view.x) * (nk / evo.view.k);
+    evo.view.y = my - (my - evo.view.y) * (nk / evo.view.k);
+    evo.view.k = nk; applyEvoTransform();
+  };
+}
+
+function evoShortName(vid) {
+  return (vid || "").replace(/^vuln_/, "").replace(/_\d+$/, "");
+}
+
+// "harden"/"soften" collide with security-hardening (the opposite); show the
+// agent-difficulty sense instead.
+const EVO_DIRECTION_WORD = { harden: "harder", soften: "easier", diversify: "varied" };
+function evoDirectionWord(d) { return EVO_DIRECTION_WORD[d] || d || ""; }
+
+function evoSummaryText(node) {
+  const ev = node.evolve;
+  if (!ev) return node.builder_summary || "";   // initial world
+  const word = evoDirectionWord(ev.direction);
+  const fam = ev.family ? ` · ${ev.family}` : "";
+  const note = ev.note ? ` — ${ev.note}` : "";
+  return `${word}${fam}${note}`;
+}
+
+function renderEvoStep() {
+  if (!evo.steps.length) return;
+  const i = Math.max(0, Math.min(evo.step, evo.steps.length - 1));
+  evo.step = i;
+  const ns = evo.stepNodeSets[i], es = evo.stepEdgeSets[i];
+  const prevN = i > 0 ? evo.stepNodeSets[i - 1] : null;
+  const prevE = i > 0 ? evo.stepEdgeSets[i - 1] : null;
+
+  const attrsNow = evo.stepAttrs[i], attrsPrev = i > 0 ? evo.stepAttrs[i - 1] : null;
+  const modified = [];
+  if (attrsPrev) {
+    ns.forEach((id) => {
+      if (!prevN || !prevN.has(id)) return;
+      const a = attrsNow.get(id) || {}, b = attrsPrev.get(id) || {};
+      for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+        if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) {
+          modified.push({ id, key: k, from: b[k], to: a[k] });
+          break;
+        }
+      }
+    });
+  }
+  const modIds = new Set(modified.map((m) => m.id));
+
+  evo.nodeEls.forEach((el, id) => {
+    const on = ns.has(id);
+    // Linger one step as a ghost before going fully hidden.
+    const justRemoved = !on && prevN != null && prevN.has(id);
+    el.classList.toggle("removed", justRemoved);
+    el.classList.toggle("gone", !on && !justRemoved);
+    el.classList.toggle("added", on && prevN != null && !prevN.has(id));
+    el.classList.toggle("modified", on && modIds.has(id));
+  });
+  evo.edgeEls.forEach((el, id) => {
+    const on = es.has(id);
+    const justRemoved = !on && prevE != null && prevE.has(id);
+    el.classList.toggle("removed", justRemoved);
+    el.classList.toggle("gone", !on && !justRemoved);
+    el.classList.toggle("added", on && prevE != null && !prevE.has(id));
+  });
+
+  const step = evo.steps[i];
+  document.getElementById("evo-step-label").textContent = i === 0 ? "Initial world" : "Evolution " + i;
+  document.getElementById("evo-step-snap").textContent = "…" + (step.id || "").slice(-8);
+  document.getElementById("evo-step-summary").textContent = evoSummaryText(step);
+
+  const addedN = prevN ? [...ns].filter((x) => !prevN.has(x)) : [];
+  const addedE = prevE ? [...es].filter((x) => !prevE.has(x)) : [];
+  const removedN = prevN ? [...prevN].filter((x) => !ns.has(x)) : [];
+  const ch = document.getElementById("evo-step-changes");
+  const tally = `<span class="neutral"> · ${ns.size} nodes / ${es.size} edges</span>`;
+  const byId = new Map(evo.nodes.map((n) => [n.id, n]));
+  const vulnNamesOf = (ids) => ids.map((x) => byId.get(x)).filter((n) => n && n.kind === "vulnerability").map((n) => evoShortName(n.id));
+  if (addedN.length || addedE.length || removedN.length) {
+    const addV = vulnNamesOf(addedN), remV = vulnNamesOf(removedN);
+    const parts = [];
+    if (addedN.length) parts.push(`<span class="add">+${addedN.length} node${addedN.length > 1 ? "s" : ""}${addV.length ? ` (${addV.join(", ")})` : ""}</span>`);
+    if (addedE.length) parts.push(`<span class="add">+${addedE.length} edge${addedE.length > 1 ? "s" : ""}</span>`);
+    if (removedN.length) parts.push(`<span class="rm">−${removedN.length} node${removedN.length > 1 ? "s" : ""}${remV.length ? ` (${remV.join(", ")})` : ""}</span>`);
+    ch.innerHTML = parts.join(" ") + tally;
+  } else if (modified.length) {
+    const m = modified[0];
+    const nm = evoNodeLabel(byId.get(m.id)) || m.id;
+    const delta = (m.from === undefined || m.from === null)
+      ? `${escapeHtml(m.key)} → ${escapeHtml(String(m.to))}`
+      : `${escapeHtml(m.key)} ${escapeHtml(String(m.from))}→${escapeHtml(String(m.to))}`;
+    ch.innerHTML = `<span class="mod">${delta}</span> <span class="neutral">on ${escapeHtml(nm)}${tally}</span>`;
+  } else if (i === 0) {
+    ch.innerHTML = `<span class="neutral">starting world · ${ns.size} nodes / ${es.size} edges</span>`;
+  } else {
+    ch.innerHTML = `<span class="neutral">no change · ${ns.size} nodes / ${es.size} edges</span>`;
+  }
+
+  document.getElementById("evo-prev").disabled = (i === 0);
+  document.getElementById("evo-next").disabled = (i === evo.steps.length - 1);
+  const dots = document.getElementById("evo-dots").children;
+  for (let d = 0; d < dots.length; d++) dots[d].classList.toggle("on", d === i);
+}
+
+function renderEvoView() {
+  if (!evo.active) return;
+  buildEvo();
+  const empty = document.getElementById("evo-emptymsg");
+  const scrub = document.getElementById("evo-scrubber");
+  if (!evo.steps.length) {
+    if (empty) empty.hidden = false;
+    if (scrub) scrub.hidden = true;
+    const svg = document.getElementById("evo-graph");
+    if (svg) svg.innerHTML = "";
+    evo.mounted = false;
+    return;
+  }
+  if (empty) empty.hidden = true;
+  if (scrub) scrub.hidden = false;
+  if (!evo.mounted) mountEvoGraph();
+  renderEvoStep();
+}
+
 // =============================================================
 // Top-level render coordinator
 // =============================================================
@@ -2144,6 +2562,7 @@ function render() {
   }
   // Re-render the active rail panel so it reflects fresh data.
   if (rail.open) renderRailPanel(rail.active);
+  renderEvoView();
   // Surface a build banner when a new lineage node lands.
   checkForNewLineage();
 }
@@ -2325,6 +2744,21 @@ function wireUI() {
       if (rail.open) closeRail();
     }
   });
+  document.querySelectorAll(".view-toggle-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setEvoView(btn.dataset.view));
+  });
+  document.getElementById("evo-prev")?.addEventListener("click", () => {
+    if (evo.step > 0) { evo.step--; renderEvoStep(); }
+  });
+  document.getElementById("evo-next")?.addEventListener("click", () => {
+    if (evo.step < evo.steps.length - 1) { evo.step++; renderEvoStep(); }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!evo.active) return;
+    if (e.key === "ArrowLeft" && evo.step > 0) { evo.step--; renderEvoStep(); }
+    if (e.key === "ArrowRight" && evo.step < evo.steps.length - 1) { evo.step++; renderEvoStep(); }
+  });
+
   // Build banner.
   document.getElementById("build-banner-cta")?.addEventListener("click", () => {
     if (banner.current) rail.selectedLineageId = banner.current.id;

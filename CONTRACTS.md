@@ -476,7 +476,7 @@ class BuildEvent:
 | `feasibility`  | every admission attempt | "attempt K: N infeasible task(s)". `refs` carries the task ids that failed. |
 | `repair`       | between failed attempts | "builder regenerated after attempt K". |
 | `freeze`       | exactly once, on success | "world admitted and frozen". |
-| `evolve`       | curriculum (`auto_evolve`) | reserved — `auto_evolve` does not currently emit this on success; the evolved snapshot's `lineage` carries the `_evolve` block instead. |
+| `evolve`       | curriculum (`auto_evolve`) | "evolved from `<parent>` via `<family>/<direction>`". Appended once to the evolved snapshot's history; `refs` carries the parent `snapshot_id`. The evolved snapshot's `lineage` also carries the structured `_evolve` block (parent id, direction, family, note). |
 
 `history` is the build **story**, not part of the graph's identity.
 Two builds that produce the same graph but took different repair

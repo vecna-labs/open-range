@@ -25,6 +25,7 @@ from openrange_pack_sdk import (
 )
 
 from examples._briefing import agent_briefing
+from examples._verify import consequence_gate
 from openrange.agent_backend import CodexAgentBackend
 from openrange.core import PACKS, auto_evolve
 from openrange.core.episode import AgentTurn, EpisodeReport
@@ -149,7 +150,14 @@ def main() -> None:
                 "report": report.as_dict(),
             }
         )
-        evolved = auto_evolve(snapshot, report, pack=pack, llm=curriculum_llm)
+        # Gate so a "harden" add that actually leaks the flag (easier) is skipped.
+        evolved = auto_evolve(
+            snapshot,
+            report,
+            pack=pack,
+            llm=curriculum_llm,
+            gate=consequence_gate(pack, run.root / "_gate"),
+        )
         if evolved is None:
             break
         snapshot = evolved

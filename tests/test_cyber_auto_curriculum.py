@@ -14,7 +14,7 @@ from types import MappingProxyType
 from typing import Any
 
 from cyber_webapp import WebappPack, WebappPentest
-from cyber_webapp.mutation import available_mutations
+from cyber_webapp.mutation import _oracle_path_targets, available_mutations
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 from graphschema import GraphPatch, WorldGraph, apply_patch
 from openrange_pack_sdk import EpisodeReportLike, Mutation, Snapshot
@@ -163,6 +163,29 @@ def test_directions_produce_different_patch_shapes() -> None:
         assert opt.patch.nodes_updated, "diversify must update a vuln in place"
         assert not opt.patch.nodes_added
         assert not opt.patch.nodes_removed
+
+
+def test_harden_adds_decoys_off_the_oracle_path() -> None:
+    """A 'harden' add is a decoy — it must NOT land on the flag's path. A
+    record-reading vuln on the oracle endpoint would open a second leak (an
+    *easier* world), so every harden add targets an off-oracle surface."""
+    snap = _build_snapshot()
+    oracle_endpoints, oracle_services = _oracle_path_targets(snap.graph)
+    on_oracle = oracle_endpoints | oracle_services
+    assert on_oracle, "the seed world must have a flag path to test against"
+
+    harden = [
+        o
+        for o in available_mutations(snap.graph, "webapp.pentest", ())
+        if o.direction == "harden"
+    ]
+    assert harden, "the seed world should admit at least one harden add"
+    for opt in harden:
+        targets = {e.dst for e in opt.patch.edges_added}
+        assert targets, f"harden add {opt.note!r} has no affects edge"
+        assert not (targets & on_oracle), (
+            f"harden decoy {opt.note!r} landed on the oracle path → would leak"
+        )
 
 
 def test_soften_relevance_is_floor_without_reports() -> None:

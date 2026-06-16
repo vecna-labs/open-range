@@ -62,6 +62,14 @@ def _report_passed(report: EpisodeReportLike) -> bool:
         return False
 
 
+# Returns True iff the candidate genuinely matches its claimed ``direction``.
+# The caller supplies one (typically realizing the world and checking a
+# verifier) to drop a mutation whose static label is wrong — e.g. one tagged
+# "harden" that actually makes the task easier. Without a gate, the family's
+# label is trusted.
+EvolutionGate = Callable[["Snapshot", Mutation], bool]
+
+
 def auto_evolve(
     snapshot: Snapshot,
     *reports: EpisodeReportLike,
@@ -69,6 +77,7 @@ def auto_evolve(
     policy: CurriculumPolicy = direction_from_reports,
     llm: LLMBackend | None = None,
     max_repairs: int = 2,
+    gate: EvolutionGate | None = None,
 ) -> Snapshot | None:
     """Pick an evolution for ``direction`` and re-admit it.
 
@@ -76,6 +85,10 @@ def auto_evolve(
     world, falls back to a builder *grow* (re-running the builder with a
     difficulty-stepped prior). Returns the next Snapshot, or ``None`` if nothing
     admits.
+
+    ``gate``, when given, vets each admitted candidate against its claimed
+    ``direction`` (see :data:`EvolutionGate`); a rejected candidate is skipped
+    so a mislabelled mutation never lands.
     """
     if not reports:
         return None
@@ -89,8 +102,15 @@ def auto_evolve(
             evolved = _evolve_snapshot(snapshot, pack, chosen, max_repairs=max_repairs)
         except Exception:  # noqa: BLE001 — pack-supplied code is untrusted
             continue
-        if evolved is not None and evolved.snapshot_id != snapshot.snapshot_id:
-            return evolved
+        if evolved is None or evolved.snapshot_id == snapshot.snapshot_id:
+            continue
+        if gate is not None:
+            try:
+                if not gate(evolved, chosen):
+                    continue
+            except Exception:  # noqa: BLE001 — caller-supplied gate is untrusted
+                continue
+        return evolved
 
     try:
         return _grow_snapshot(snapshot, pack, direction, max_repairs=max_repairs)

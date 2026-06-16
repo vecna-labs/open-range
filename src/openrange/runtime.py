@@ -163,6 +163,12 @@ class OpenRangeRun:
                 state_path=self.root / "dashboard.json",
                 reset_artifacts=False,
             )
+        else:
+            # A later ``auto_evolve`` hands us a fresh world: re-bind the view
+            # so topology reflects the current world and the evolution chain
+            # grows a node. (Re-binding also fixes the view freezing on the
+            # first snapshot for the whole run.)
+            self._dashboard_view.register_snapshot(snapshot)
         return self._dashboard_view
 
     def episode_service(self, snapshot: Snapshot) -> EpisodeService:
