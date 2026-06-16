@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import atexit
+import hashlib
 import json
 import shutil
 import subprocess
@@ -237,6 +239,51 @@ class WebappRuntime(SubprocessRuntime):
             return False
 
 
+# Container images are content-addressed by their build files, so episodes of the same
+# world reuse one image instead of each rebuilding + deleting an identical one. Built
+# images are swept at exit — a running container pins its image, so docker skips those.
+_IMAGE_LABEL = "openrange.cyber.image=1"
+_built_tags: set[str] = set()
+_sweep_registered = False
+
+
+def _content_tag(
+    build_files: Mapping[str, str], *, prefix: str = "openrange-cyber"
+) -> str:
+    digest = hashlib.sha256(
+        json.dumps(build_files, sort_keys=True).encode()
+    ).hexdigest()
+    return f"{prefix}:{digest[:16]}"
+
+
+def _image_present(tag: str) -> bool:
+    probe = subprocess.run(["docker", "image", "inspect", tag], capture_output=True)
+    return probe.returncode == 0
+
+
+def _ensure_image(tag: str, context: str) -> None:
+    # Check docker each time, not a "built" memo: the image can be swept or pruned
+    # between episodes, and a stale memo would `docker run` a missing one.
+    if _image_present(tag):
+        return
+    subprocess.run(
+        ["docker", "build", "-q", "--label", _IMAGE_LABEL, "-t", tag, context],
+        check=True,
+        capture_output=True,
+        timeout=600,
+    )
+    _built_tags.add(tag)
+    global _sweep_registered
+    if not _sweep_registered:
+        atexit.register(_sweep_built_images)
+        _sweep_registered = True
+
+
+def _sweep_built_images() -> None:
+    for tag in _built_tags:
+        subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
+
+
 class ContainerWebappRuntime(WebappRuntime):
     """WebappRuntime that runs the world as a real Docker container.
 
@@ -259,9 +306,8 @@ class ContainerWebappRuntime(WebappRuntime):
         self._base_url: str | None = None
         self._log_offset = 0
         self._build_files = image_files(graph)
-        self._tag = f"openrange-cyber-{uuid.uuid4().hex[:12]}"
+        self._tag = _content_tag(self._build_files)
         self._cname: str | None = None
-        self._image_built = False
 
     def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
         del graph
@@ -270,15 +316,8 @@ class ContainerWebappRuntime(WebappRuntime):
 
     def subprocess_command(self, env_root: Path, solver_root: Path) -> list[str]:
         del solver_root
-        if not self._image_built:
-            subprocess.run(
-                ["docker", "build", "-q", "-t", self._tag, str(env_root / "pack")],
-                check=True,
-                capture_output=True,
-                timeout=600,
-            )
-            self._image_built = True
-        self._cname = f"{self._tag}-{uuid.uuid4().hex[:8]}"
+        _ensure_image(self._tag, str(env_root / "pack"))
+        self._cname = f"openrange-cyber-{uuid.uuid4().hex[:12]}"
         return [
             "docker",
             "run",
@@ -334,8 +373,7 @@ class ContainerWebappRuntime(WebappRuntime):
         super().stop()  # kills the docker-run child; --rm removes the container
         if self._cname is not None:
             subprocess.run(["docker", "rm", "-f", self._cname], capture_output=True)
-        if self._image_built:
-            subprocess.run(["docker", "rmi", "-f", self._tag], capture_output=True)
+        # The image is content-addressed and reused across episodes — not deleted here.
 
 
 class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
@@ -355,6 +393,7 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
         self._internals = [s for s in self._services if s is not self._public]
         # The foreground child is the public service, not the whole-world image.
         self._build_files = self._public.build_files
+        self._tag = _content_tag(self._build_files)
         self._network = f"openrange-net-{uuid.uuid4().hex[:12]}"
         self._network_created = False
         self._internal_runs: list[tuple[str, str]] = []  # (container name, image tag)
@@ -396,7 +435,9 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
         if self._internal_runs:  # pragma: no cover - idempotent across resets
             return
         for service in self._internals:
-            tag = f"openrange-cyber-{service.name}-{uuid.uuid4().hex[:8]}"
+            tag = _content_tag(
+                service.build_files, prefix=f"openrange-cyber-{service.name}"
+            )
             cname = f"{self._network}-{service.name}"
             self._build_service_image(tag, service.build_files)
             subprocess.run(
@@ -427,12 +468,7 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
         try:
             for name, content in build_files.items():
                 (context / name).write_text(content, encoding="utf-8")
-            subprocess.run(
-                ["docker", "build", "-q", "-t", tag, str(context)],
-                check=True,
-                capture_output=True,
-                timeout=600,
-            )
+            _ensure_image(tag, str(context))
         finally:
             shutil.rmtree(context, ignore_errors=True)
 
@@ -484,10 +520,9 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
         return ()  # verdict comes from collect()'s full aggregated read, not offsets
 
     def stop(self) -> None:
-        super().stop()  # tears down the public child + its image
-        for cname, tag in self._internal_runs:
+        super().stop()  # tears down the public child (its image is kept for reuse)
+        for cname, _tag in self._internal_runs:
             subprocess.run(["docker", "rm", "-f", cname], capture_output=True)
-            subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
         self._internal_runs.clear()
         if self._network_created:
             subprocess.run(

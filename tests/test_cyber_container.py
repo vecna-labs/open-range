@@ -32,6 +32,7 @@ from cyber_webapp.container import (
     image_files,
     required_apt_packages,
 )
+from cyber_webapp.realize import _content_tag, _image_present
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, EpisodeResult, Snapshot
@@ -453,6 +454,30 @@ def test_container_runtime_reuses_the_image_across_resets() -> None:
 
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_container_image_is_shared_across_episodes() -> None:
+    # Training gives each episode a NEW runtime, so the image is shared by content
+    # across runtimes — not rebuilt + deleted per episode.
+    graph = _admit_cmdi().graph
+    first = ContainerWebappRuntime(graph, Backing.CONTAINER)
+    second = ContainerWebappRuntime(graph, Backing.CONTAINER)
+    assert first._tag == second._tag == _content_tag(image_files(graph))
+    other = ContainerWebappRuntime(_admit_sqli().graph, Backing.CONTAINER)
+    assert other._tag != first._tag  # a different world → a different image
+    try:
+        first.reset()
+        assert str(first.surface()["base_url"]).startswith("http://127.0.0.1:")
+        first.stop()  # the episode ends — the image must NOT be deleted
+        assert _image_present(first._tag)
+        second.reset()  # a fresh runtime finds the image present → skips the build
+        assert str(second.surface()["base_url"]).startswith("http://127.0.0.1:")
+    finally:
+        # Stop the containers but keep the (shared, content-addressed) image — other
+        # episodes reuse it; the process-exit sweep removes it.
+        first.stop()
+        second.stop()
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_container_and_process_backings_grade_identically(tmp_path: Path) -> None:
     # The load-bearing parity check: the SAME snapshot + SAME exploit grades identically
     # on PROCESS (in-memory emulation) and CONTAINER (a real shell in a container).
@@ -562,3 +587,16 @@ def test_path_traversal_reads_a_real_file_in_a_container(
         miss = _http_get(base + _pt_url(graph, wrong))
     assert flag in hit, hit[:200]  # real open() recovers the real file via this escape
     assert flag not in miss  # a wrong-technique payload this confinement neutralizes
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_built_images_are_swept() -> None:
+    # The shutdown safety net: images reused across a run are force-removed at exit.
+    from cyber_webapp import realize as realize_mod
+
+    runtime = ContainerWebappRuntime(_admit_cmdi().graph, Backing.CONTAINER)
+    runtime.reset()
+    runtime.stop()  # the container is gone; the image stays for reuse
+    assert _image_present(runtime._tag)
+    realize_mod._sweep_built_images()  # the atexit cleanup, exercised directly
+    assert not _image_present(runtime._tag)
