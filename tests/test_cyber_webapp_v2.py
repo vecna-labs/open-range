@@ -22,6 +22,7 @@ from typing import Any
 from cyber_webapp.families.build import WebappBuild
 from cyber_webapp.families.pentest import WebappPentest
 from cyber_webapp.invariants import (
+    credential_reuse_binding,
     no_orphan_nodes,
     oracle_path_exists,
     secret_must_be_held,
@@ -263,9 +264,7 @@ class _StubWebappPack(Pack):
 
 
 def test_cyber_ontology_is_valid() -> None:
-    """The new cyber ontology declares 10 node kinds + 11 edge kinds
-    (the two old `affects` rows collapse into one EdgeKind with 2
-    endpoint pairs)."""
+    """The cyber ontology declares the expected node and edge kinds."""
     o = webapp_ontology()
     assert o.id == "cyber.webapp@v2"
     assert set(o.node_kinds) == {
@@ -376,6 +375,109 @@ def test_oracle_path_exists_fails_when_vuln_removed() -> None:
     g.edges.pop("e.wk-ep", None)
     issues = oracle_path_exists(g)
     assert any(i.code == "no_oracle_chain" for i in issues)
+
+
+def _binding_chain(*, producer: str | None = "v_leak") -> WorldGraph:
+    # leak -enables-> gate; the gate's endpoint requires a credential. `producer`
+    # is the vuln that `produces` that credential (None = nobody produces it).
+    g = WorldGraph(ontology=ONTOLOGY_ID)
+    g.add_node(
+        Node(
+            "v_leak",
+            "vulnerability",
+            attrs={"kind": "credential_leak"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    g.add_node(
+        Node(
+            "v_gate",
+            "vulnerability",
+            attrs={"kind": "credential_gated_flag"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    g.add_node(Node("ep_gate", "endpoint", attrs={"path": "/internal/vault"}))
+    g.add_node(Node("cred", "credential", attrs={"kind": "token", "value_ref": "tok0"}))
+    g.add_edge(Edge("e_aff", "affects", "v_gate", "ep_gate"))
+    g.add_edge(Edge("e_en", "enables", "v_leak", "v_gate"))
+    g.add_edge(Edge("e_req", "requires_credential", "ep_gate", "cred"))
+    if producer is not None:
+        g.add_edge(Edge("e_prod", "produces", producer, "cred"))
+    return g
+
+
+def test_credential_binding_accepts_a_valid_chain() -> None:
+    assert credential_reuse_binding(_binding_chain()) == []
+
+
+def test_credential_binding_rejects_an_unproduced_credential() -> None:
+    issues = credential_reuse_binding(_binding_chain(producer=None))
+    assert any(i.code == "credential_binding" for i in issues)
+
+
+def test_credential_binding_rejects_a_producer_not_strictly_earlier() -> None:
+    # The consuming gate produces its own required credential — not obtainable
+    # before the gate, so the binding is unsatisfiable.
+    issues = credential_reuse_binding(_binding_chain(producer="v_gate"))
+    assert any(i.code == "credential_binding" for i in issues)
+
+
+def test_credential_binding_rejects_a_swapped_chain_kind() -> None:
+    # A diversify swap that rewrites a chain hop's kind in place (keeping its
+    # produces edge) must be caught, or an unsolvable world admits clean.
+    g = _binding_chain()
+    g.nodes["v_leak"].attrs["kind"] = "idor"
+    assert any(i.code == "credential_binding" for i in credential_reuse_binding(g))
+
+
+def test_credential_binding_rejects_two_producers() -> None:
+    g = _binding_chain()
+    g.add_node(
+        Node(
+            "v_leak2",
+            "vulnerability",
+            attrs={"kind": "credential_leak"},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    g.add_edge(Edge("e_prod2", "produces", "v_leak2", "cred"))
+    assert any(i.code == "credential_binding" for i in credential_reuse_binding(g))
+
+
+def test_credential_binding_rejects_when_no_gate_vuln() -> None:
+    # The required endpoint's only vuln is no longer a gate kind (a swap rewrote
+    # it), so nothing actually consumes the credential it gates on.
+    g = _binding_chain()
+    g.nodes["v_gate"].attrs["kind"] = "idor"
+    assert any(i.code == "credential_binding" for i in credential_reuse_binding(g))
+
+
+def test_credential_binding_rejects_when_producer_cannot_reach_gate() -> None:
+    # Producer is a valid hop but no enables path reaches the gate (an enables
+    # cycle that never arrives), so the gate's credential is unobtainable.
+    g = WorldGraph(ontology=ONTOLOGY_ID)
+    for vid, kind in (
+        ("v_leak", "credential_leak"),
+        ("v_relay", "credential_gated_relay"),
+        ("v_gate", "credential_gated_flag"),
+    ):
+        g.add_node(
+            Node(
+                vid,
+                "vulnerability",
+                attrs={"kind": kind},
+                visibility=Visibility.HIDDEN,
+            )
+        )
+    g.add_node(Node("ep_gate", "endpoint", attrs={"path": "/internal/vault"}))
+    g.add_node(Node("cred", "credential", attrs={"kind": "token", "value_ref": "t"}))
+    g.add_edge(Edge("e_prod", "produces", "v_leak", "cred"))
+    g.add_edge(Edge("e_aff", "affects", "v_gate", "ep_gate"))
+    g.add_edge(Edge("e_req", "requires_credential", "ep_gate", "cred"))
+    g.add_edge(Edge("e_en1", "enables", "v_leak", "v_relay"))
+    g.add_edge(Edge("e_en2", "enables", "v_relay", "v_leak"))
+    assert any(i.code == "credential_binding" for i in credential_reuse_binding(g))
 
 
 def test_real_webapp_pack_identity() -> None:

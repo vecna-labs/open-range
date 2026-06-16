@@ -1298,6 +1298,19 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
     tparams = [rng.choice(_TOKEN_PARAMS) for _ in range(depth)]
     gate_path = "/internal/vault"
 
+    # Credential nodes stay PUBLIC, never HIDDEN: a HIDDEN value_ref would be
+    # swept into the guarded set, and the leak handler serving it would trip the
+    # consequence verifier on a benign probe.
+    cred_ids = [f"cred_chain_{j}" for j in range(depth)]
+    for token, cred_id in zip(creds, cred_ids, strict=True):
+        graph.add_node(
+            Node(
+                id=cred_id,
+                kind="credential",
+                attrs={"kind": "token", "value_ref": token},
+            )
+        )
+
     def _name(node: Node) -> str:
         return str(node.attrs.get("name", node.id))
 
@@ -1338,6 +1351,7 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
     )
     _add_edge(graph, "affects", leak_vuln_id, leak_ep_id)
     _add_edge(graph, "enables", ssrf.id, leak_vuln_id)
+    _add_edge(graph, "produces", leak_vuln_id, cred_ids[0])
 
     # 4. The flag record's value goes decoy so the db's default endpoints can't leak it;
     #    the real flag stays in the secret the gated handler serves.
@@ -1398,6 +1412,9 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
         )
         _add_edge(graph, "affects", vuln_id, ep_id)
         _add_edge(graph, "enables", prev_vuln, vuln_id)
+        _add_edge(graph, "requires_credential", ep_id, cred_ids[j])
+        if j < depth - 1:
+            _add_edge(graph, "produces", vuln_id, cred_ids[j + 1])
         prev_vuln = vuln_id
 
 

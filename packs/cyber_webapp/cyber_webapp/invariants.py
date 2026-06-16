@@ -134,6 +134,114 @@ def oracle_path_exists(graph: WorldGraph) -> list[Issue]:
     return issues
 
 
+_CHAIN_PRODUCER_KINDS: frozenset[str] = frozenset(
+    {"credential_leak", "credential_gated_relay"}
+)
+_CHAIN_GATE_KINDS: frozenset[str] = frozenset(
+    {"credential_gated_relay", "credential_gated_flag"}
+)
+
+
+def credential_reuse_binding(graph: WorldGraph) -> list[Issue]:
+    """Every `requires_credential` gate must obtain its credential from exactly
+    one strictly-earlier hop on the `enables` chain, and the producing and
+    gating vulns must keep their credential-chain kinds.
+
+    Binds by credential-node identity + enable ordering; it does not read
+    `value_ref` or detect cycles (the chain is a DAG by construction), and the
+    handler param-name / response-shape contract stays the verifier's job. The
+    kind check is what stops a mutation that rewrites a chain vuln in place from
+    leaving the binding structurally intact but the world unsolvable. Endpoints
+    without a `requires_credential` edge are untouched.
+    """
+    producers: dict[str, list[str]] = {}
+    affects: dict[str, list[str]] = {}
+    enables: dict[str, set[str]] = {}
+    for edge in graph.edges.values():
+        if edge.kind == "produces":
+            producers.setdefault(edge.dst, []).append(edge.src)
+        elif edge.kind == "affects":
+            affects.setdefault(edge.dst, []).append(edge.src)
+        elif edge.kind == "enables":
+            enables.setdefault(edge.src, set()).add(edge.dst)
+    vuln_kind = {
+        n.id: str(n.attrs.get("kind", "")) for n in graph.by_kind("vulnerability")
+    }
+
+    def reaches(src: str, dst: str) -> bool:
+        seen: set[str] = set()
+        stack = list(enables.get(src, ()))
+        while stack:
+            cur = stack.pop()
+            if cur == dst:
+                return True
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(enables.get(cur, ()))
+        return False
+
+    issues: list[Issue] = []
+    for edge in graph.edges.values():
+        if edge.kind != "produces":
+            continue
+        if vuln_kind.get(edge.src) not in _CHAIN_PRODUCER_KINDS:
+            issues.append(
+                Issue(
+                    "error",
+                    "credential_binding",
+                    f"credential {edge.dst!r} is produced by {edge.src!r} of kind "
+                    f"{vuln_kind.get(edge.src)!r}, not a credential-chain hop",
+                    edge.src,
+                )
+            )
+    for edge in graph.edges.values():
+        if edge.kind != "requires_credential":
+            continue
+        endpoint_id, cred_id = edge.src, edge.dst
+        produced_by = producers.get(cred_id, [])
+        if len(produced_by) != 1:
+            issues.append(
+                Issue(
+                    "error",
+                    "credential_binding",
+                    f"credential {cred_id!r} required by {endpoint_id!r} is "
+                    f"produced by {len(produced_by)} hop(s), expected exactly 1",
+                    endpoint_id,
+                )
+            )
+            continue
+        producer = produced_by[0]
+        gates = [
+            v
+            for v in affects.get(endpoint_id, [])
+            if vuln_kind.get(v) in _CHAIN_GATE_KINDS
+        ]
+        if not gates:
+            issues.append(
+                Issue(
+                    "error",
+                    "credential_binding",
+                    f"endpoint {endpoint_id!r} requires a credential but no "
+                    f"credential-gate vuln affects it",
+                    endpoint_id,
+                )
+            )
+            continue
+        for gate in gates:
+            if producer == gate or not reaches(producer, gate):
+                issues.append(
+                    Issue(
+                        "error",
+                        "credential_binding",
+                        f"credential {cred_id!r}: producer {producer!r} is not a "
+                        f"strictly-earlier hop than gate {gate!r}",
+                        endpoint_id,
+                    )
+                )
+    return issues
+
+
 def sqli_targets_db_backed_service(graph: WorldGraph) -> list[Issue]:
     """SQL-injection vulns must target endpoints of services with a
     `backed_by` data_store edge (else the handler queries nothing)."""

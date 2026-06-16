@@ -288,5 +288,17 @@ def webapp_ontology() -> Ontology:
                 endpoints=[("credential", "secret")],
                 description="a credential whose value comes from this secret",
             ),
+            "produces": EdgeKind(
+                "produces",
+                endpoints=[("vulnerability", "credential")],
+                description="exploiting this weakness yields this credential",
+            ),
+            "requires_credential": EdgeKind(
+                "requires_credential",
+                endpoints=[("endpoint", "credential")],
+                description=(
+                    "this endpoint grants access only when this credential is presented"
+                ),
+            ),
         },
     )

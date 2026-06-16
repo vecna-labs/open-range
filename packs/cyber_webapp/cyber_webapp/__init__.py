@@ -17,6 +17,7 @@ from cyber_webapp.builder import WebappBuilder
 from cyber_webapp.container import minimum_backing
 from cyber_webapp.families import WebappBuild, WebappPentest
 from cyber_webapp.invariants import (
+    credential_reuse_binding,
     no_orphan_nodes,
     oracle_path_exists,
     secret_must_be_held,
@@ -49,6 +50,7 @@ class WebappPack(Pack):
             secret_must_be_held,
             oracle_path_exists,
             sqli_targets_db_backed_service,
+            credential_reuse_binding,
         ]
 
     def make_builder(self, prior: PackPrior | None) -> Builder:
@@ -100,6 +102,7 @@ __all__ = [
     "WebappPentest",
     "WebappRuntimeError",
     "WebappRuntime",
+    "credential_reuse_binding",
     "minimum_backing",
     "no_orphan_nodes",
     "oracle_path_exists",

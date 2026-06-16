@@ -16,8 +16,9 @@ from pathlib import Path
 
 import pytest
 from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
+from cyber_webapp.consequence import guarded_values
 from cyber_webapp.reference_solver import solve_chain
-from graphschema import WorldGraph
+from graphschema import Visibility, WorldGraph
 from openrange_pack_sdk import Backing, Snapshot
 
 from openrange.core.admit import admit
@@ -46,6 +47,55 @@ def _chain_depth(graph: WorldGraph) -> int:
         for n in graph.by_kind("vulnerability")
         if n.attrs.get("kind") in ("credential_gated_relay", "credential_gated_flag")
     )
+
+
+def test_chain_credentials_are_public_wired_graph_nodes() -> None:
+    graph = _admit().graph
+    # Scope to the chain's tokens — the NPC `password` credentials are a
+    # separate credential system that this binding does not own.
+    creds = [n for n in graph.by_kind("credential") if n.attrs.get("kind") == "token"]
+    assert creds, "a lateral world mints a credential node per hop"
+    referenced = {e.src for e in graph.edges.values()} | {
+        e.dst for e in graph.edges.values()
+    }
+    for cred in creds:
+        assert cred.visibility == Visibility.PUBLIC
+        assert cred.attrs.get("kind") == "token"
+        produced = [
+            e for e in graph.edges.values() if e.kind == "produces" and e.dst == cred.id
+        ]
+        required = [
+            e
+            for e in graph.edges.values()
+            if e.kind == "requires_credential" and e.dst == cred.id
+        ]
+        assert len(produced) == 1, cred.id
+        assert len(required) == 1, cred.id
+        assert cred.id in referenced
+
+
+def test_admission_rejects_a_broken_credential_binding() -> None:
+    # Runs the full validate() pipeline (ontology + invariants), not the
+    # invariant alone — proves the gate fires at admission.
+    from graphschema import validate
+
+    pack = WebappPack()
+    graph = _admit().graph
+    produces = [e for e in graph.edges.values() if e.kind == "produces"]
+    assert produces
+    del graph.edges[produces[0].id]
+    issues = validate(graph, pack.ontology(), pack.invariants())
+    assert any(i.code == "credential_binding" and i.severity == "error" for i in issues)
+
+
+def test_chain_credentials_are_not_guarded() -> None:
+    # PUBLIC credential nodes must NOT join the guarded set — a HIDDEN token would
+    # be swept in, and the leak handler serving it would trip the verifier on a
+    # benign probe (every lateral world would then be rejected as trivial).
+    graph = _admit().graph
+    guarded = set(guarded_values(graph))
+    assert guarded, "the flag must be guarded"
+    assert not (guarded & {n.id for n in graph.by_kind("credential")})
 
 
 def _get(base: str, path: str) -> str:
