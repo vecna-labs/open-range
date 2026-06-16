@@ -1,4 +1,4 @@
-"""WebappRuntime (PROCESS backing) and ContainerWebappRuntime (CONTAINER backing)."""
+"""Webapp world runtimes: PROCESS (a local subprocess) and CONTAINER (docker)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from urllib.request import urlopen
 
 from graphschema import WorldGraph
 from openrange_pack_sdk import (
-    Backing,
     OpenRangeError,
     SubprocessRuntime,
 )
@@ -36,7 +35,6 @@ from cyber_webapp.container import (
     realize_services,
 )
 
-# Where the container's app writes its request log (the image CMD's --log path).
 _CONTAINER_LOG_PATH = "/app/requests.jsonl"
 _CONTAINER_PORT = "8000"
 
@@ -45,70 +43,21 @@ class WebappRuntimeError(OpenRangeError):
     pass
 
 
-class WebappRuntime(SubprocessRuntime):
-    """SubprocessRuntime for the cyber webapp pack.
+class _WebappRuntime(SubprocessRuntime):
+    """Shared webapp-runtime logic over a JSON request log.
 
-    Spawns the rendered ``app.py`` as a subprocess that serves HTTP, parses
-    its startup line to get the bound ``host:port``, surfaces an
-    ``http_get`` closure to the agent, and reads the request log on every
-    poll / collect.
+    Handles the HTTP surface, log-driven events, the graded collect, and
+    checkpoint/restore. Subclasses supply the world (``subprocess_command`` /
+    ``parse_startup`` / ``prepare_env_files``) and where its log lives
+    (``_read_log_bytes``, defaulting to the local request-log file).
     """
 
     RESULT_FILE = RESULT_FILE_NAME
 
-    def __init__(self, graph: WorldGraph, backing: Backing) -> None:
-        if backing is not Backing.PROCESS:
-            raise NotImplementedError(
-                f"WebappRuntime does not yet support backing={backing!r}; "
-                "only Backing.PROCESS is wired",
-            )
+    def __init__(self, graph: WorldGraph) -> None:
         super().__init__(graph)
-        # Render eagerly so a graph that breaks codegen fails at construction
-        # (admission can re-raise) rather than inside an episode.
-        self._files: dict[str, str] = _realize_graph(graph)
         self._base_url: str | None = None
         self._log_offset: int = 0
-
-    def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
-        del graph
-        return {**self._files, REQUEST_LOG_NAME: ""}
-
-    def subprocess_command(
-        self,
-        env_root: Path,
-        solver_root: Path,
-    ) -> list[str]:
-        del solver_root
-        app_path = env_root / "pack" / APP_FILE_NAME
-        if not app_path.exists():
-            raise WebappRuntimeError(
-                f"runtime artifact is missing: {app_path.name}",
-            )
-        return [
-            sys.executable,
-            str(app_path),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "0",
-            "--log",
-            str(env_root / "pack" / REQUEST_LOG_NAME),
-        ]
-
-    def parse_startup(self, stdout_line: str) -> Mapping[str, Any]:
-        try:
-            data = json.loads(stdout_line)
-        except json.JSONDecodeError as exc:
-            raise WebappRuntimeError(
-                f"runtime reported invalid listening address: {stdout_line!r}",
-            ) from exc
-        if not isinstance(data, dict) or "host" not in data or "port" not in data:
-            raise WebappRuntimeError(
-                f"runtime reported invalid listening address: {data!r}",
-            )
-        self._base_url = f"http://{data['host']}:{data['port']}"
-        self._log_offset = 0
-        return {"base_url": self._base_url}
 
     def surface_extras(self) -> Mapping[str, Any]:
         base_url = self._base_url
@@ -130,8 +79,6 @@ class WebappRuntime(SubprocessRuntime):
         new_bytes = raw[self._log_offset :]
         if not new_bytes:
             return ()
-        # Only consume complete lines; a racy partial line gets picked up
-        # on the next poll.
         last_newline = new_bytes.rfind(b"\n")
         if last_newline == -1:
             return ()
@@ -157,7 +104,6 @@ class WebappRuntime(SubprocessRuntime):
         if isinstance(result.get("flag"), str):
             flag = str(result["flag"])
         elif isinstance(result.get("flag_from_response"), str):
-            # Agents write `flag`; families read `flag_from_response`.
             flag = str(result["flag_from_response"])
         requests = self._all_requests()
         requests_made = [str(row.get("path", "")) for row in requests if row]
@@ -187,10 +133,6 @@ class WebappRuntime(SubprocessRuntime):
             raise WebappRuntimeError(
                 "restore() payload is missing 'log_offset' (int)",
             )
-        # The webapp's runtime state (HTTP server, in-memory DB) cannot
-        # be checkpointed — restore re-runs reset() to bring up a fresh
-        # process, then re-materializes the agent's workspace from the
-        # snapshot.
         self.reset()
         super().restore(state)
         self._log_offset = log_offset
@@ -201,8 +143,6 @@ class WebappRuntime(SubprocessRuntime):
         return self.pack_root / REQUEST_LOG_NAME
 
     def _read_log_bytes(self) -> bytes | None:
-        # The request log as raw bytes, or None if it isn't there yet. The seam the
-        # CONTAINER backing overrides to read the log out of the running container.
         log = self._request_log_path()
         if log is None or not log.exists():
             return None
@@ -239,9 +179,51 @@ class WebappRuntime(SubprocessRuntime):
             return False
 
 
-# Container images are content-addressed by their build files, so episodes of the same
-# world reuse one image instead of each rebuilding + deleting an identical one. Built
-# images are swept at exit — a running container pins its image, so docker skips those.
+class WebappRuntime(_WebappRuntime):
+    """PROCESS backing: the rendered ``app.py`` runs as a local subprocess."""
+
+    def __init__(self, graph: WorldGraph) -> None:
+        super().__init__(graph)
+        self._files: dict[str, str] = _realize_graph(graph)
+
+    def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
+        del graph
+        return {**self._files, REQUEST_LOG_NAME: ""}
+
+    def subprocess_command(self, env_root: Path, solver_root: Path) -> list[str]:
+        del solver_root
+        app_path = env_root / "pack" / APP_FILE_NAME
+        if not app_path.exists():
+            raise WebappRuntimeError(
+                f"runtime artifact is missing: {app_path.name}",
+            )
+        return [
+            sys.executable,
+            str(app_path),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--log",
+            str(env_root / "pack" / REQUEST_LOG_NAME),
+        ]
+
+    def parse_startup(self, stdout_line: str) -> Mapping[str, Any]:
+        try:
+            data = json.loads(stdout_line)
+        except json.JSONDecodeError as exc:
+            raise WebappRuntimeError(
+                f"runtime reported invalid listening address: {stdout_line!r}",
+            ) from exc
+        if not isinstance(data, dict) or "host" not in data or "port" not in data:
+            raise WebappRuntimeError(
+                f"runtime reported invalid listening address: {data!r}",
+            )
+        self._base_url = f"http://{data['host']}:{data['port']}"
+        self._log_offset = 0
+        return {"base_url": self._base_url}
+
+
 _IMAGE_LABEL = "openrange.cyber.image=1"
 _built_tags: set[str] = set()
 _sweep_registered = False
@@ -262,8 +244,6 @@ def _image_present(tag: str) -> bool:
 
 
 def _ensure_image(tag: str, context: str) -> None:
-    # Check docker each time, not a "built" memo: the image can be swept or pruned
-    # between episodes, and a stale memo would `docker run` a missing one.
     if _image_present(tag):
         return
     subprocess.run(
@@ -284,34 +264,23 @@ def _sweep_built_images() -> None:
         subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
 
 
-class ContainerWebappRuntime(WebappRuntime):
-    """WebappRuntime that runs the world as a real Docker container.
+class ContainerWebappRuntime(_WebappRuntime):
+    """CONTAINER backing: the world runs as a real docker container.
 
-    ``docker run`` (foreground) is the supervised child: the container's app prints the
-    same startup line a local subprocess would, so the SubprocessRuntime handshake still
-    works; the published host port is resolved with ``docker port`` (the app only sees
-    its in-container port). The request log is read out of the running container, and
-    the image sets ``OPENRANGE_REALFS`` so the file and shell surfaces are real.
+    ``docker run`` (foreground) is the supervised child — the container prints the
+    same startup line a subprocess would; the published host port is read with
+    ``docker port`` and the request log out of the running container. The image sets
+    ``OPENRANGE_REALFS`` so the file and shell surfaces are real.
     """
 
-    def __init__(self, graph: WorldGraph, backing: Backing) -> None:
-        if backing is not Backing.CONTAINER:
-            raise NotImplementedError(
-                f"ContainerWebappRuntime is the CONTAINER backing, got {backing!r}",
-            )
-        # WebappRuntime.__init__ guards PROCESS-only; the container runtime shares its
-        # log/surface/collect logic but its own lifecycle, so init the subprocess base.
-        SubprocessRuntime.__init__(self, graph)
-        self._files: dict[str, str] = {}
-        self._base_url: str | None = None
-        self._log_offset = 0
+    def __init__(self, graph: WorldGraph) -> None:
+        super().__init__(graph)
         self._build_files = image_files(graph)
         self._tag = _content_tag(self._build_files)
         self._cname: str | None = None
 
     def prepare_env_files(self, graph: WorldGraph) -> Mapping[str, str]:
         del graph
-        # The image carries app.py + seed.json; pack_root is just the build context.
         return dict(self._build_files)
 
     def subprocess_command(self, env_root: Path, solver_root: Path) -> list[str]:
@@ -331,8 +300,6 @@ class ContainerWebappRuntime(WebappRuntime):
         ]
 
     def parse_startup(self, stdout_line: str) -> Mapping[str, Any]:
-        # A startup line means the app is up (the readiness signal); it only knows its
-        # in-container port, so resolve the published host port for the agent URL.
         del stdout_line
         mapping = subprocess.run(
             ["docker", "port", str(self._cname), _CONTAINER_PORT],
@@ -344,10 +311,6 @@ class ContainerWebappRuntime(WebappRuntime):
         host_port = mapping.splitlines()[0].rsplit(":", 1)[-1]
         self._base_url = f"http://127.0.0.1:{host_port}"
         self._log_offset = 0
-        # Also expose the world's container + in-container port so a harness can put an
-        # agent sandbox on the same docker network and let it reach the target by alias
-        # (over the wire, not via the host). Agent-invisible — the brief renders only
-        # base_url. See the openrange-trl AgentSandbox integration.
         return {
             "base_url": self._base_url,
             "target_container": self._cname,
@@ -364,51 +327,42 @@ class ContainerWebappRuntime(WebappRuntime):
                 timeout=10,
                 check=False,
             )
-        except Exception:  # noqa: BLE001  # pragma: no cover - container gone mid-poll
+        except Exception:  # noqa: BLE001  # pragma: no cover
             return None
-        # A non-zero rc before the first request just means the log isn't written yet.
         return done.stdout if done.returncode == 0 else b""
 
     def stop(self) -> None:
-        super().stop()  # kills the docker-run child; --rm removes the container
+        super().stop()
         if self._cname is not None:
             subprocess.run(["docker", "rm", "-f", self._cname], capture_output=True)
-        # The image is content-addressed and reused across episodes — not deleted here.
 
 
 class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
-    """The CONTAINER backing for a *networked* world: one container per service on a
-    real docker network. The public service is the foreground child (reused from
-    ContainerWebappRuntime — it gives the agent's ``base_url``); the internal services
-    run detached on the same network, reachable only by name and never published. So a
-    flag in an internal service is reachable only by pivoting from the public service
-    over the network — genuine network position, not a path lookup on one server.
+    """CONTAINER backing for a *networked* world: one container per service on a real
+    docker network. The public service is the foreground child; internal services run
+    detached, reachable only by name — so a flag in an internal service is reached only
+    by pivoting over the network, not by a path lookup on one server.
     """
 
-    def __init__(self, graph: WorldGraph, backing: Backing) -> None:
-        super().__init__(graph, backing)
+    def __init__(self, graph: WorldGraph) -> None:
+        super().__init__(graph)
         self._services = realize_services(graph)
         publics = [s for s in self._services if s.exposure == "public"]
         self._public: ServiceImage = publics[0] if publics else self._services[0]
         self._internals = [s for s in self._services if s is not self._public]
-        # The foreground child is the public service, not the whole-world image.
         self._build_files = self._public.build_files
         self._tag = _content_tag(self._build_files)
         self._network = f"openrange-net-{uuid.uuid4().hex[:12]}"
         self._network_created = False
-        self._internal_runs: list[tuple[str, str]] = []  # (container name, image tag)
+        self._internal_runs: list[tuple[str, str]] = []
 
     def reset(self) -> None:
-        # Network + internal services first, then the public service as the child.
         self._create_network()
         self._start_internals()
         super().reset()
 
     def subprocess_command(self, env_root: Path, solver_root: Path) -> list[str]:
         cmd = super().subprocess_command(env_root, solver_root)
-        # Put the public container on the network so it can reach the internals by name,
-        # and switch its SSRF handler to a real cross-network fetch (the public service
-        # holds no flag — the secret can only come from the internal host).
         insert = cmd.index("run") + 1
         cmd[insert:insert] = [
             "--network",
@@ -474,8 +428,6 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
 
     @staticmethod
     def _wait_ready_in_container(cname: str) -> None:
-        # The internal service publishes no port, so probe it from inside the container
-        # (the docker-exec latency itself paces the retries).
         probe = (
             "import urllib.request as u; u.urlopen('http://localhost:8000/', timeout=2)"
         )
@@ -493,10 +445,6 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
         )
 
     def _read_log_bytes(self) -> bytes | None:
-        # Aggregate the public child's log with every internal service's log, so the
-        # verdict sees a leak wherever it happened (the internal service detects it
-        # serving its own flag). collect() reads this fully; poll_events is disabled —
-        # one offset can't track concatenated, independently-growing logs.
         chunks: list[bytes] = []
         public = super()._read_log_bytes()
         if public:
@@ -512,15 +460,13 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
                 chunks.append(done.stdout)
         if chunks:
             return b"".join(chunks)
-        # In practice every internal service has at least its readiness-probe request
-        # logged, so this empty fallback is only the pre-reset / no-container state.
         return b"" if self._cname is not None else None  # pragma: no cover
 
     def poll_events(self) -> tuple[Mapping[str, Any], ...]:
-        return ()  # verdict comes from collect()'s full aggregated read, not offsets
+        return ()
 
     def stop(self) -> None:
-        super().stop()  # tears down the public child (its image is kept for reuse)
+        super().stop()
         for cname, _tag in self._internal_runs:
             subprocess.run(["docker", "rm", "-f", cname], capture_output=True)
         self._internal_runs.clear()

@@ -162,7 +162,7 @@ def test_networked_runtime_isolates_internal_services() -> None:
     # only from inside the network, by name — real network position. (Constructed
     # directly to isolate the runtime; an SSRF world also auto-routes here — see the
     # routing test above.)
-    runtime = NetworkedContainerWebappRuntime(_admit_ssrf().graph, Backing.CONTAINER)
+    runtime = NetworkedContainerWebappRuntime(_admit_ssrf().graph)
     try:
         runtime.reset()
         assert runtime.poll_events() == ()  # networked verdict comes from collect()

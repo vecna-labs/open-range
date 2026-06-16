@@ -86,7 +86,6 @@ def test_required_apt_packages_scopes_to_the_worlds_cmdi_tool() -> None:
     assert isinstance(params, dict)
     expected = _BASE_COMMAND_PACKAGE[str(params["base_command"])]
     assert required_apt_packages(cmdi) == {expected}
-    # a file-read world runs no server-side OS command → its image installs none
     assert required_apt_packages(_admit_path_traversal().graph) == set()
 
 
@@ -98,8 +97,6 @@ def test_hardening_run_args_drops_privileges_and_caps_resources() -> None:
 
 
 def test_required_apt_packages_skips_malformed_and_unmapped() -> None:
-    # A cmdi vuln whose params aren't a mapping, or whose base_command isn't a known
-    # diagnostic tool, contributes nothing — no crash, no bogus package.
     graph = _admit_cmdi().graph
     vuln = next(
         n
@@ -115,14 +112,12 @@ def test_required_apt_packages_skips_malformed_and_unmapped() -> None:
 def test_dockerfile_installs_os_tools_only_when_a_vuln_needs_them() -> None:
     cmdi_df = image_files(_admit_cmdi().graph)["Dockerfile"]
     pt_df = image_files(_admit_path_traversal().graph)["Dockerfile"]
-    assert "apt-get install" in cmdi_df  # cmdi world needs its diagnostic tool
-    assert "apt-get" not in pt_df  # a file-read world stays lean — no OS tools
-    assert "pip install --no-cache-dir jinja2" in pt_df  # the app's one structural dep
+    assert "apt-get install" in cmdi_df
+    assert "apt-get" not in pt_df
+    assert "pip install --no-cache-dir jinja2" in pt_df
 
 
 def test_every_sampled_base_command_has_an_apt_package() -> None:
-    # Lockstep guard: every base_command the sampler picks must map to a package, or a
-    # cmdi world ships without the tool its real `sh -c` needs.
     from cyber_webapp.container import _CMDI_APT_PACKAGES
     from cyber_webapp.sampling import _COMMAND_INJECTION_BASE
 
@@ -147,22 +142,15 @@ def _admit_sqli() -> Snapshot:
 
 
 def test_minimum_backing_is_container_for_file_and_code_shapes() -> None:
-    # A file-read / code-exec world's loot sits at a randomized path the PROCESS
-    # emulation gives no way to enumerate — so it is only blackbox-solvable on a real
-    # filesystem/shell, i.e. CONTAINER.
     assert minimum_backing(_admit_cmdi().graph) is Backing.CONTAINER
     assert minimum_backing(_admit_path_traversal().graph) is Backing.CONTAINER
 
 
 def test_minimum_backing_is_process_for_in_band_response_leak() -> None:
-    # SQLi leaks in-band through the response (the agent enumerates via the query
-    # itself), so PROCESS already leaves the world winnable — no container needed.
     assert minimum_backing(_admit_sqli().graph) is Backing.PROCESS
 
 
 def test_minimum_backing_ignores_unknown_vuln_kinds() -> None:
-    # A vuln node whose kind is not in the catalog must not force CONTAINER (nor crash);
-    # the decision falls through to PROCESS.
     graph = _admit_sqli().graph
     vuln = next(iter(graph.by_kind("vulnerability")))
     vuln.attrs["kind"] = "not_a_real_vuln"
@@ -176,14 +164,12 @@ def _docker_available() -> bool:
         probe = subprocess.run(
             ["docker", "info"], capture_output=True, timeout=10, check=False
         )
-    except Exception:  # noqa: BLE001 - a best-effort probe; any failure means "no"
+    except Exception:  # noqa: BLE001
         return False
     return probe.returncode == 0
 
 
 def _http_get(url: str) -> str:
-    # The response body regardless of status — a neutralized traversal answers 403/404,
-    # which urlopen raises on; we still want to assert the flag is NOT in that body.
     try:
         body = urllib.request.urlopen(url, timeout=10).read()
     except urllib.error.HTTPError as exc:
@@ -197,7 +183,7 @@ def _wait_ready(base: str, timeout: float) -> None:
         try:
             urllib.request.urlopen(base + "/", timeout=2)
             return
-        except OSError:  # URLError is an OSError subclass
+        except OSError:
             time.sleep(0.3)
     raise AssertionError(f"container did not become ready at {base}")
 
@@ -210,8 +196,6 @@ def _container(
     *,
     env: Sequence[tuple[str, str]] = (),
 ) -> Iterator[str]:
-    # Build the given image build-context, run it (with any -e env), and yield the base
-    # URL once it answers. Cleans up image + container regardless of outcome.
     context = tmp_path / "ctx"
     context.mkdir()
     for name, content in build_files.items():
@@ -266,7 +250,6 @@ def _pin_context(graph: WorldGraph, context: str) -> None:
 
 
 def _exploit_for(graph: WorldGraph, context: str) -> str:
-    # The context-matching exploit path; mutates params transiently to shape its payload
     _pin_context(graph, context)
     exploit_path, _benign = cmdi_exploit_and_benign(graph)
     return exploit_path
@@ -286,10 +269,6 @@ def test_world_runs_in_a_container_and_is_exploited(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_world_container_is_hardened(tmp_path: Path) -> None:
-    # The world runs attacker-controlled code, so it is contained: all capabilities
-    # dropped, no privilege escalation, and memory / pid caps set — verified both on the
-    # run config and behaviourally inside the container. It stays exploitable over HTTP
-    # under these flags (every other docker test here runs with the same _container).
     snap = _admit_cmdi()
     graph = snap.graph
     tag = f"openrange-m1-harden-{snap.snapshot_id[:8]}"
@@ -314,7 +293,6 @@ def test_world_container_is_hardened(tmp_path: Path) -> None:
         assert any("no-new-privileges" in opt for opt in host.get("SecurityOpt") or [])
         assert host["Memory"] > 0 and host["PidsLimit"] and host["PidsLimit"] > 0
 
-        # Behavioural: effective capabilities are actually all-zero in the container.
         status = subprocess.run(
             ["docker", "exec", cid, "cat", "/proc/self/status"],
             check=True,
@@ -325,7 +303,6 @@ def test_world_container_is_hardened(tmp_path: Path) -> None:
         cap_eff = next(ln for ln in status.splitlines() if ln.startswith("CapEff:"))
         assert cap_eff.split()[1].strip("0") == "", cap_eff
 
-        # Still exploitable under the hardening — containment doesn't break the vuln.
         exploit_path, _benign = cmdi_exploit_and_benign(graph)
         body = _http_get(base + exploit_path)
     assert str(graph.nodes["secret_flag"].attrs["value_ref"]) in body, body[:200]
@@ -335,22 +312,21 @@ def test_generated_app_has_a_real_shell_cmdi_branch() -> None:
     import ast
 
     source = _realize_graph(_admit_cmdi().graph)["app.py"]
-    ast.parse(source)  # the generated app is valid Python
-    assert "subprocess.run" in source  # real shell, gated by OPENRANGE_REALFS
-    assert 'os.environ.get("OPENRANGE_REALFS")' in source  # the CONTAINER toggle
+    ast.parse(source)
+    assert "subprocess.run" in source
+    assert 'os.environ.get("OPENRANGE_REALFS")' in source
 
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_real_shell_container_recovers_a_real_file_flag(tmp_path: Path) -> None:
     snap = _admit_cmdi()
     graph = snap.graph
-    _pin_context(graph, "separator")  # a clean `; cat <path>` exploit
+    _pin_context(graph, "separator")
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
     exploit_path, benign_path = cmdi_exploit_and_benign(graph)
 
     tag = f"openrange-m1-realfs-{snap.snapshot_id[:12]}"
     with _container(image_files(graph), tmp_path, tag) as base:
-        # A real `cat` against the real filesystem recovers the real file's flag.
         exploit_body = (
             urllib.request.urlopen(base + exploit_path, timeout=10).read().decode()
         )
@@ -373,26 +349,20 @@ def test_real_shell_container_recovers_a_real_file_flag(tmp_path: Path) -> None:
 def test_real_shell_contexts_are_mutually_exclusive(
     live: str, wrong: str, tmp_path: Path
 ) -> None:
-    # The injection contexts hold over a REAL shell, not just the in-memory emulation: a
-    # world built for one context is exploited by THAT context's payload and NOT by
-    # another's (the wrong vectors are filtered before sh).
     snap = _admit_cmdi()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
 
     matching = _exploit_for(graph, live)
     mismatched = _exploit_for(graph, wrong)
-    _pin_context(graph, live)  # the image must be built from the live context
+    _pin_context(graph, live)
 
     tag = f"openrange-m1-ctx-{live}-{snap.snapshot_id[:8]}"
     with _container(image_files(graph), tmp_path, tag) as base:
         hit = urllib.request.urlopen(base + matching, timeout=10).read().decode()
         miss = urllib.request.urlopen(base + mismatched, timeout=10).read().decode()
-    assert flag in hit, hit[:200]  # the matching context's exploit lands
-    assert flag not in miss  # a wrong-context exploit is filtered out
-
-
-# --- CONTAINER backing wired as a runtime: it grades identically to PROCESS -----------
+    assert flag in hit, hit[:200]
+    assert flag not in miss
 
 
 def _run_pentest_episode(
@@ -403,8 +373,6 @@ def _run_pentest_episode(
     exploit_path: str,
     flag: str,
 ) -> EpisodeResult:
-    # Drive one pentest episode end to end on the given backing: start it, run the
-    # exploit over its live HTTP surface, submit the recovered flag, return the result.
     service = EpisodeService(WebappPack(), root, backing=backing)
     try:
         handle = service.start_episode(snapshot, task_id)
@@ -424,28 +392,19 @@ def _run_pentest_episode(
     return report.episode_result
 
 
-def test_container_runtime_rejects_non_container_backing() -> None:
-    with pytest.raises(NotImplementedError):
-        ContainerWebappRuntime(_admit_cmdi().graph, Backing.PROCESS)
-
-
 def test_container_runtime_is_inert_before_reset() -> None:
-    # No container yet (no docker touched): the log read is None and stop() is a clean
-    # no-op — nothing built or running to tear down.
-    runtime = ContainerWebappRuntime(_admit_cmdi().graph, Backing.CONTAINER)
+    runtime = ContainerWebappRuntime(_admit_cmdi().graph)
     assert runtime._read_log_bytes() is None
-    runtime.stop()  # must not raise with nothing built/running
+    runtime.stop()
 
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_container_runtime_reuses_the_image_across_resets() -> None:
-    # The image builds once and is reused on later resets; each reset brings up a fresh
-    # container on a fresh published port.
-    runtime = ContainerWebappRuntime(_admit_cmdi().graph, Backing.CONTAINER)
+    runtime = ContainerWebappRuntime(_admit_cmdi().graph)
     try:
         runtime.reset()
         first = str(runtime.surface()["base_url"])
-        runtime.reset()  # image already built → rebuild is skipped
+        runtime.reset()
         second = str(runtime.surface()["base_url"])
         assert first.startswith("http://127.0.0.1:")
         assert second.startswith("http://127.0.0.1:")
@@ -455,33 +414,26 @@ def test_container_runtime_reuses_the_image_across_resets() -> None:
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_container_image_is_shared_across_episodes() -> None:
-    # Training gives each episode a NEW runtime, so the image is shared by content
-    # across runtimes — not rebuilt + deleted per episode.
     graph = _admit_cmdi().graph
-    first = ContainerWebappRuntime(graph, Backing.CONTAINER)
-    second = ContainerWebappRuntime(graph, Backing.CONTAINER)
+    first = ContainerWebappRuntime(graph)
+    second = ContainerWebappRuntime(graph)
     assert first._tag == second._tag == _content_tag(image_files(graph))
-    other = ContainerWebappRuntime(_admit_sqli().graph, Backing.CONTAINER)
-    assert other._tag != first._tag  # a different world → a different image
+    other = ContainerWebappRuntime(_admit_sqli().graph)
+    assert other._tag != first._tag
     try:
         first.reset()
         assert str(first.surface()["base_url"]).startswith("http://127.0.0.1:")
-        first.stop()  # the episode ends — the image must NOT be deleted
+        first.stop()
         assert _image_present(first._tag)
-        second.reset()  # a fresh runtime finds the image present → skips the build
+        second.reset()
         assert str(second.surface()["base_url"]).startswith("http://127.0.0.1:")
     finally:
-        # Stop the containers but keep the (shared, content-addressed) image — other
-        # episodes reuse it; the process-exit sweep removes it.
         first.stop()
         second.stop()
 
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_container_and_process_backings_grade_identically(tmp_path: Path) -> None:
-    # The load-bearing parity check: the SAME snapshot + SAME exploit grades identically
-    # on PROCESS (in-memory emulation) and CONTAINER (a real shell in a container).
-    # Only fidelity changes between the backings, not the task surface.
     snap = _admit_cmdi()
     graph = snap.graph
     _pin_context(graph, "separator")
@@ -496,12 +448,9 @@ def test_container_and_process_backings_grade_identically(tmp_path: Path) -> Non
         snap, task.id, Backing.CONTAINER, tmp_path / "cont", exploit_path, flag
     )
 
-    assert process.success is True  # the exploit really solves the world
+    assert process.success is True
     assert container.success == process.success
-    assert container.subgoals == process.subgoals  # identical grade across backings
-
-
-# --- file_read shape over a real filesystem (generalize past command_injection) ------
+    assert container.subgoals == process.subgoals
 
 
 def _admit_path_traversal() -> Snapshot:
@@ -530,7 +479,6 @@ def _pt_vuln(graph: WorldGraph) -> Node:
 
 
 def _flag_file_path(graph: WorldGraph) -> str:
-    # The file whose content is the flag, in the projected seed's file map.
     from cyber_webapp.codegen.seeding import project_seed
 
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
@@ -557,10 +505,6 @@ def _pt_url(graph: WorldGraph, payload: str) -> str:
 def test_path_traversal_reads_a_real_file_in_a_container(
     confinement: str, tmp_path: Path
 ) -> None:
-    # The file_read shape is REAL on the generated app in a container: a path-traversal
-    # escape is a real open() against the real container fs, and the three confinement
-    # contexts stay mutually exclusive over it — each accepts ONE technique and
-    # neutralizes the others, so a wrong-technique payload recovers nothing.
     snap = _admit_path_traversal()
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
@@ -572,9 +516,8 @@ def test_path_traversal_reads_a_real_file_in_a_container(
     base_dir = str(params["base_dir"])
     flag_path = _flag_file_path(graph)
     relchain = posixpath.relpath(flag_path, base_dir)
-    assert ".." in relchain  # the flag is reachable only by escaping base_dir
+    assert ".." in relchain
     payloads = {
-        # confinement: (the technique that escapes, a technique it neutralizes)
         "absolute_only": (flag_path, relchain),
         "relative": (relchain, flag_path),
         "dotdot_filter": (relchain.replace("../", "....//"), relchain),
@@ -585,18 +528,17 @@ def test_path_traversal_reads_a_real_file_in_a_container(
     with _container(image_files(graph), tmp_path, tag) as base:
         hit = _http_get(base + _pt_url(graph, matching))
         miss = _http_get(base + _pt_url(graph, wrong))
-    assert flag in hit, hit[:200]  # real open() recovers the real file via this escape
-    assert flag not in miss  # a wrong-technique payload this confinement neutralizes
+    assert flag in hit, hit[:200]
+    assert flag not in miss
 
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
 def test_built_images_are_swept() -> None:
-    # The shutdown safety net: images reused across a run are force-removed at exit.
     from cyber_webapp import realize as realize_mod
 
-    runtime = ContainerWebappRuntime(_admit_cmdi().graph, Backing.CONTAINER)
+    runtime = ContainerWebappRuntime(_admit_cmdi().graph)
     runtime.reset()
-    runtime.stop()  # the container is gone; the image stays for reuse
+    runtime.stop()
     assert _image_present(runtime._tag)
-    realize_mod._sweep_built_images()  # the atexit cleanup, exercised directly
+    realize_mod._sweep_built_images()
     assert not _image_present(runtime._tag)

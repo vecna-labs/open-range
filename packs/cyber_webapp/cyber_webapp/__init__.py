@@ -62,13 +62,12 @@ class WebappPack(Pack):
         backing: Backing,
     ) -> RuntimeHandle:
         if backing is Backing.CONTAINER:
-            # A *networked* world — one whose flag is reachable only by pivoting from
-            # the public service to an internal one — runs as one container per service
-            # on a network. Single-host worlds stay one container.
             if _is_networked(graph):
-                return NetworkedContainerWebappRuntime(graph, backing)
-            return ContainerWebappRuntime(graph, backing)
-        return WebappRuntime(graph, backing)
+                return NetworkedContainerWebappRuntime(graph)
+            return ContainerWebappRuntime(graph)
+        if backing is Backing.PROCESS:
+            return WebappRuntime(graph)
+        raise NotImplementedError(f"webapp pack does not support backing={backing!r}")
 
     def task_families(self) -> list[TaskFamily]:
         return [WebappBuild(), WebappPentest()]
