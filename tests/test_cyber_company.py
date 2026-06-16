@@ -17,7 +17,9 @@ from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networ
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, Snapshot
+from openrange_trl import EpisodeEnv
 
+from examples.tools import WEB_TOOLS
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
@@ -131,6 +133,53 @@ def test_company_solves_on_process(tmp_path: Path) -> None:
         assert all(flag not in probe for probe in trace.probes)
     finally:
         svc.close()
+
+
+def test_company_reward_surface_grades_the_breach(tmp_path: Path) -> None:
+    # The notebook's reward surface (examples/trl_grpo_cyber.ipynb §4), pinned on the
+    # company world: reaching the storefront earns 1/3, a wrong flag 2/3, and the full
+    # recon→pivot→exfiltrate breach 1.0 (passed). That spread is the GRPO gradient.
+    snap = _admit(_COMPANY_MANIFEST)
+    graph = snap.graph
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    entry = str(graph.nodes[pentest.entrypoints[0]].attrs["public_url"])
+
+    services: list[EpisodeService] = []
+
+    def _env() -> EpisodeEnv:
+        svc = EpisodeService(WebappPack(), tmp_path / f"env{len(services)}")
+        services.append(svc)
+        env = EpisodeEnv(
+            service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS
+        )
+        env.reset(snapshot_id=snap.snapshot_id, task_id=pentest.id)
+        return env
+
+    def _reward(env: EpisodeEnv) -> float:
+        env._finalize()
+        return env.reward
+
+    try:
+        reach = _env()
+        reach.http_get(entry)
+        assert _reward(reach) == pytest.approx(1 / 3)  # reached_endpoint only
+
+        wrong = _env()
+        wrong.http_get(entry)
+        wrong.submit(json.dumps({"flag": "not-the-real-flag"}))
+        assert _reward(wrong) == pytest.approx(2 / 3)  # + extracted_anything, but wrong
+
+        breach = _env()
+        breach.http_get(entry)
+        trace = solve_chain(graph, lambda p: breach.http_get(p).split("\n", 1)[-1])
+        assert flag in trace.terminal  # genuinely exfiltrated over the wire
+        breach.submit(json.dumps({"flag": flag}))
+        assert _reward(breach) == 1.0
+        assert breach.report is not None and breach.report.passed
+    finally:
+        for svc in services:
+            svc.close()
 
 
 def test_services_are_realistically_named() -> None:
