@@ -16,9 +16,10 @@ uv pip install "openrange-trl[train]"   # base is torch-free; [train] adds the t
 ```
 
 The adapter is **torch-free** (`import openrange_trl` works with no `torch`); only
-constructing a real `GRPOTrainer` needs the `train` extra. End-to-end tutorials:
-`examples/trl_grpo_cyber.ipynb` (cyber over HTTP — the priority surface) and
-`examples/trl_grpo_lora.ipynb` (SWE — the simplest file-editing intro).
+constructing a real `GRPOTrainer` needs the `train` extra. End-to-end tutorial:
+`examples/trl_grpo_cyber.ipynb` (cyber over HTTP — train an agent to breach a
+multi-service company). The same adapter trains file-editing (SWE) worlds too,
+exercised by `tests/test_trl_adapter.py` + the gated `tests/test_trl_live.py`.
 
 ## Surface
 
