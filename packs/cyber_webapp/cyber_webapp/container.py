@@ -56,6 +56,19 @@ def minimum_backing(graph: WorldGraph) -> Backing:
     return Backing.PROCESS
 
 
+def has_write_exec_surface(graph: WorldGraph) -> bool:
+    """True if any vuln has the ``code_exec`` shape (command_injection, ssti).
+
+    Such a world mutates its own container during an episode, so it can't be kept
+    warm and reused — its state would cross episodes.
+    """
+    for vuln in graph.by_kind("vulnerability"):
+        entry = CATALOG.get(str(vuln.attrs.get("kind")))
+        if entry is not None and entry.shape == "code_exec":
+            return True
+    return False
+
+
 # A fixed in-container port (the host maps it to an ephemeral port at run time, the way
 # the PROCESS backing binds port 0).
 CONTAINER_PORT = 8000

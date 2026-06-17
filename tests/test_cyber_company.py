@@ -16,7 +16,7 @@ import pytest
 from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import Node, WorldGraph
-from openrange_pack_sdk import Backing, Snapshot
+from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
 from openrange_trl import EpisodeEnv
 
 from examples.tools import WEB_TOOLS
@@ -182,6 +182,65 @@ def test_company_reward_surface_grades_the_breach(tmp_path: Path) -> None:
             svc.close()
 
 
+def test_warm_pool_reuses_a_poolable_world(tmp_path: Path) -> None:
+    # A poolable world (the company: no write/exec vuln) is booted once and reused
+    # across episodes on one EpisodeService — as a TRL env is reused across training
+    # steps. stop_episode keeps it warm; the next start_episode hands back the SAME
+    # runtime after a cheap reset_episode, and each episode still grades the breach.
+    snap = _admit(_COMPANY_MANIFEST)
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    flag = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    entry = str(snap.graph.nodes[pentest.entrypoints[0]].attrs["public_url"])
+
+    svc = EpisodeService(WebappPack(), tmp_path)
+    env = EpisodeEnv(service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS)
+    warm: list[object] = []
+    try:
+        for _ in range(2):
+            env.reset(snapshot_id=snap.snapshot_id, task_id=pentest.id)
+            env.http_get(entry)
+            trace = solve_chain(
+                snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
+            )
+            assert flag in trace.terminal  # exfiltrated over the wire, each episode
+            env.submit(json.dumps({"flag": flag}))
+            env._finalize()
+            assert env.report is not None and env.report.passed
+            warm.append(svc._warm[snap.snapshot_id])  # kept warm, not torn down
+        assert warm[0] is warm[1]  # the SAME world was reused, not rebooted
+    finally:
+        svc.close()
+    assert not svc._warm  # close() evicts the warm world
+
+
+def test_write_exec_world_is_not_poolable() -> None:
+    # A command_injection world runs an agent-driven shell on a writable container,
+    # so its state can cross episodes — it must never be kept warm. A response-leak
+    # world (sql_injection) only reads immutable state, so it is poolable.
+    cmdi = WebappPack().realize(
+        _admit(
+            {
+                **_DEFAULT_MANIFEST,
+                "loot_shapes": {"file": 1, "db": 0},
+                "vuln_kinds": {"command_injection": 1},
+            }
+        ).graph,
+        Backing.PROCESS,
+    )
+    assert isinstance(cmdi, PoolableRuntime) and not cmdi.poolable()
+    sqli = WebappPack().realize(
+        _admit(
+            {
+                **_DEFAULT_MANIFEST,
+                "loot_shapes": {"db": 1, "file": 0},
+                "vuln_kinds": {"sql_injection": 1},
+            }
+        ).graph,
+        Backing.PROCESS,
+    )
+    assert isinstance(sqli, PoolableRuntime) and sqli.poolable()
+
+
 def test_services_are_realistically_named() -> None:
     # Coherence (DESIGN.md §2: realism is procedural-first, from curated pools): names
     # read like a real company estate, not the mechanical api1/db2 shape.
@@ -283,3 +342,36 @@ def test_company_solves_across_real_containers() -> None:
         assert "secret_flag" in final["leaked_secret_ids"]
     finally:
         runtime.stop()
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+def test_warm_pool_reuses_real_containers(tmp_path: Path) -> None:
+    # On the CONTAINER backing, a poolable company world is booted once and reused:
+    # reset_episode truncates the in-container request logs over docker exec, so a
+    # second episode on the SAME containers re-exfiltrates cleanly — no full reboot.
+    snap = _admit(_COMPANY_MANIFEST)
+    pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    flag = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    entry = str(snap.graph.nodes[pentest.entrypoints[0]].attrs["public_url"])
+
+    svc = EpisodeService(WebappPack(), tmp_path, backing=Backing.CONTAINER)
+    env = EpisodeEnv(service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS)
+    warm: list[object] = []
+    try:
+        for _ in range(2):
+            env.reset(snapshot_id=snap.snapshot_id, task_id=pentest.id)
+            env.http_get(entry)
+            trace = solve_chain(
+                snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
+            )
+            assert flag in trace.terminal
+            env.submit(json.dumps({"flag": flag}))
+            env._finalize()
+            assert env.report is not None and env.report.passed
+            warm.append(svc._warm[snap.snapshot_id])
+        assert (
+            warm[0] is warm[1]
+        )  # the same per-service containers reused, not rebooted
+    finally:
+        svc.close()
+    assert not svc._warm

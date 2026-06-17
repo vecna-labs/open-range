@@ -34,6 +34,7 @@ from openrange_pack_sdk._protocols import (
     EpisodeReportLike,
     LLMBackend,
     Pack,
+    PoolableRuntime,
     RuntimeHandle,
     TaskFamily,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "Pack",
     "PackError",
     "PackPrior",
+    "PoolableRuntime",
     "ProceduralBuilder",
     "RuntimeHandle",
     "SandboxResult",

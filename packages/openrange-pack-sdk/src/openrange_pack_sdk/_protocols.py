@@ -43,6 +43,20 @@ class RuntimeHandle(Protocol):
 
 
 @runtime_checkable
+class PoolableRuntime(Protocol):
+    """A world that can stay booted and be reused across episodes.
+
+    ``poolable`` is the per-world safety guard: it returns ``False`` when the
+    world's mutations could cross episodes, so the harness must not reuse it.
+    ``reset_episode`` returns a warm world to a clean state and raises when the
+    world is no longer usable, signalling the harness to fall back to a reboot.
+    """
+
+    def poolable(self) -> bool: ...
+    def reset_episode(self) -> None: ...
+
+
+@runtime_checkable
 class EpisodeReportLike(Protocol):
     """The slice of an episode report that families read.
 

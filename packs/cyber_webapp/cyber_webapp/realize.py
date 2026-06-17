@@ -31,6 +31,7 @@ from cyber_webapp.codegen.entrypoint import (
 from cyber_webapp.container import (
     ServiceImage,
     hardening_run_args,
+    has_write_exec_surface,
     image_files,
     realize_services,
 )
@@ -136,6 +137,20 @@ class _WebappRuntime(SubprocessRuntime):
         self.reset()
         super().restore(state)
         self._log_offset = log_offset
+
+    def poolable(self) -> bool:
+        return not has_write_exec_surface(self._graph)
+
+    def reset_episode(self) -> None:
+        self._clear_request_logs()
+        self._log_offset = 0
+        if self._solver_root is not None:
+            (self._solver_root / self.RESULT_FILE).unlink(missing_ok=True)
+
+    def _clear_request_logs(self) -> None:
+        log = self._request_log_path()
+        if log is not None and log.exists():
+            log.write_bytes(b"")
 
     def _request_log_path(self) -> Path | None:
         if self.pack_root is None:
@@ -264,6 +279,51 @@ def _sweep_built_images() -> None:
         subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
 
 
+_WORLD_LABEL = "openrange.cyber.world=1"
+_world_containers: set[str] = set()
+_world_networks: set[str] = set()
+_world_sweep_registered = False
+
+
+def _register_world_sweep() -> None:
+    global _world_sweep_registered
+    if not _world_sweep_registered:
+        atexit.register(_sweep_world_resources)
+        _world_sweep_registered = True
+
+
+def _track_world_container(name: str) -> None:
+    _world_containers.add(name)
+    _register_world_sweep()
+
+
+def _track_world_network(name: str) -> None:
+    _world_networks.add(name)
+    _register_world_sweep()
+
+
+def _sweep_world_resources() -> None:
+    # A SIGKILL leaks past atexit; the openrange.cyber.world label lets an
+    # external prune reclaim what this leaves behind.
+    for name in list(_world_containers):
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    for net in list(_world_networks):
+        subprocess.run(["docker", "network", "rm", net], capture_output=True)
+
+
+def _truncate_container_log(cname: str | None) -> None:
+    if cname is None:
+        return
+    done = subprocess.run(
+        ["docker", "exec", cname, "sh", "-c", f": > {_CONTAINER_LOG_PATH}"],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    if done.returncode != 0:
+        raise WebappRuntimeError(f"warm world container {cname} is not reusable")
+
+
 class ContainerWebappRuntime(_WebappRuntime):
     """CONTAINER backing: the world runs as a real docker container.
 
@@ -287,12 +347,15 @@ class ContainerWebappRuntime(_WebappRuntime):
         del solver_root
         _ensure_image(self._tag, str(env_root / "pack"))
         self._cname = f"openrange-cyber-{uuid.uuid4().hex[:12]}"
+        _track_world_container(self._cname)
         return [
             "docker",
             "run",
             "--rm",
             "--name",
             self._cname,
+            "--label",
+            _WORLD_LABEL,
             "-p",
             f"127.0.0.1:0:{_CONTAINER_PORT}",
             *hardening_run_args(),
@@ -331,10 +394,14 @@ class ContainerWebappRuntime(_WebappRuntime):
             return None
         return done.stdout if done.returncode == 0 else b""
 
+    def _clear_request_logs(self) -> None:
+        _truncate_container_log(self._cname)
+
     def stop(self) -> None:
         super().stop()
         if self._cname is not None:
             subprocess.run(["docker", "rm", "-f", self._cname], capture_output=True)
+            _world_containers.discard(self._cname)
 
 
 class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
@@ -378,12 +445,13 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
         if self._network_created:  # pragma: no cover - idempotent across resets
             return
         subprocess.run(
-            ["docker", "network", "create", self._network],
+            ["docker", "network", "create", "--label", _WORLD_LABEL, self._network],
             check=True,
             capture_output=True,
             timeout=30,
         )
         self._network_created = True
+        _track_world_network(self._network)
 
     def _start_internals(self) -> None:
         if self._internal_runs:  # pragma: no cover - idempotent across resets
@@ -394,6 +462,7 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
             )
             cname = f"{self._network}-{service.name}"
             self._build_service_image(tag, service.build_files)
+            _track_world_container(cname)
             subprocess.run(
                 [
                     "docker",
@@ -401,6 +470,8 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
                     "-d",
                     "--name",
                     cname,
+                    "--label",
+                    _WORLD_LABEL,
                     "--network",
                     self._network,
                     "--network-alias",
@@ -465,13 +536,20 @@ class NetworkedContainerWebappRuntime(ContainerWebappRuntime):
     def poll_events(self) -> tuple[Mapping[str, Any], ...]:
         return ()
 
+    def _clear_request_logs(self) -> None:
+        super()._clear_request_logs()
+        for cname, _tag in self._internal_runs:
+            _truncate_container_log(cname)
+
     def stop(self) -> None:
         super().stop()
         for cname, _tag in self._internal_runs:
             subprocess.run(["docker", "rm", "-f", cname], capture_output=True)
+            _world_containers.discard(cname)
         self._internal_runs.clear()
         if self._network_created:
             subprocess.run(
                 ["docker", "network", "rm", self._network], capture_output=True
             )
             self._network_created = False
+            _world_networks.discard(self._network)
