@@ -476,7 +476,7 @@ class BuildEvent:
 | `feasibility`  | every admission attempt | "attempt K: N infeasible task(s)". `refs` carries the task ids that failed. |
 | `repair`       | between failed attempts | "builder regenerated after attempt K". |
 | `freeze`       | exactly once, on success | "world admitted and frozen". |
-| `evolve`       | curriculum (`auto_evolve`) | "evolved from `<parent>` via `<family>/<direction>`". Appended once to the evolved snapshot's history; `refs` carries the parent `snapshot_id`. The evolved snapshot's `lineage` also carries the structured `_evolve` block (parent id, direction, family, note). |
+| `evolve`       | curriculum (`auto_evolve`) | "evolved from `<parent>` via `<family>/<direction>`". Appended once to the evolved snapshot's history; `refs` carries the parent `snapshot_id`. Every evolution path (grow and patch) also writes one canonical block at `lineage["_evolve"]` (top level, never nested) with a single schema — `{parent_snapshot_id, direction, kind, relevance, family, note}` — so a reader never special-cases which path produced the snapshot. Fields a path can't fill (grow has no `relevance`/`family`) are present and set to `null`. |
 
 `history` is the build **story**, not part of the graph's identity.
 Two builds that produce the same graph but took different repair

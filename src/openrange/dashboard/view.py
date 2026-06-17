@@ -427,16 +427,8 @@ def _manifest_from_lineage(lineage: Mapping[str, object]) -> Mapping[str, object
 
 
 def _evolve_block(lineage: Mapping[str, object]) -> Mapping[str, object]:
-    # A grow step records ``_evolve`` at the top level; a patch step nests it
-    # under the manifest.
     top = lineage.get("_evolve")
-    if isinstance(top, Mapping):
-        return cast(Mapping[str, object], top)
-    manifest = _manifest_from_lineage(lineage)
-    nested = manifest.get("_evolve")
-    if isinstance(nested, Mapping):
-        return cast(Mapping[str, object], nested)
-    return {}
+    return cast(Mapping[str, object], top) if isinstance(top, Mapping) else {}
 
 
 def _parent_snapshot_id(lineage: Mapping[str, object]) -> str | None:

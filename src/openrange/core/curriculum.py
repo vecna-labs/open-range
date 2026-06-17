@@ -191,6 +191,27 @@ def _grow_snapshot(
     return grown
 
 
+def _evolve_block(
+    *,
+    parent_snapshot_id: str,
+    direction: str,
+    kind: str,
+    relevance: float | None = None,
+    family: str | None = None,
+    note: str = "",
+) -> dict[str, object]:
+    # One schema for every path: grow's absent fields are explicit None, not
+    # omitted, so a reader never special-cases which path made the snapshot.
+    return {
+        "parent_snapshot_id": parent_snapshot_id,
+        "direction": direction,
+        "kind": kind,
+        "relevance": relevance,
+        "family": family,
+        "note": note,
+    }
+
+
 def _with_grow_lineage(
     result: Snapshot,
     parent: Snapshot,
@@ -214,11 +235,11 @@ def _with_grow_lineage(
         lineage={
             **dict(result.lineage),
             "curriculum_difficulty": difficulty,
-            "_evolve": {
-                "parent_snapshot_id": parent.snapshot_id,
-                "direction": direction,
-                "kind": "grow",
-            },
+            "_evolve": _evolve_block(
+                parent_snapshot_id=parent.snapshot_id,
+                direction=direction,
+                kind="grow",
+            ),
         },
         history=(*result.history, event),
     )
@@ -254,17 +275,7 @@ def _evolve_snapshot(
         regenerated.extend(family.generate(evolved_graph, base_manifest, None))
 
     wrapped = _PreBuiltPack(pack, evolved_graph, regenerated)
-    evolved_manifest = {
-        **base_manifest,
-        "_evolve": {
-            "parent_snapshot_id": snapshot.snapshot_id,
-            "direction": mutation.direction,
-            "relevance": mutation.relevance,
-            "family": mutation.family,
-            "note": mutation.note,
-        },
-    }
-    result = admit(wrapped, manifest=evolved_manifest, max_repairs=max_repairs)
+    result = admit(wrapped, manifest=dict(base_manifest), max_repairs=max_repairs)
     if isinstance(result, AdmissionFailure):
         return None
     assert isinstance(result, _Snapshot)
@@ -286,6 +297,14 @@ def _evolve_snapshot(
     lineage = dict(result.lineage)
     if isinstance(carried, dict):
         lineage.setdefault("curriculum_difficulty", carried)
+    lineage["_evolve"] = _evolve_block(
+        parent_snapshot_id=snapshot.snapshot_id,
+        direction=mutation.direction,
+        kind="patch",
+        relevance=mutation.relevance,
+        family=mutation.family,
+        note=mutation.note,
+    )
     return _Snapshot(
         snapshot_id=result.snapshot_id,
         ontology_id=result.ontology_id,

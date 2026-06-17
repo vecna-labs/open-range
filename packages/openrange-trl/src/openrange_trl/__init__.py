@@ -57,6 +57,7 @@ from openrange.training import (
     episode_reward,
     episode_trajectory,
 )
+from openrange_trl._pool import WorldPool, run_pool_curriculum
 from openrange_trl.sandbox import (
     SANDBOX_LABEL,
     AgentSandbox,
@@ -449,9 +450,11 @@ __all__ = [
     "EpisodeEnv",
     "SandboxError",
     "Tool",
+    "WorldPool",
     "build_grpo_dataset",
     "env_trajectory",
     "make_environment_factory",
     "make_reward_func",
     "reward_variance_policy",
+    "run_pool_curriculum",
 ]

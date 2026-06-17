@@ -14,14 +14,15 @@ from pathlib import Path
 
 import pytest
 from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
+from cyber_webapp.difficulty import world_difficulty
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
-from openrange_trl import EpisodeEnv
+from openrange_trl import EpisodeEnv, WorldPool, run_pool_curriculum
 
 from examples.tools import WEB_TOOLS
 from openrange.core.admit import admit
-from openrange.core.episode import EpisodeService
+from openrange.core.episode import EpisodeReport, EpisodeService
 
 _COMPANY_MANIFEST = {
     "pack": {"id": "webapp"},
@@ -239,6 +240,146 @@ def test_write_exec_world_is_not_poolable() -> None:
         Backing.PROCESS,
     )
     assert isinstance(sqli, PoolableRuntime) and sqli.poolable()
+
+
+def test_world_difficulty_rises_with_chain_depth() -> None:
+    # Difficulty is read from the graph and dominated by the pivot chain depth,
+    # so a credential chain outranks a flat world that merely carries more vulns.
+    flat = world_difficulty(_admit(_DEFAULT_MANIFEST).graph)
+    company = world_difficulty(_admit(_COMPANY_MANIFEST).graph)
+    lateral = world_difficulty(
+        _admit({**_COMPANY_MANIFEST, "lateral_movement": True}).graph
+    )
+    assert flat < company < lateral
+
+
+def test_warm_cache_is_a_bounded_lru(tmp_path: Path) -> None:
+    # A round visiting more worlds than the cache budget keeps the most recent N
+    # warm and evicts the least-recently-used, rather than holding only one.
+    snaps = [_admit({**_COMPANY_MANIFEST, "seed": s}) for s in (1, 2, 3)]
+    assert len({s.snapshot_id for s in snaps}) == 3
+    svc = EpisodeService(WebappPack(), tmp_path, warm_capacity=2)
+    try:
+        for snap in snaps:
+            pentest = next(
+                t for t in snap.tasks if t.meta.get("family") == "webapp.pentest"
+            )
+            svc.stop_episode(svc.start_episode(snap, pentest.id))
+        warm_ids = list(svc._warm)
+        assert len(warm_ids) == 2
+        assert snaps[0].snapshot_id not in warm_ids
+        assert {snaps[1].snapshot_id, snaps[2].snapshot_id} == set(warm_ids)
+    finally:
+        svc.close()
+
+
+def test_pool_round_keeps_the_easy_tail() -> None:
+    # Even at the lowest priority, an easy-tier world stays in the round — the
+    # mix floor is enforced when the round is composed, not left to chance.
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [
+            _DEFAULT_MANIFEST,
+            _COMPANY_MANIFEST,
+            {**_COMPANY_MANIFEST, "lateral_movement": True},
+        ],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=8,
+        mix_floor=0.5,
+    )
+    easiest = min(pool._members.values(), key=lambda m: m.difficulty)
+    for member in pool._members.values():
+        member.priority = 0.0 if member is easiest else 1.0
+    rows = pool.round_rows(groups=2, num_generations=1)
+    chosen = {row["snapshot_id"] for row in rows}
+    assert easiest.snapshot.snapshot_id in chosen
+
+
+def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
+    # Drive the pool through the real episode harness on PROCESS: seed wide, breach
+    # each sampled world, evolve between rounds. The pool grows a harder world,
+    # stays bounded, keeps its easy tail, and is deterministic.
+    import re
+
+    pack = WebappPack()
+    seeds = [{**_COMPANY_MANIFEST, "seed": s} for s in range(4)]
+
+    def flag_from(body: str) -> str:
+        try:
+            obj = json.loads(body)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict):
+            for key in ("credential", "data", "flag", "secret"):
+                value = obj.get(key)
+                if isinstance(value, str):
+                    return value
+        found = re.search(r"(?:ghp_|sk_live_|AKIA)[A-Za-z0-9_]+|[0-9a-f-]{32,36}", body)
+        return found.group(0) if found else ""
+
+    round_no = [0]
+
+    def run_round(
+        rows: list[dict[str, object]], snapshots: list[Snapshot]
+    ) -> dict[tuple[str, str], list[EpisodeReport]]:
+        round_no[0] += 1
+        by_id = {s.snapshot_id: s for s in snapshots}
+        svc = EpisodeService(
+            pack, tmp_path / f"r{round_no[0]}", warm_capacity=len(by_id)
+        )
+        env = EpisodeEnv(service=svc, snapshots=by_id, tools=WEB_TOOLS)
+        out: dict[tuple[str, str], list[EpisodeReport]] = {}
+        try:
+            for row in rows:
+                sid, tid = str(row["snapshot_id"]), str(row["task_id"])
+                snap = by_id[sid]
+                task = next(t for t in snap.tasks if t.id == tid)
+                entry = str(snap.graph.nodes[task.entrypoints[0]].attrs["public_url"])
+                env.reset(snapshot_id=sid, task_id=tid)
+                env.http_get(entry)
+                trace = solve_chain(
+                    snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
+                )
+                env.submit(json.dumps({"flag": flag_from(trace.terminal)}))
+                env._finalize()
+                assert env.report is not None
+                out.setdefault((sid, tid), []).append(env.report)
+            return out
+        finally:
+            svc.close()
+
+    def pentest_only(_evolved: Snapshot, mutation: object) -> bool:
+        return getattr(mutation, "family", None) == "webapp.pentest"
+
+    def build_and_run() -> tuple[WorldPool, float]:
+        pool = WorldPool.seed(
+            pack,
+            seeds,
+            difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+            family="webapp.pentest",
+            max_size=5,
+        )
+        assert len(pool) == 4
+        seed_min = min(m.difficulty for m in pool._members.values())
+        run_pool_curriculum(
+            pool,
+            run_round,
+            rounds=2,
+            pack=pack,
+            groups=3,
+            num_generations=2,
+            gate=pentest_only,
+        )
+        return pool, seed_min
+
+    pool, seed_min = build_and_run()
+    diffs = [m.difficulty for m in pool._members.values()]
+    assert 4 < len(pool) <= 5
+    assert min(diffs) == seed_min
+    assert max(diffs) > seed_min
+    assert pool.keys() == build_and_run()[0].keys()
 
 
 def test_services_are_realistically_named() -> None:

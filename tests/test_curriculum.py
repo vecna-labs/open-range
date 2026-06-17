@@ -421,14 +421,42 @@ def test_auto_evolve_picks_highest_relevance_in_direction() -> None:
     assert "vuln.sqli" in out.graph.nodes
     # The original snapshot is untouched (re-admission must not mutate).
     assert "ep.high" not in snap.graph.nodes
-    # Lineage carries the parent snapshot id so callers can chain.
-    out_manifest = out.lineage["manifest"]
-    assert isinstance(out_manifest, Mapping)
-    evolve_meta = out_manifest.get("_evolve")
+    # Lineage carries one canonical, top-level _evolve block (same schema for
+    # every evolution path), so a reader never special-cases grow vs patch.
+    evolve_meta = out.lineage["_evolve"]
     assert isinstance(evolve_meta, Mapping)
     assert evolve_meta["parent_snapshot_id"] == snap.snapshot_id
     assert evolve_meta["direction"] == "harden"
+    assert evolve_meta["kind"] == "patch"
+    assert evolve_meta["relevance"] == 0.9
+    assert evolve_meta["family"] == "stub.family"
     assert evolve_meta["note"] == "high"
+    # The block is not nested under the manifest any more.
+    out_manifest = out.lineage["manifest"]
+    assert isinstance(out_manifest, Mapping)
+    assert "_evolve" not in out_manifest
+
+
+def test_evolve_block_is_one_schema_across_paths() -> None:
+    # Grow and patch write the same six-field block, so a reader keying on
+    # ``relevance`` never KeyErrors on a grow child (it is present, just None).
+    from openrange.core.curriculum import _evolve_block
+
+    keys = {"parent_snapshot_id", "direction", "kind", "relevance", "family", "note"}
+    grow = _evolve_block(parent_snapshot_id="p", direction="harden", kind="grow")
+    patch = _evolve_block(
+        parent_snapshot_id="p",
+        direction="harden",
+        kind="patch",
+        relevance=0.7,
+        family="webapp.pentest",
+        note="add x",
+    )
+    assert set(grow) == keys
+    assert set(patch) == keys
+    assert grow["relevance"] is None
+    assert grow["family"] is None
+    assert patch["relevance"] == 0.7
 
 
 def test_auto_evolve_gate_skips_rejected_candidate() -> None:
@@ -691,12 +719,11 @@ def test_auto_evolve_e2e_on_webapp_pack() -> None:
         )
     assert isinstance(out, Snapshot)
     assert out.snapshot_id != snap.snapshot_id
-    out_manifest = out.lineage["manifest"]
-    assert isinstance(out_manifest, Mapping)
-    evolve_meta = out_manifest.get("_evolve")
+    evolve_meta = out.lineage["_evolve"]
     assert isinstance(evolve_meta, Mapping)
     assert evolve_meta["parent_snapshot_id"] == snap.snapshot_id
     assert evolve_meta["direction"] == "harden"
+    assert evolve_meta["kind"] == "patch"
 
 
 def test_auto_evolve_hardens_a_build_episode() -> None:

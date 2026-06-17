@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -196,6 +197,7 @@ class EpisodeService:
         npc_agent_backend: AgentBackend | None = None,
         npc_llm_model: str | None = None,
         backing: Backing = Backing.PROCESS,
+        warm_capacity: int = 1,
     ) -> None:
         self.pack = pack
         self.run_root = Path(run_root)
@@ -214,7 +216,10 @@ class EpisodeService:
         else:
             self.npc_agent_backend = None
         self._episodes: dict[str, _RunningEpisode] = {}
-        self._warm: dict[str, RuntimeHandle] = {}
+        # An LRU of booted worlds: a round sampling D distinct worlds needs
+        # capacity >= D or it thrashes (boot-evict-boot).
+        self._warm: OrderedDict[str, RuntimeHandle] = OrderedDict()
+        self._warm_capacity = max(1, warm_capacity)
         # Cached reports for stopped episodes — populated by
         # ``stop_episode`` so ``check_episode`` keeps working after the
         # running entry is evicted.
@@ -301,17 +306,19 @@ class EpisodeService:
         if not _is_poolable(running.runtime):
             return False
         snapshot_id = running.snapshot.snapshot_id
-        # One warm world at a time: a new snapshot_id evicts the prior.
-        self._evict_warm(keep=snapshot_id)
         self._warm[snapshot_id] = running.runtime
+        self._warm.move_to_end(snapshot_id)
+        while len(self._warm) > self._warm_capacity:
+            _, evicted = self._warm.popitem(last=False)
+            with contextlib.suppress(Exception):
+                evicted.stop()
         return True
 
-    def _evict_warm(self, *, keep: str | None = None) -> None:
-        for snapshot_id in list(self._warm):
-            if snapshot_id == keep:
-                continue
+    def _evict_warm(self) -> None:
+        while self._warm:
+            _, runtime = self._warm.popitem()
             with contextlib.suppress(Exception):
-                self._warm.pop(snapshot_id).stop()
+                runtime.stop()
 
     def stop_episode(self, episode: EpisodeHandle) -> EpisodeReport:
         """Stop the runtime, run the success check, return the report.
