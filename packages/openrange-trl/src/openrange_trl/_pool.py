@@ -31,6 +31,10 @@ RoundReports = Mapping[tuple[str, str], Sequence[EpisodeReport]]
 RunRound = Callable[[list[PromptRow], list[Snapshot]], RoundReports]
 
 _STALENESS_STEP = 0.1
+# The most a round can score a member (learnability + regret, each <= 1): idle
+# members cap here (bounded pump) and fresh children seat here, so a new frontier
+# world is sampled next round instead of evicted before it ever runs.
+_MAX_PRIORITY = 2.0
 
 
 @dataclass
@@ -57,8 +61,9 @@ def _member_priority(reports: Sequence[EpisodeReport]) -> float:
         if subgoals:
             achieved = sum(1 for hit in subgoals.values() if hit)
             gaps.append(1.0 - achieved / len(subgoals))
-    # The regret term keeps a world stuck below its solvable ceiling (low reward
-    # spread, so learnability alone would retire it) at the frontier.
+    # The regret term keeps a world the agent is stuck partway through (low reward
+    # spread, so learnability alone would retire it) at the frontier — the distance
+    # from the ceiling, assuming every listed subgoal is reachable.
     regret = sum(gaps) / len(gaps) if gaps else 0.0
     return learnability + regret
 
@@ -154,7 +159,7 @@ class WorldPool:
         if groups == 0:
             return []
         easy = self._easy_tier()
-        floor_n = min(round(self._mix_floor * groups), len(easy))
+        floor_n = min(round(self._mix_floor * groups), len(easy), groups)
         by_priority = sorted(self._members.values(), key=lambda m: (-m.priority, m.key))
         chosen: list[_Member] = []
         taken: set[tuple[str, str]] = set()
@@ -187,9 +192,9 @@ class WorldPool:
             if ran:
                 member.priority = _member_priority(ran)
             else:
-                member.priority += _STALENESS_STEP
-        self._grow(reports, pack, policy, gate, evolve_top, max_repairs)
-        self._bound()
+                member.priority = min(member.priority + _STALENESS_STEP, _MAX_PRIORITY)
+        grown = self._grow(reports, pack, policy, gate, evolve_top, max_repairs)
+        self._bound(grown)
 
     def _grow(
         self,
@@ -199,7 +204,8 @@ class WorldPool:
         gate: EvolutionGate | None,
         evolve_top: int,
         max_repairs: int,
-    ) -> None:
+    ) -> set[tuple[str, str]]:
+        grown: set[tuple[str, str]] = set()
         ran = sorted(
             (m for m in self._members.values() if reports.get(m.key)),
             key=lambda m: (-m.priority, m.key),
@@ -227,11 +233,13 @@ class WorldPool:
                         instruction=task.instruction,
                         family=member.family,
                         difficulty=difficulty,
+                        priority=_MAX_PRIORITY,
                     )
-                break
+                    grown.add(key)
+        return grown
 
-    def _bound(self) -> None:
-        protected = self._easy_tier()
+    def _bound(self, protected_extra: set[tuple[str, str]]) -> None:
+        protected = self._easy_tier() | protected_extra
         evictable = sorted(
             (m for m in self._members.values() if m.key not in protected),
             key=lambda m: (m.priority, m.key),

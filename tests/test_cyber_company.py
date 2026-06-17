@@ -5,6 +5,7 @@ same recon→pivot recovers the flag across real containers."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import urllib.error
@@ -19,6 +20,7 @@ from cyber_webapp.reference_solver import solve_chain
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
 from openrange_trl import EpisodeEnv, WorldPool, run_pool_curriculum
+from openrange_trl._pool import _MAX_PRIORITY
 
 from examples.tools import WEB_TOOLS
 from openrange.core.admit import admit
@@ -57,6 +59,41 @@ def _get(base_url: str, path: str) -> tuple[int, str]:
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode()
+
+
+def _flag_from(body: str) -> str:
+    try:
+        obj = json.loads(body)
+    except json.JSONDecodeError:
+        obj = None
+    if isinstance(obj, dict):
+        for key in ("credential", "data", "flag", "secret"):
+            value = obj.get(key)
+            if isinstance(value, str):
+                return value
+    found = re.search(r"(?:ghp_|sk_live_|AKIA)[A-Za-z0-9_]+|[0-9a-f-]{32,36}", body)
+    return found.group(0) if found else ""
+
+
+def _pentest_only(_evolved: Snapshot, mutation: object) -> bool:
+    return getattr(mutation, "family", None) == "webapp.pentest"
+
+
+def _breach_report(pack: WebappPack, work_dir: Path, snap: Snapshot) -> EpisodeReport:
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    svc = EpisodeService(pack, work_dir)
+    env = EpisodeEnv(service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS)
+    try:
+        entry = str(snap.graph.nodes[task.entrypoints[0]].attrs["public_url"])
+        env.reset(snapshot_id=snap.snapshot_id, task_id=task.id)
+        env.http_get(entry)
+        trace = solve_chain(snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1])
+        env.submit(json.dumps({"flag": _flag_from(trace.terminal)}))
+        env._finalize()
+        assert env.report is not None
+        return env.report
+    finally:
+        svc.close()
 
 
 def test_company_world_is_multi_service_and_segmented() -> None:
@@ -301,24 +338,8 @@ def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
     # Drive the pool through the real episode harness on PROCESS: seed wide, breach
     # each sampled world, evolve between rounds. The pool grows a harder world,
     # stays bounded, keeps its easy tail, and is deterministic.
-    import re
-
     pack = WebappPack()
     seeds = [{**_COMPANY_MANIFEST, "seed": s} for s in range(4)]
-
-    def flag_from(body: str) -> str:
-        try:
-            obj = json.loads(body)
-        except json.JSONDecodeError:
-            obj = None
-        if isinstance(obj, dict):
-            for key in ("credential", "data", "flag", "secret"):
-                value = obj.get(key)
-                if isinstance(value, str):
-                    return value
-        found = re.search(r"(?:ghp_|sk_live_|AKIA)[A-Za-z0-9_]+|[0-9a-f-]{32,36}", body)
-        return found.group(0) if found else ""
-
     round_no = [0]
 
     def run_round(
@@ -342,16 +363,13 @@ def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
                 trace = solve_chain(
                     snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
                 )
-                env.submit(json.dumps({"flag": flag_from(trace.terminal)}))
+                env.submit(json.dumps({"flag": _flag_from(trace.terminal)}))
                 env._finalize()
                 assert env.report is not None
                 out.setdefault((sid, tid), []).append(env.report)
             return out
         finally:
             svc.close()
-
-    def pentest_only(_evolved: Snapshot, mutation: object) -> bool:
-        return getattr(mutation, "family", None) == "webapp.pentest"
 
     def build_and_run() -> tuple[WorldPool, float]:
         pool = WorldPool.seed(
@@ -370,7 +388,7 @@ def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
             pack=pack,
             groups=3,
             num_generations=2,
-            gate=pentest_only,
+            gate=_pentest_only,
         )
         return pool, seed_min
 
@@ -380,6 +398,118 @@ def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
     assert min(diffs) == seed_min
     assert max(diffs) > seed_min
     assert pool.keys() == build_and_run()[0].keys()
+
+
+def test_grown_child_survives_a_full_pool(tmp_path: Path) -> None:
+    # A freshly grown frontier child is the hardest, newest member; when the pool is
+    # full and older members have drifted up on staleness, it must not be the one
+    # evicted the same round it is born.
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [
+            {**_COMPANY_MANIFEST, "seed": 0},
+            {**_COMPANY_MANIFEST, "lateral_movement": True, "seed": 1},
+            {**_COMPANY_MANIFEST, "lateral_movement": True, "seed": 2},
+        ],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=3,
+    )
+    assert len(pool) == 3
+    original = pool.keys()
+    easiest = min(pool._members.values(), key=lambda m: m.difficulty)
+    for member in pool._members.values():
+        if member is not easiest:
+            member.priority = 1.5
+    report = _breach_report(pack, tmp_path, easiest.snapshot)
+    pool.update({easiest.key: [report]}, pack=pack, gate=_pentest_only)
+    assert len(pool) == 3
+    assert pool.keys() - original
+
+
+def test_staleness_priority_is_capped() -> None:
+    # An idle member climbs on staleness but never past the ceiling, so a
+    # never-sampled world cannot run away and crowd out the learning frontier.
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [_DEFAULT_MANIFEST, _COMPANY_MANIFEST],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=8,
+    )
+    for _ in range(40):
+        pool.update({}, pack=pack, gate=_pentest_only)
+    priorities = [m.priority for m in pool._members.values()]
+    assert max(priorities) == _MAX_PRIORITY
+    assert all(p <= _MAX_PRIORITY for p in priorities)
+
+
+def test_round_rows_never_exceeds_groups() -> None:
+    # mix_floor is a fraction; even if a caller passes one above 1, the easy floor
+    # never inflates a round past the group budget it was sized for.
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [{**_COMPANY_MANIFEST, "seed": s} for s in range(6)],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=8,
+        mix_floor=2.0,
+    )
+    assert len(pool) == 6
+    rows = pool.round_rows(groups=1, num_generations=2)
+    groups = {(row["snapshot_id"], row["task_id"]) for row in rows}
+    assert len(groups) == 1
+    assert pool.round_rows(groups=0, num_generations=2) == []
+
+
+def test_pool_holds_when_no_harder_world_admits(tmp_path: Path) -> None:
+    # When the frontier cannot advance — every candidate mutation is refused — the
+    # round still completes: no child is grown and the pool is left intact.
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [_COMPANY_MANIFEST],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=5,
+    )
+    member = next(iter(pool._members.values()))
+    before = pool.keys()
+    report = _breach_report(pack, tmp_path, member.snapshot)
+    pool.update(
+        {member.key: [report]}, pack=pack, gate=lambda _evolved, _mutation: False
+    )
+    assert pool.keys() == before
+
+
+def test_regrowing_the_same_parent_does_not_duplicate(tmp_path: Path) -> None:
+    # Evolution is deterministic, so growing the same parent twice yields the same
+    # child key; the pool admits it once and the second round leaves the set intact.
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [_COMPANY_MANIFEST],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=5,
+    )
+    parent = next(iter(pool._members.values()))
+    pool.update(
+        {parent.key: [_breach_report(pack, tmp_path / "a", parent.snapshot)]},
+        pack=pack,
+        gate=_pentest_only,
+    )
+    grew_to = pool.keys()
+    assert len(grew_to) == 2
+    pool.update(
+        {parent.key: [_breach_report(pack, tmp_path / "b", parent.snapshot)]},
+        pack=pack,
+        gate=_pentest_only,
+    )
+    assert pool.keys() == grew_to
 
 
 def test_services_are_realistically_named() -> None:

@@ -191,22 +191,27 @@ over-hardens); and it is a lagging, whole-pool trigger that only fires once the
 gradient is already dead. The published curriculum work uses a *leading,
 per-level* score instead — value-loss (PLR) or regret (ACCEL) — to rank which
 levels to resample and to edit. GRPO has no critic, so it cannot compute those
-directly; the GRPO-native substitute is a per-`(world, task)` priority
-`f(reward-std, |solve_rate − 0.5|, staleness)`. That priority — not the lagging
-collapse gate — is the spine.
+directly; the GRPO-native substitute is a per-`(world, task)` priority that scores
+the learning signal where it lives. The shipped priority is a *learnability* term
+(`1 − |2·solve_rate − 1|`, peaking where the agent sometimes-but-not-always wins),
+plus the regret proxy below, plus a staleness term so nothing starves. That
+priority — not the lagging collapse gate — is the spine.
 
 **Reward-std is not regret.** A world where every rollout reaches rung 2 and none
 reach rung 3 has *low* std (no gradient) yet *high* regret (far from the solvable
 optimum) — the frontier world a regret method would prioritize, and the one a
 variance gate would wrongly retire. The verifier already knows each world's
 solvable ceiling, so a critic-free regret proxy is in reach:
-`ceiling-rung − mean-achieved-rung`. Use it alongside std in the priority.
+`ceiling-rung − mean-achieved-rung`, and the shipped priority uses it. (Reward-std
+is the natural refinement — it separates a live-gradient world from a dead-gradient
+one at the same solve-rate — still to add; §10.)
 
 **Keep a mix.** Catastrophic forgetting is the documented failure of
 non-stationary RL, and revisiting easy tasks is the fix. So the pool reserves a
 floor — about a quarter to a third of each round's groups — for easy-tier members,
-per skill (one skill's easy tail must not be crowded out by another's), enforced
-when the pool's rows are composed, not hoped to emerge. A forgetting metric
+enforced when the pool's rows are composed, not hoped to emerge. (The shipped floor
+is global by difficulty; whether it should be per-skill, so one skill's easy tail
+is not crowded out by another's, is open — §13.) A forgetting metric
 (periodically re-run retired members; alarm if their solve-rate drops) is what
 makes the floor falsifiable. This requires replacing the shipped discard-the-
 parent behaviour with admit-the-child-and-retain-the-parent.
@@ -278,18 +283,22 @@ Two anchors keep open-ended evolution from drifting:
   (§3), not skill-extending.
 - The warm-world pool — booted worlds reused across episodes, now an LRU bounded
   by capacity.
+- The pool itself — `WorldPool` seeds wide, composes each round's rows under the
+  mix floor, and between rounds re-prioritises members (learnability + regret +
+  staleness), evolves the top-`M` into admitted children retaining parents, and
+  bounds the size. Pack-agnostic (difficulty injected) and runner-agnostic (the
+  caller runs a round), so a scripted solver drives it today and a trainer later.
 
 **To build (where the work and the risk live):**
-- A pool builder: union `(snapshot_id, task_id)` rows across members, weighted by
-  priority, with the mix floor enforced at composition.
-- A sampler with a seed contract (replayable), freezing sampling weights *within*
-  a round and updating priorities *between* rounds (so within-round sampling
-  stays i.i.d.).
-- Pool-level evolve: lift the mastery signal to per-member, evolve the top-`M`,
-  admit children into the pool, retain parents under the floor.
+- A replayable weighted sampler. The shipped round composes deterministic
+  top-priority rows under the mix floor; a seed-contract weighted draw (frozen
+  *within* a round, updated *between*) is the refinement that makes within-round
+  sampling i.i.d.
 - The skill-extending operator (append-a-hop) and the monotonicity check (§3, §6).
+- The reward-std term in the priority, and a per-skill (not global) mix floor.
 - The held-out eval pool and the generalization metric (§8).
-- A behavioural difficulty term to layer on the static metric.
+- A behavioural difficulty term layered on the static metric, and persisting the
+  metric onto the lineage so the dashboard can read it (§11).
 
 The cost model: admission is static graph-reachability — cheap and content-
 addressable (cache verdicts by content-hash so unchanged members are not
@@ -300,9 +309,10 @@ admission.
 
 The shipped view tells a chain story ("the company hardens back"). The pool needs
 a different one. First it needs a *measured* difficulty axis — the generation
-knobs the lineage carries today are inputs, not an observed property, so a
-graph-derived metric (chain depth dominating, vuln count secondary) is computed
-and stored per member.
+knobs the lineage carries today are inputs, not an observed property. A graph-
+derived metric (chain depth dominating, vuln count secondary) supplies it:
+`world_difficulty` scores each pool member today; persisting it onto the lineage
+so the dashboard can read it is part of this section's work.
 
 Then: a difficulty band (the pool's members binned by difficulty) sliding toward
 harder over rounds while keeping a visible easy tail; the two axes legible (tasks
