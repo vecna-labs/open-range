@@ -217,17 +217,18 @@ class WorldPool:
         gate_factory: GateFactory | None = None,
         evolve_top: int = 1,
         max_repairs: int = 2,
-    ) -> None:
+    ) -> bool:
         for member in self._members.values():
             ran = reports.get(member.key)
             if ran:
                 member.priority = _member_priority(ran)
             else:
                 member.priority = min(member.priority + _STALENESS_STEP, _MAX_PRIORITY)
-        grown = self._grow(
+        grown, capped = self._grow(
             reports, pack, policy, gate, gate_factory, evolve_top, max_repairs
         )
         self._bound(grown)
+        return capped
 
     def _grow(
         self,
@@ -238,8 +239,11 @@ class WorldPool:
         gate_factory: GateFactory | None,
         evolve_top: int,
         max_repairs: int,
-    ) -> set[tuple[str, str]]:
+    ) -> tuple[set[tuple[str, str]], bool]:
         grown: set[tuple[str, str]] = set()
+        # A selected member that yields no child is a frontier cap: the curriculum
+        # wanted to advance it but no admissible harder world passed the gate.
+        capped = False
         ran = sorted(
             (m for m in self._members.values() if reports.get(m.key)),
             key=lambda m: (-m.priority, m.key),
@@ -254,6 +258,7 @@ class WorldPool:
                 max_repairs=max_repairs,
             )
             if child is None:
+                capped = True
                 continue
             difficulty = self._difficulty_fn(child)
             for task in child.tasks:
@@ -270,7 +275,7 @@ class WorldPool:
                         priority=_MAX_PRIORITY,
                     )
                     grown.add(key)
-        return grown
+        return grown, capped
 
     def _bound(self, protected_extra: set[tuple[str, str]]) -> None:
         protected = self._easy_tier() | protected_extra
@@ -286,6 +291,7 @@ class WorldPool:
 class RoundMetrics:
     train_solve_rate: float
     held_out_solve_rate: float | None = None
+    frontier_capped: bool = False
 
     @property
     def generalization_gap(self) -> float | None:
@@ -371,18 +377,19 @@ def run_pool_curriculum(
                 eval_pool.rows(num_generations=num_generations), eval_pool.snapshots()
             )
             held_out = eval_pool.solve_rate(eval_reports)
-        metrics.append(
-            RoundMetrics(
-                train_solve_rate=_mean_pass_rate(reports.values()),
-                held_out_solve_rate=held_out,
-            )
-        )
-        pool.update(
+        capped = pool.update(
             reports,
             pack=pack,
             policy=policy,
             gate=gate,
             gate_factory=gate_factory,
             evolve_top=evolve_top,
+        )
+        metrics.append(
+            RoundMetrics(
+                train_solve_rate=_mean_pass_rate(reports.values()),
+                held_out_solve_rate=held_out,
+                frontier_capped=capped,
+            )
         )
     return metrics

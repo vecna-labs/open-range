@@ -252,16 +252,24 @@ def _harden_append_hop_mutation(
     graph: WorldGraph,
     family_id: str,
 ) -> Mutation | None:
-    # The skill-extending frontier step: deepen the credential chain by one hop so
-    # the parent's whole looting sequence is preserved and extended. The flag is
-    # served from runtime secrets by whichever vuln is credential_gated_flag, so
-    # flipping the terminal gate to a relay and adding a fresh flag gate on a spare
-    # host moves the chain's end without moving anything in the flag's store.
+    # The skill-extending frontier step: deepen the credential chain by one hop, so
+    # the parent's whole looting sequence is preserved and extended. The terminal
+    # flag gate flips to a relay; a fresh flag gate is added on a spare host, and the
+    # flag's backing store is repointed to that host so it owns the flag under the
+    # per-service scoped seed the CONTAINER backing uses, not only the shared PROCESS
+    # seed — keeping the deepened world solvable across backings.
     terminal = _credential_gated_flag(graph)
     if terminal is None:
         return None
     term_ep = _affects_target_id(graph, terminal.id)
     if term_ep is None:
+        return None
+    store = _flag_store(graph)
+    backed_by = next(
+        (e for e in graph.edges.values() if e.kind == "backed_by" and e.dst == store),
+        None,
+    )
+    if store is None or backed_by is None:
         return None
     new_host = _spare_internal_service(graph, _chain_service_ids(graph))
     if new_host is None:
@@ -325,12 +333,14 @@ def _harden_append_hop_mutation(
     patch = GraphPatch(
         nodes_added=[cred, endpoint, flag],
         nodes_updated=[relay],
+        edges_removed=[backed_by.id],
         edges_added=[
             _chain_edge(new_host.id, "exposes", new_ep_id),
             _chain_edge(new_flag_id, "affects", new_ep_id, _GATE_PATH),
             _chain_edge(terminal.id, "enables", new_flag_id),
             _chain_edge(new_ep_id, "requires_credential", new_cred_id),
             _chain_edge(terminal.id, "produces", new_cred_id),
+            _chain_edge(new_host.id, "backed_by", store),
         ],
     )
     return Mutation(
@@ -379,6 +389,28 @@ def _spare_internal_service(graph: WorldGraph, used: set[str]) -> Node | None:
         if node.attrs.get("exposure") != "public" and node.id not in used
     ]
     return min(spares, key=lambda n: n.id, default=None)
+
+
+def _flag_store(graph: WorldGraph) -> str | None:
+    flag = next(
+        (n for n in graph.by_kind("secret") if n.attrs.get("kind") == "flag"), None
+    )
+    if flag is None:
+        return None
+    record = next(
+        (e.src for e in graph.edges.values() if e.kind == "holds" and e.dst == flag.id),
+        None,
+    )
+    if record is None:
+        return None
+    return next(
+        (
+            e.src
+            for e in graph.edges.values()
+            if e.kind == "contains" and e.dst == record
+        ),
+        None,
+    )
 
 
 def _credential_walk(graph: WorldGraph) -> list[tuple[str, str]]:

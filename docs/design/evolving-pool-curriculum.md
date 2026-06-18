@@ -87,8 +87,8 @@ operator is allowed to act:
    learned behaviour stays a valid partial solution. This is the one operator
    safe to use as a frontier step. The hop can be a graph-patch (the company
    pack's 1/2/3-hop credential chains already exist) or a whole **LLM-built
-   service** appended to the path — same skill effect, richer surface. Lifting
-   either into a mutation is new work.
+   service** appended to the path — same skill effect, richer surface. The patch
+   form ships (`auto_evolve`'s append-a-hop); the LLM-built form is new work.
 2. **Add a required recon step** *(extends the skill)*. Stop disclosing a host's
    address so the agent must enumerate to find it. Adds a discovery step the
    path now requires.
@@ -128,11 +128,11 @@ world** (diversity), never an in-place rebuild of a world a policy is mid-
 training on; the in-place frontier step stays small and skill-extending, patch or
 built hop alike.
 
-So the shipped add/remove/swap-vuln operators are the decoy/replacing kind: fine
-for seeding diversity, wrong for the frontier. The missing pieces are the
-skill-extending operator — append-a-hop, as a patch or an LLM-built service — and
-a check that an operator tagged "frontier" actually extends rather than replaces
-(§6).
+So the add/remove/swap-vuln operators are the decoy/replacing kind: fine for
+seeding diversity, wrong for the frontier. The skill-extending operator —
+append-a-hop as a graph-patch — and the check that a "frontier" step actually
+extends rather than replaces (§6) both now ship; the LLM-built-service form of
+the hop is what remains.
 
 ## 4. The two-timescale picture
 
@@ -217,9 +217,12 @@ makes the floor falsifiable. This requires replacing the shipped discard-the-
 parent behaviour with admit-the-child-and-retain-the-parent.
 
 **Move the frontier monotonically.** New frontier worlds extend the required
-skill (§3): append a hop, add a required recon step. A check confirms the
-parent's solution is still a sub-path of the child's, so "frontier" means
-"genuinely harder," not "more decoys."
+skill (§3): append a hop, add a required recon step. A *structural* check
+confirms the parent's solution is still a sub-path of the child's, so "frontier"
+means "genuinely harder," not "more decoys." That check is not the solvability
+proof — it reads the chain's shape, not whether the new hop actually leaks; the
+independent anchor that the deeper world is still winnable is admission (below)
+and the runtime leak oracle, not the gate itself.
 
 The anchor that makes open-ended evolution safe: every world entering the pool —
 seeded or evolved — passes the same admission gate, which proves the world is
@@ -279,8 +282,8 @@ Two anchors keep open-ended evolution from drifting:
   one snapshot.
 - `reward_variance_policy` — the variance-collapse gate, shipped as whole-list.
 - `auto_evolve` — one snapshot to one re-admitted child, with an evolution gate.
-- The cyber mutation vocab — re-admitted and deterministic, but decoy/replacing
-  (§3), not skill-extending.
+- The cyber mutation vocab — re-admitted and deterministic: the add/remove/swap
+  operators are decoy/replacing (§3); the skill-extending append-a-hop is below.
 - The warm-world pool — booted worlds reused across episodes, now an LRU bounded
   by capacity.
 - The pool itself — `WorldPool` seeds wide, composes each round's rows under the
@@ -398,12 +401,13 @@ Online RL for language models:
   Schulman et al. 2017 (arXiv:1707.06347). On-policy RL forgets less than SFT on
   a fixed task — Shenfeld et al. 2025, "RL's Razor" (arXiv:2509.04259).
 - KL-to-reference — Ouyang et al. 2022, InstructGPT (arXiv:2203.02155).
-- Mix in easy tasks to avoid forgetting: "Continuously mix in easier tasks while
-  learning harder ones to avoid forgetting" — Matiisen et al. 2020 (IEEE TNNLS,
+- Mix in easy tasks to avoid forgetting — select tasks by learning-curve slope
+  and revisit ones that regress — Matiisen et al. 2020 (IEEE TNNLS,
   arXiv:1707.00183); replay for continual learning — Rolnick et al. 2019, CLEAR
   (arXiv:1811.11682).
 - Learnability `1 − solve_rate`, signal at intermediate difficulty — Zhao et al.
-  2025, Absolute Zero (arXiv:2505.03335).
+  2025, Absolute Zero (arXiv:2505.03335); the shipped priority uses a peaked
+  variant `1 − |2·solve_rate − 1|` of that monotone form.
 - An evolving online curriculum for an LLM web agent — replay + KL-to-reference +
   a complexifying task stream — Qi et al. 2025, WebRL (ICLR, arXiv:2411.02337).
 - Loss of plasticity in long non-stationary training — Dohare et al. 2024

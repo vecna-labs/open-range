@@ -112,6 +112,10 @@ def auto_evolve(
                 continue
         return evolved
 
+    # The grow fallback is a difficulty-knob rebuild (a fresh resample), not an
+    # in-place chain step, so it is intentionally outside the gate: a pack that uses
+    # grow for a monotone frontier must keep ``default_prior`` None, as the cyber
+    # pack does, so this path never fires there.
     try:
         return _grow_snapshot(snapshot, pack, direction, max_repairs=max_repairs)
     except Exception:  # noqa: BLE001 — pack-supplied code is untrusted

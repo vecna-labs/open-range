@@ -20,6 +20,7 @@ from cyber_webapp import (
     _is_networked,
     monotone_chain_gate,
 )
+from cyber_webapp.codegen.seeding import project_seed
 from cyber_webapp.difficulty import world_difficulty
 from cyber_webapp.mutation import available_mutations
 from cyber_webapp.reference_solver import solve_chain
@@ -500,10 +501,11 @@ def test_pool_holds_when_no_harder_world_admits(tmp_path: Path) -> None:
     member = next(iter(pool._members.values()))
     before = pool.keys()
     report = _breach_report(pack, tmp_path, member.snapshot)
-    pool.update(
+    capped = pool.update(
         {member.key: [report]}, pack=pack, gate=lambda _evolved, _mutation: False
     )
     assert pool.keys() == before
+    assert capped is True
 
 
 def test_regrowing_the_same_parent_does_not_duplicate(tmp_path: Path) -> None:
@@ -549,6 +551,32 @@ def test_append_a_hop_deepens_the_chain_and_stays_solvable(tmp_path: Path) -> No
     # +10 is the chain-depth weight: a hop was appended, not an off-path decoy (+1).
     assert world_difficulty(child.graph) - parent_diff >= 10
     assert _breach_report(pack, tmp_path / "child", child).passed
+
+
+def test_append_a_hop_keeps_the_flag_owned_under_scoped_seeding(tmp_path: Path) -> None:
+    # Cross-backing parity: the deepened world must be solvable under the per-service
+    # scoped seed the CONTAINER backing uses, not only the shared PROCESS seed — so
+    # the new flag-gate host must OWN the flag store, not merely serve it.
+    pack = WebappPack()
+    parent = _admit(_LATERAL_MANIFEST)
+    report = _breach_report(pack, tmp_path, parent)
+    child = auto_evolve(
+        parent, report, pack=pack, gate=monotone_chain_gate(parent), max_repairs=3
+    )
+    assert child is not None
+    g = child.graph
+    term = next(
+        n
+        for n in g.by_kind("vulnerability")
+        if n.attrs.get("kind") == "credential_gated_flag"
+    )
+    term_ep = next(
+        e.dst for e in g.edges.values() if e.kind == "affects" and e.src == term.id
+    )
+    gate_host = next(
+        e.src for e in g.edges.values() if e.kind == "exposes" and e.dst == term_ep
+    )
+    assert project_seed(g, only_services=frozenset({gate_host})).get("flag")
 
 
 def test_monotone_chain_gate_requires_one_more_hop(tmp_path: Path) -> None:
@@ -674,6 +702,7 @@ def test_held_out_eval_pool_is_fenced_and_measured(tmp_path: Path) -> None:
     assert all(m.train_solve_rate == 1.0 for m in metrics)
     assert all(m.held_out_solve_rate == 1.0 for m in metrics)
     assert all(m.generalization_gap == 0.0 for m in metrics)
+    assert not any(m.frontier_capped for m in metrics)
     assert held_out.keys() == eval_keys
     assert not (train.keys() & eval_keys)
 
