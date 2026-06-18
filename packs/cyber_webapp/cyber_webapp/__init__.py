@@ -23,6 +23,7 @@ from cyber_webapp.invariants import (
     secret_must_be_held,
     sqli_targets_db_backed_service,
 )
+from cyber_webapp.mutation import monotone_chain_gate
 from cyber_webapp.ontology import ONTOLOGY_ID, webapp_ontology
 from cyber_webapp.realize import (
     ContainerWebappRuntime,
@@ -103,6 +104,7 @@ __all__ = [
     "WebappRuntime",
     "credential_reuse_binding",
     "minimum_backing",
+    "monotone_chain_gate",
     "no_orphan_nodes",
     "oracle_path_exists",
     "secret_must_be_held",

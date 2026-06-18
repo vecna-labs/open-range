@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from graphschema import Edge, GraphPatch, Node, Visibility, WorldGraph
-from openrange_pack_sdk import EpisodeReportLike, Mutation
+from openrange_pack_sdk import EpisodeReportLike, Mutation, Snapshot
 
 from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
@@ -25,6 +25,13 @@ _ADD_ABSENT_RELEVANCE = 0.5
 # Less drastic than fully removing all instances; rotates which exploit
 # the agent has to learn while holding attack-surface count steady.
 _SWAP_PRESENT_RELEVANCE = 0.2
+
+# Above the decoy harden (0.5) so deepening the chain is the preferred frontier
+# step: it extends the required skill instead of adding an off-path vuln.
+_APPEND_HOP_RELEVANCE = 0.9
+
+_GATE_PATH = "/internal/vault"
+_TOKEN_PARAMS: tuple[str, ...] = ("token", "api_key", "auth", "session", "key")
 
 
 def coerce_string_list(value: object) -> list[str]:
@@ -46,6 +53,10 @@ def available_mutations(
     path_hits = _successful_path_hits(reports)
 
     options: list[Mutation] = []
+
+    hop = _harden_append_hop_mutation(graph, family_id)
+    if hop is not None:
+        options.append(hop)
 
     options.extend(
         _harden_add_absent_mutations(graph, family_id, vulns_by_kind),
@@ -235,6 +246,204 @@ def _diversify_swap_kind_mutations(
             ),
         )
     return mutations
+
+
+def _harden_append_hop_mutation(
+    graph: WorldGraph,
+    family_id: str,
+) -> Mutation | None:
+    # The skill-extending frontier step: deepen the credential chain by one hop so
+    # the parent's whole looting sequence is preserved and extended. The flag is
+    # served from runtime secrets by whichever vuln is credential_gated_flag, so
+    # flipping the terminal gate to a relay and adding a fresh flag gate on a spare
+    # host moves the chain's end without moving anything in the flag's store.
+    terminal = _credential_gated_flag(graph)
+    if terminal is None:
+        return None
+    term_ep = _affects_target_id(graph, terminal.id)
+    if term_ep is None:
+        return None
+    new_host = _spare_internal_service(graph, _chain_service_ids(graph))
+    if new_host is None:
+        return None
+    new_host_name = str(new_host.attrs.get("name", new_host.id))
+
+    term_params = dict(terminal.attrs.get("params", {}))
+    next_index = sum(
+        1 for n in graph.by_kind("credential") if n.id.startswith("cred_chain_")
+    )
+    new_cred_id = f"cred_chain_{next_index}"
+    seed = f"{terminal.id}:append:{next_index}"
+    new_token = hashlib.sha256(seed.encode()).hexdigest()[:24]
+    new_param = _TOKEN_PARAMS[_stable_index(seed + ":param", len(_TOKEN_PARAMS))]
+    new_ep_id = f"ep_{new_host_name}_vault"
+    new_flag_id = _fresh_vuln_id("credential_gated_flag", set(graph.nodes))
+
+    relay = Node(
+        id=terminal.id,
+        kind="vulnerability",
+        attrs={
+            "kind": "credential_gated_relay",
+            "family": str(terminal.attrs.get("family", "code_web")),
+            "params": {
+                "credential": term_params.get("credential", ""),
+                "token_param": term_params.get("token_param", "token"),
+                "next_credential": new_token,
+                "next_vault_host": new_host_name,
+                "next_vault_path": _GATE_PATH,
+                "next_token_param": new_param,
+            },
+        },
+        visibility=Visibility.HIDDEN,
+    )
+    cred = Node(
+        id=new_cred_id,
+        kind="credential",
+        attrs={"kind": "token", "value_ref": new_token},
+    )
+    endpoint = Node(
+        id=new_ep_id,
+        kind="endpoint",
+        attrs={
+            "path": _GATE_PATH,
+            "public_url": f"/svc/{new_host_name}{_GATE_PATH}",
+            "method": "GET",
+            "auth_required": True,
+            "behavior_ref": "credential.gate",
+        },
+    )
+    flag = Node(
+        id=new_flag_id,
+        kind="vulnerability",
+        attrs={
+            "kind": "credential_gated_flag",
+            "family": "code_web",
+            "params": {"credential": new_token, "token_param": new_param},
+        },
+        visibility=Visibility.HIDDEN,
+    )
+    patch = GraphPatch(
+        nodes_added=[cred, endpoint, flag],
+        nodes_updated=[relay],
+        edges_added=[
+            _chain_edge(new_host.id, "exposes", new_ep_id),
+            _chain_edge(new_flag_id, "affects", new_ep_id, _GATE_PATH),
+            _chain_edge(terminal.id, "enables", new_flag_id),
+            _chain_edge(new_ep_id, "requires_credential", new_cred_id),
+            _chain_edge(terminal.id, "produces", new_cred_id),
+        ],
+    )
+    return Mutation(
+        patch=patch,
+        direction="harden",
+        relevance=_APPEND_HOP_RELEVANCE,
+        family=family_id,
+        note=f"append a credential hop via {new_host_name}",
+    )
+
+
+def _chain_edge(src: str, kind: str, dst: str, injection_site: str = "") -> Edge:
+    attrs = {"injection_site": injection_site} if injection_site else {}
+    return Edge(id=_edge_id(src, kind, dst), kind=kind, src=src, dst=dst, attrs=attrs)
+
+
+def _credential_gated_flag(graph: WorldGraph) -> Node | None:
+    for node in graph.by_kind("vulnerability"):
+        if node.attrs.get("kind") == "credential_gated_flag":
+            return node
+    return None
+
+
+def _service_of_endpoint(graph: WorldGraph, endpoint_id: str) -> Node | None:
+    for edge in graph.in_edges(endpoint_id, "exposes"):
+        return graph.nodes.get(edge.src)
+    return None
+
+
+def _chain_service_ids(graph: WorldGraph) -> set[str]:
+    used: set[str] = set()
+    for vuln in graph.by_kind("vulnerability"):
+        if not str(vuln.attrs.get("kind", "")).startswith("credential"):
+            continue
+        endpoint_id = _affects_target_id(graph, vuln.id)
+        service = _service_of_endpoint(graph, endpoint_id) if endpoint_id else None
+        if service is not None:
+            used.add(service.id)
+    return used
+
+
+def _spare_internal_service(graph: WorldGraph, used: set[str]) -> Node | None:
+    spares = [
+        node
+        for node in graph.by_kind("service")
+        if node.attrs.get("exposure") != "public" and node.id not in used
+    ]
+    return min(spares, key=lambda n: n.id, default=None)
+
+
+def _credential_walk(graph: WorldGraph) -> list[tuple[str, str]]:
+    # The solution as the solver walks it: the ordered (host, credential) pairs
+    # presented at each gate, following the enables chain from the leak to the
+    # flag gate. The monotonicity gate compares two of these.
+    enables: dict[str, list[str]] = {}
+    for edge in graph.edges.values():
+        if edge.kind == "enables":
+            enables.setdefault(edge.src, []).append(edge.dst)
+    current = next(
+        (
+            n
+            for n in graph.by_kind("vulnerability")
+            if n.attrs.get("kind") == "credential_leak"
+        ),
+        None,
+    )
+    walk: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    while current is not None and current.id not in seen:
+        seen.add(current.id)
+        kind = str(current.attrs.get("kind", ""))
+        if kind in ("credential_gated_relay", "credential_gated_flag"):
+            endpoint_id = _affects_target_id(graph, current.id)
+            service = _service_of_endpoint(graph, endpoint_id) if endpoint_id else None
+            host = str(service.attrs.get("name", service.id)) if service else ""
+            cred = str(dict(current.attrs.get("params", {})).get("credential", ""))
+            walk.append((host, cred))
+            if kind == "credential_gated_flag":
+                break
+        following = sorted(enables.get(current.id, []))
+        current = next(
+            (
+                graph.nodes[nid]
+                for nid in following
+                if nid in graph.nodes
+                and str(graph.nodes[nid].attrs.get("kind", "")).startswith(
+                    "credential_gated"
+                )
+            ),
+            None,
+        )
+    return walk
+
+
+def monotone_chain_gate(parent: Snapshot) -> Callable[[Snapshot, Mutation], bool]:
+    """An evolution gate that admits a child only if it extends the parent's
+    credential chain by exactly one hop — the parent's solve walk is a literal
+    prefix of the child's. Rejects decoys, swaps, and relocations tagged "harden",
+    and rejects a parent that has no chain to extend.
+    """
+    parent_walk = _credential_walk(parent.graph)
+
+    def gate(evolved: Snapshot, mutation: Mutation) -> bool:
+        del mutation
+        if not parent_walk:
+            return False
+        child_walk = _credential_walk(evolved.graph)
+        return (
+            len(child_walk) == len(parent_walk) + 1
+            and child_walk[: len(parent_walk)] == parent_walk
+        )
+
+    return gate
 
 
 def _vulns_by_kind(graph: WorldGraph) -> dict[str, list[str]]:

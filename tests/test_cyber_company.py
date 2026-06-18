@@ -14,8 +14,14 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack, _is_networked
+from cyber_webapp import (
+    NetworkedContainerWebappRuntime,
+    WebappPack,
+    _is_networked,
+    monotone_chain_gate,
+)
 from cyber_webapp.difficulty import world_difficulty
+from cyber_webapp.mutation import available_mutations
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
@@ -24,6 +30,7 @@ from openrange_trl._pool import _MAX_PRIORITY
 
 from examples.tools import WEB_TOOLS
 from openrange.core.admit import admit
+from openrange.core.curriculum import auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService
 
 _COMPANY_MANIFEST = {
@@ -39,6 +46,7 @@ _DEFAULT_MANIFEST = {
     "npc": [],
     "seed": 3,
 }
+_LATERAL_MANIFEST = {**_COMPANY_MANIFEST, "lateral_movement": True}
 
 
 def _admit(manifest: dict[str, object]) -> Snapshot:
@@ -92,6 +100,36 @@ def _breach_report(pack: WebappPack, work_dir: Path, snap: Snapshot) -> EpisodeR
         env._finalize()
         assert env.report is not None
         return env.report
+    finally:
+        svc.close()
+
+
+def _solve_round(
+    pack: WebappPack,
+    work_dir: Path,
+    rows: list[dict[str, object]],
+    snapshots: list[Snapshot],
+) -> dict[tuple[str, str], list[EpisodeReport]]:
+    by_id = {s.snapshot_id: s for s in snapshots}
+    svc = EpisodeService(pack, work_dir, warm_capacity=len(by_id))
+    env = EpisodeEnv(service=svc, snapshots=by_id, tools=WEB_TOOLS)
+    out: dict[tuple[str, str], list[EpisodeReport]] = {}
+    try:
+        for row in rows:
+            sid, tid = str(row["snapshot_id"]), str(row["task_id"])
+            snap = by_id[sid]
+            task = next(t for t in snap.tasks if t.id == tid)
+            entry = str(snap.graph.nodes[task.entrypoints[0]].attrs["public_url"])
+            env.reset(snapshot_id=sid, task_id=tid)
+            env.http_get(entry)
+            trace = solve_chain(
+                snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
+            )
+            env.submit(json.dumps({"flag": _flag_from(trace.terminal)}))
+            env._finalize()
+            assert env.report is not None
+            out.setdefault((sid, tid), []).append(env.report)
+        return out
     finally:
         svc.close()
 
@@ -346,30 +384,7 @@ def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
         rows: list[dict[str, object]], snapshots: list[Snapshot]
     ) -> dict[tuple[str, str], list[EpisodeReport]]:
         round_no[0] += 1
-        by_id = {s.snapshot_id: s for s in snapshots}
-        svc = EpisodeService(
-            pack, tmp_path / f"r{round_no[0]}", warm_capacity=len(by_id)
-        )
-        env = EpisodeEnv(service=svc, snapshots=by_id, tools=WEB_TOOLS)
-        out: dict[tuple[str, str], list[EpisodeReport]] = {}
-        try:
-            for row in rows:
-                sid, tid = str(row["snapshot_id"]), str(row["task_id"])
-                snap = by_id[sid]
-                task = next(t for t in snap.tasks if t.id == tid)
-                entry = str(snap.graph.nodes[task.entrypoints[0]].attrs["public_url"])
-                env.reset(snapshot_id=sid, task_id=tid)
-                env.http_get(entry)
-                trace = solve_chain(
-                    snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
-                )
-                env.submit(json.dumps({"flag": _flag_from(trace.terminal)}))
-                env._finalize()
-                assert env.report is not None
-                out.setdefault((sid, tid), []).append(env.report)
-            return out
-        finally:
-            svc.close()
+        return _solve_round(pack, tmp_path / f"r{round_no[0]}", rows, snapshots)
 
     def build_and_run() -> tuple[WorldPool, float]:
         pool = WorldPool.seed(
@@ -510,6 +525,103 @@ def test_regrowing_the_same_parent_does_not_duplicate(tmp_path: Path) -> None:
         gate=_pentest_only,
     )
     assert pool.keys() == grew_to
+
+
+def test_append_a_hop_deepens_the_chain_and_stays_solvable(tmp_path: Path) -> None:
+    # The skill-extending frontier move: a breached lateral world evolves into one
+    # whose credential chain is a hop deeper, and the deeper world is still solvable
+    # end to end through the real harness.
+    pack = WebappPack()
+    parent = _admit(_LATERAL_MANIFEST)
+    parent_diff = world_difficulty(parent.graph)
+    report = _breach_report(pack, tmp_path / "parent", parent)
+    assert report.passed
+    child = auto_evolve(
+        parent, report, pack=pack, gate=monotone_chain_gate(parent), max_repairs=3
+    )
+    assert child is not None
+    # +10 is the chain-depth weight: a hop was appended, not an off-path decoy (+1).
+    assert world_difficulty(child.graph) - parent_diff >= 10
+    assert _breach_report(pack, tmp_path / "child", child).passed
+
+
+def test_monotone_chain_gate_requires_one_more_hop(tmp_path: Path) -> None:
+    # The independent check that a "harden" genuinely extends the chain: a world does
+    # not extend itself, a chainless world has nothing to extend, and the one-hop
+    # deeper child is accepted.
+    pack = WebappPack()
+    parent = _admit(_LATERAL_MANIFEST)
+    any_mutation = available_mutations(parent.graph, "webapp.pentest", [])[0]
+    gate = monotone_chain_gate(parent)
+    assert not gate(parent, any_mutation)
+    assert not monotone_chain_gate(_admit(_DEFAULT_MANIFEST))(parent, any_mutation)
+    report = _breach_report(pack, tmp_path, parent)
+    deeper = auto_evolve(parent, report, pack=pack, gate=gate, max_repairs=3)
+    assert deeper is not None
+    assert gate(deeper, any_mutation)
+
+
+def test_pool_grows_a_deeper_chain_under_the_monotone_gate(tmp_path: Path) -> None:
+    # End to end: a pool of lateral worlds, driven by the real harness, evolves a
+    # member into one with a deeper credential chain. The monotone gate admits the
+    # appended hop; without a genuine extension nothing would grow.
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [_LATERAL_MANIFEST],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=4,
+    )
+    assert len(pool) == 1
+    seed_diff = next(iter(pool._members.values())).difficulty
+    round_no = [0]
+
+    def run_round(
+        rows: list[dict[str, object]], snapshots: list[Snapshot]
+    ) -> dict[tuple[str, str], list[EpisodeReport]]:
+        round_no[0] += 1
+        return _solve_round(pack, tmp_path / f"r{round_no[0]}", rows, snapshots)
+
+    run_pool_curriculum(
+        pool,
+        run_round,
+        rounds=1,
+        pack=pack,
+        groups=1,
+        num_generations=2,
+        gate_factory=monotone_chain_gate,
+    )
+    diffs = [m.difficulty for m in pool._members.values()]
+    assert len(pool) == 2
+    assert max(diffs) - seed_diff >= 10
+
+
+def test_pool_chain_deepens_until_internal_hosts_run_out(tmp_path: Path) -> None:
+    # With no gate, append-a-hop is the top harden, so the frontier deepens a hop a
+    # round; once every internal host is on the chain no hop is offered and the
+    # frontier caps (the verifier-ceiling case).
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [_LATERAL_MANIFEST],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=12,
+    )
+    start = max(m.difficulty for m in pool._members.values())
+    round_no = [0]
+
+    def run_round(
+        rows: list[dict[str, object]], snapshots: list[Snapshot]
+    ) -> dict[tuple[str, str], list[EpisodeReport]]:
+        round_no[0] += 1
+        return _solve_round(pack, tmp_path / f"r{round_no[0]}", rows, snapshots)
+
+    run_pool_curriculum(
+        pool, run_round, rounds=5, pack=pack, groups=1, num_generations=2
+    )
+    assert max(m.difficulty for m in pool._members.values()) >= start + 10
 
 
 def test_services_are_realistically_named() -> None:

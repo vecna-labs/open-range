@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from openrange_pack_sdk import Pack, Snapshot
+from openrange_pack_sdk import Mutation, Pack, Snapshot
 
 from openrange.core.admit import AdmissionFailure, admit
 from openrange.core.curriculum import (
@@ -29,6 +29,7 @@ DifficultyFn = Callable[[Snapshot], float]
 PromptRow = dict[str, object]
 RoundReports = Mapping[tuple[str, str], Sequence[EpisodeReport]]
 RunRound = Callable[[list[PromptRow], list[Snapshot]], RoundReports]
+GateFactory = Callable[[Snapshot], EvolutionGate]
 
 _STALENESS_STEP = 0.1
 # The most a round can score a member (learnability + regret, each <= 1): idle
@@ -66,6 +67,22 @@ def _member_priority(reports: Sequence[EpisodeReport]) -> float:
     # from the ceiling, assuming every listed subgoal is reachable.
     regret = sum(gaps) / len(gaps) if gaps else 0.0
     return learnability + regret
+
+
+def _compose_gate(
+    gate: EvolutionGate | None,
+    gate_factory: GateFactory | None,
+    parent: Snapshot,
+) -> EvolutionGate | None:
+    built = gate_factory(parent) if gate_factory is not None else None
+    gates = [g for g in (gate, built) if g is not None]
+    if not gates:
+        return None
+
+    def combined(evolved: Snapshot, mutation: Mutation) -> bool:
+        return all(g(evolved, mutation) for g in gates)
+
+    return combined
 
 
 class WorldPool:
@@ -184,6 +201,7 @@ class WorldPool:
         pack: Pack,
         policy: CurriculumPolicy = direction_from_reports,
         gate: EvolutionGate | None = None,
+        gate_factory: GateFactory | None = None,
         evolve_top: int = 1,
         max_repairs: int = 2,
     ) -> None:
@@ -193,7 +211,9 @@ class WorldPool:
                 member.priority = _member_priority(ran)
             else:
                 member.priority = min(member.priority + _STALENESS_STEP, _MAX_PRIORITY)
-        grown = self._grow(reports, pack, policy, gate, evolve_top, max_repairs)
+        grown = self._grow(
+            reports, pack, policy, gate, gate_factory, evolve_top, max_repairs
+        )
         self._bound(grown)
 
     def _grow(
@@ -202,6 +222,7 @@ class WorldPool:
         pack: Pack,
         policy: CurriculumPolicy,
         gate: EvolutionGate | None,
+        gate_factory: GateFactory | None,
         evolve_top: int,
         max_repairs: int,
     ) -> set[tuple[str, str]]:
@@ -216,7 +237,7 @@ class WorldPool:
                 *reports[member.key],
                 pack=pack,
                 policy=policy,
-                gate=gate,
+                gate=_compose_gate(gate, gate_factory, member.snapshot),
                 max_repairs=max_repairs,
             )
             if child is None:
@@ -258,10 +279,18 @@ def run_pool_curriculum(
     num_generations: int,
     policy: CurriculumPolicy = direction_from_reports,
     gate: EvolutionGate | None = None,
+    gate_factory: GateFactory | None = None,
     evolve_top: int = 1,
 ) -> WorldPool:
     for _ in range(rounds):
         rows = pool.round_rows(groups=groups, num_generations=num_generations)
         reports = run_round(rows, pool.snapshots())
-        pool.update(reports, pack=pack, policy=policy, gate=gate, evolve_top=evolve_top)
+        pool.update(
+            reports,
+            pack=pack,
+            policy=policy,
+            gate=gate,
+            gate_factory=gate_factory,
+            evolve_top=evolve_top,
+        )
     return pool
