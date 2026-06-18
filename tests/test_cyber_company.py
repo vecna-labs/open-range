@@ -36,6 +36,7 @@ from openrange.pool import (
     _MAX_PRIORITY,
     EvalPool,
     RoundMetrics,
+    RunRound,
     WorldPool,
     run_pool_curriculum,
 )
@@ -684,6 +685,56 @@ def test_held_out_eval_pool_is_fenced_and_measured(tmp_path: Path) -> None:
 def test_generalization_gap_is_train_minus_held_out() -> None:
     assert RoundMetrics(0.8, 0.5).generalization_gap == pytest.approx(0.3)
     assert RoundMetrics(0.8).generalization_gap is None
+
+
+def test_eval_round_measures_the_held_out_pool(tmp_path: Path) -> None:
+    # A real trainer measures the held-out pool WITHOUT training on it: when an
+    # eval_round is given, the eval pool is routed through it, never the training
+    # run_round.
+    pack = WebappPack()
+    train = WorldPool.seed(
+        pack,
+        [{**_COMPANY_MANIFEST, "seed": s} for s in (0, 1)],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=5,
+    )
+    held_out = EvalPool.seed(
+        pack,
+        [{**_COMPANY_MANIFEST, "seed": 2}],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+    )
+    trained: set[tuple[str, str]] = set()
+    evaluated: set[tuple[str, str]] = set()
+    round_no = [0]
+
+    def recording(into: set[tuple[str, str]], label: str) -> RunRound:
+        def run(
+            rows: list[dict[str, object]], snapshots: list[Snapshot]
+        ) -> dict[tuple[str, str], list[EpisodeReport]]:
+            round_no[0] += 1
+            for row in rows:
+                into.add((str(row["snapshot_id"]), str(row["task_id"])))
+            work = tmp_path / f"{label}{round_no[0]}"
+            return _solve_round(pack, work, rows, snapshots)
+
+        return run
+
+    metrics = run_pool_curriculum(
+        train,
+        recording(trained, "t"),
+        rounds=1,
+        pack=pack,
+        groups=2,
+        num_generations=2,
+        gate=_pentest_only,
+        eval_pool=held_out,
+        eval_round=recording(evaluated, "e"),
+    )
+    assert metrics[0].held_out_solve_rate is not None
+    assert held_out.keys() <= evaluated
+    assert held_out.keys().isdisjoint(trained)
 
 
 def test_services_are_realistically_named() -> None:

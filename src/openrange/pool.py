@@ -355,19 +355,24 @@ def run_pool_curriculum(
     gate_factory: GateFactory | None = None,
     evolve_top: int = 1,
     eval_pool: EvalPool | None = None,
+    eval_round: RunRound | None = None,
 ) -> list[RoundMetrics]:
     """Run the curriculum, updating ``pool`` in place.
 
     When ``eval_pool`` is given it is measured each round but never trained on or
-    evolved, so the train-vs-held-out gap is the generalization signal (§8).
+    evolved, so the train-vs-held-out gap is the generalization signal (§8). A
+    scripted solver measures it with the same ``run_round``; a real trainer must
+    pass an ``eval_round`` that rolls out and grades *without* a gradient step, or
+    it would train on the held-out set and break the fence.
     """
+    measure = eval_round or run_round
     metrics: list[RoundMetrics] = []
     for _ in range(rounds):
         rows = pool.round_rows(groups=groups, num_generations=num_generations)
         reports = run_round(rows, pool.snapshots())
         held_out: float | None = None
         if eval_pool is not None and len(eval_pool):
-            eval_reports = run_round(
+            eval_reports = measure(
                 eval_pool.rows(num_generations=num_generations), eval_pool.snapshots()
             )
             held_out = eval_pool.solve_rate(eval_reports)

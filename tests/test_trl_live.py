@@ -599,3 +599,100 @@ def test_live_grpo_pool_curriculum(tmp_path: Path) -> None:
     assert all(0.0 <= m.train_solve_rate <= 1.0 for m in metrics)
     # Each round trained a real GRPO pass over the pool and evolved a harder world:
     assert len(pool) > 1
+
+
+def test_live_grpo_held_out_eval(tmp_path: Path) -> None:
+    """A real GRPO round trains the pool while a fenced held-out pool is measured by
+    a FROZEN round (learning_rate 0, no weight update) — the train-vs-held-out
+    generalization gap on a real trainer, the eval pool never trained on.
+    """
+    datasets = pytest.importorskip("datasets")
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+    trl = pytest.importorskip("trl")
+    del datasets
+
+    from cyber_webapp import WebappPack
+    from cyber_webapp.difficulty import world_difficulty
+    from openrange_trl import make_grpo_rounds
+
+    from openrange.pool import EvalPool, WorldPool, run_pool_curriculum
+
+    pack = WebappPack()
+
+    def world(seed: int) -> dict[str, object]:
+        return {
+            "world": {"goal": "recover the hidden flag"},
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "seed": seed,
+            "loot_shapes": {"db": 1, "file": 0},
+            "vuln_kinds": {"sql_injection": 1},
+        }
+
+    train = WorldPool.seed(
+        pack,
+        [world(0)],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=4,
+    )
+    held_out = EvalPool.seed(
+        pack,
+        [world(1)],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+    )
+    assert held_out.keys().isdisjoint(train.keys())
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(_MODEL)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(_MODEL)
+    lora = peft.LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        task_type="CAUSAL_LM",
+    )
+    config = trl.GRPOConfig(
+        output_dir=str(tmp_path / "trainer"),
+        per_device_train_batch_size=2,
+        num_generations=2,
+        steps_per_generation=1,
+        max_steps=1,
+        beta=0.0,
+        max_completion_length=128,
+        max_tool_calling_iterations=3,
+        use_vllm=False,
+        report_to="none",
+        save_strategy="no",
+        bf16=False,
+        fp16=False,
+    )
+    train_round, eval_round = make_grpo_rounds(
+        pack,
+        model=model,
+        args=config,
+        tools=WEB_TOOLS,
+        run_root=tmp_path / "envs",
+        processing_class=tokenizer,
+        peft_config=lora,
+    )
+    metrics = run_pool_curriculum(
+        train,
+        train_round,
+        rounds=1,
+        pack=pack,
+        groups=1,
+        num_generations=2,
+        policy=_always_harden,
+        gate=lambda _snap, mut: mut.family == "webapp.pentest",
+        eval_pool=held_out,
+        eval_round=eval_round,
+    )
+    assert len(metrics) == 1
+    m = metrics[0]
+    assert m.held_out_solve_rate is not None and 0.0 <= m.held_out_solve_rate <= 1.0
+    assert m.generalization_gap is not None
+    assert held_out.keys().isdisjoint(train.keys())

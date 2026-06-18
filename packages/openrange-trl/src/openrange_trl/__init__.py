@@ -34,6 +34,7 @@ policy). The core public pieces map onto TRL's agentic GRPO
 
 from __future__ import annotations
 
+import copy
 import inspect
 import subprocess
 import types
@@ -416,6 +417,80 @@ def env_trajectory(env: EpisodeEnv) -> Trajectory:
     return episode_trajectory(env.report, env.turns)
 
 
+def make_grpo_rounds(
+    pack: Pack,
+    *,
+    model: Any,
+    args: Any,
+    tools: Sequence[Tool],
+    run_root: str | Path,
+    processing_class: Any = None,
+    peft_config: Any = None,
+    reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+    backing: Backing = Backing.PROCESS,
+    sandbox: bool = False,
+) -> tuple[RunRound, RunRound]:
+    """A ``(train_round, eval_round)`` pair for
+    :func:`openrange.pool.run_pool_curriculum`, sharing one live model.
+
+    ``train_round`` drives one short ``trl.GRPOTrainer`` pass over the round's rows
+    and carries the model forward (``peft_config`` wraps it once). ``eval_round``
+    rolls the *same* mid-training model out over a held-out round and grades it under
+    a frozen update (``learning_rate`` 0), so the held-out pool measures
+    generalization without being trained on. Both return the graded reports keyed by
+    ``(snapshot_id, task_id)`` and re-root the env factory onto the round's
+    snapshots. ``args`` is a ``GRPOConfig`` whose ``max_steps`` bounds the round.
+    ``trl`` is imported here so importing :mod:`openrange_trl` stays torch-free.
+    """
+    from datasets import Dataset
+    from trl import GRPOTrainer  # type: ignore[attr-defined]
+
+    base = Path(run_root)
+    base.mkdir(parents=True, exist_ok=True)
+    holder: dict[str, Any] = {"model": model, "peft": peft_config}
+    frozen_args = copy.copy(args)
+    frozen_args.learning_rate = 0.0
+
+    def _round(
+        rows: list[PromptRow],
+        snapshots: list[Snapshot],
+        run_args: Any,
+        *,
+        update: bool,
+    ) -> RoundReports:
+        collector: dict[tuple[str, str], list[EpisodeReport]] = {}
+        factory = make_environment_factory(
+            pack,
+            snapshots,
+            base / uuid.uuid4().hex[:8],
+            tools=tools,
+            reward_fn=reward_fn,
+            backing=backing,
+            sandbox=sandbox,
+        )
+        trainer = GRPOTrainer(
+            model=holder["model"],
+            reward_funcs=[make_reward_func(collector)],  # type: ignore[list-item]
+            args=run_args,
+            train_dataset=Dataset.from_list(rows),
+            processing_class=processing_class,
+            environment_factory=factory,
+            peft_config=holder["peft"],
+        )
+        trainer.train()
+        if update:
+            holder["model"], holder["peft"] = trainer.model, None
+        return collector
+
+    def train_round(rows: list[PromptRow], snapshots: list[Snapshot]) -> RoundReports:
+        return _round(rows, snapshots, args, update=True)
+
+    def eval_round(rows: list[PromptRow], snapshots: list[Snapshot]) -> RoundReports:
+        return _round(rows, snapshots, frozen_args, update=False)
+
+    return train_round, eval_round
+
+
 def make_grpo_run_round(
     pack: Pack,
     *,
@@ -429,49 +504,21 @@ def make_grpo_run_round(
     backing: Backing = Backing.PROCESS,
     sandbox: bool = False,
 ) -> RunRound:
-    """A ``run_round`` for :func:`openrange.pool.run_pool_curriculum`.
-
-    Each round drives one short ``trl.GRPOTrainer`` pass over the round's rows and
-    returns the graded reports keyed by ``(snapshot_id, task_id)``. The model
-    carries forward across rounds (``peft_config`` wraps it once); each round
-    re-roots the env factory onto the round's evolving snapshots. ``args`` is a
-    ``GRPOConfig`` whose ``max_steps`` bounds the round. ``trl`` is imported here so
-    importing :mod:`openrange_trl` stays torch-free.
-    """
-    from datasets import Dataset
-    from trl import GRPOTrainer  # type: ignore[attr-defined]
-
-    base = Path(run_root)
-    base.mkdir(parents=True, exist_ok=True)
-    current_model: Any = model
-    current_peft: Any = peft_config
-
-    def run_round(rows: list[PromptRow], snapshots: list[Snapshot]) -> RoundReports:
-        nonlocal current_model, current_peft
-        collector: dict[tuple[str, str], list[EpisodeReport]] = {}
-        factory = make_environment_factory(
-            pack,
-            snapshots,
-            base / uuid.uuid4().hex[:8],
-            tools=tools,
-            reward_fn=reward_fn,
-            backing=backing,
-            sandbox=sandbox,
-        )
-        trainer = GRPOTrainer(
-            model=current_model,
-            reward_funcs=[make_reward_func(collector)],  # type: ignore[list-item]
-            args=args,
-            train_dataset=Dataset.from_list(rows),
-            processing_class=processing_class,
-            environment_factory=factory,
-            peft_config=current_peft,
-        )
-        trainer.train()
-        current_model, current_peft = trainer.model, None
-        return collector
-
-    return run_round
+    """The training half of :func:`make_grpo_rounds` — a ``run_round`` that trains
+    one GRPO pass per round, for when no held-out eval is needed."""
+    train_round, _ = make_grpo_rounds(
+        pack,
+        model=model,
+        args=args,
+        tools=tools,
+        run_root=run_root,
+        processing_class=processing_class,
+        peft_config=peft_config,
+        reward_fn=reward_fn,
+        backing=backing,
+        sandbox=sandbox,
+    )
+    return train_round
 
 
 def reward_variance_policy(
@@ -519,6 +566,7 @@ __all__ = [
     "build_grpo_dataset",
     "env_trajectory",
     "make_environment_factory",
+    "make_grpo_rounds",
     "make_grpo_run_round",
     "make_reward_func",
     "reward_variance_policy",
