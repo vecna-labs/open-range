@@ -273,9 +273,8 @@ class TestSeams:
     def test_reward_func_records_reports_by_world(
         self, make_env: EnvMaker, snapshot: Snapshot, tmp_path: Path
     ) -> None:
-        # The recording collector keys each graded rollout by (snapshot_id,
-        # task_id), so a multi-world GRPO batch reads back as the pool's per-member
-        # reports — what trainer.environments (last-per-slot) cannot give.
+        # trainer.environments keeps only the last episode per slot, so a
+        # multi-world batch needs the collector to read back every world's report.
         pack = WebappPack()
         task = _pentest_task(snapshot)
         env_a = make_env()

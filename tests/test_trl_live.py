@@ -597,7 +597,6 @@ def test_live_grpo_pool_curriculum(tmp_path: Path) -> None:
     )
     assert len(metrics) == 2
     assert all(0.0 <= m.train_solve_rate <= 1.0 for m in metrics)
-    # Each round trained a real GRPO pass over the pool and evolved a harder world:
     assert len(pool) > 1
 
 

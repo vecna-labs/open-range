@@ -688,9 +688,8 @@ def test_generalization_gap_is_train_minus_held_out() -> None:
 
 
 def test_eval_round_measures_the_held_out_pool(tmp_path: Path) -> None:
-    # A real trainer measures the held-out pool WITHOUT training on it: when an
-    # eval_round is given, the eval pool is routed through it, never the training
-    # run_round.
+    # The held-out pool is measured through eval_round, never the training
+    # run_round — so a real trainer can't accidentally learn on it.
     pack = WebappPack()
     train = WorldPool.seed(
         pack,
