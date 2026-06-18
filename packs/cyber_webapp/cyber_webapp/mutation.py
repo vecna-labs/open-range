@@ -252,12 +252,9 @@ def _harden_append_hop_mutation(
     graph: WorldGraph,
     family_id: str,
 ) -> Mutation | None:
-    # The skill-extending frontier step: deepen the credential chain by one hop, so
-    # the parent's whole looting sequence is preserved and extended. The terminal
-    # flag gate flips to a relay; a fresh flag gate is added on a spare host, and the
-    # flag's backing store is repointed to that host so it owns the flag under the
-    # per-service scoped seed the CONTAINER backing uses, not only the shared PROCESS
-    # seed — keeping the deepened world solvable across backings.
+    # The flag's backing store is repointed to the new host so it owns the flag under
+    # the per-service scoped seed the CONTAINER backing uses, not only the shared
+    # PROCESS seed — keeping the deepened world solvable across backings.
     terminal = _credential_gated_flag(graph)
     if terminal is None:
         return None
@@ -414,9 +411,6 @@ def _flag_store(graph: WorldGraph) -> str | None:
 
 
 def _credential_walk(graph: WorldGraph) -> list[tuple[str, str]]:
-    # The solution as the solver walks it: the ordered (host, credential) pairs
-    # presented at each gate, following the enables chain from the leak to the
-    # flag gate. The monotonicity gate compares two of these.
     enables: dict[str, list[str]] = {}
     for edge in graph.edges.values():
         if edge.kind == "enables":
@@ -458,10 +452,9 @@ def _credential_walk(graph: WorldGraph) -> list[tuple[str, str]]:
 
 
 def monotone_chain_gate(parent: Snapshot) -> Callable[[Snapshot, Mutation], bool]:
-    """An evolution gate that admits a child only if it extends the parent's
-    credential chain by exactly one hop — the parent's solve walk is a literal
-    prefix of the child's. Rejects decoys, swaps, and relocations tagged "harden",
-    and rejects a parent that has no chain to extend.
+    """Admit a child only if it extends the parent's credential chain by exactly
+    one hop: the parent's solve walk must be a literal prefix of the child's. A
+    parent with no chain to extend is rejected.
     """
     parent_walk = _credential_walk(parent.graph)
 

@@ -3,11 +3,8 @@
 See ``docs/design/evolving-pool-curriculum.md``. Trainer-agnostic: it depends
 only on OpenRange core (admission, ``auto_evolve``) and the episode report, never
 on a training backend, so any adapter (``openrange-trl``, …) drives it through
-the caller-supplied ``run_round``. It seeds wide, samples a round's prompts with
-a mix floor so an easy tail always survives, and between rounds shifts slowly —
-re-prioritising members by how much they can still teach, evolving the most
-promising into admitted children while keeping their parents. Difficulty is
-injected by the caller so the pool stays pack-agnostic.
+the caller-supplied ``run_round``. A mix floor keeps an easy tail in every round.
+Difficulty is injected by the caller so the pool stays pack-agnostic.
 """
 
 from __future__ import annotations
@@ -34,9 +31,8 @@ RunRound = Callable[[list[PromptRow], list[Snapshot]], RoundReports]
 GateFactory = Callable[[Snapshot], EvolutionGate]
 
 _STALENESS_STEP = 0.1
-# The most a round can score a member (learnability + regret, each <= 1): idle
-# members cap here (bounded pump) and fresh children seat here, so a new frontier
-# world is sampled next round instead of evicted before it ever runs.
+# Idle members cap here and fresh children seat here, so a new frontier world is
+# sampled next round instead of evicted before it ever runs.
 _MAX_PRIORITY = 2.0
 
 
@@ -111,9 +107,8 @@ def _member_priority(reports: Sequence[EpisodeReport]) -> float:
         if subgoals:
             achieved = sum(1 for hit in subgoals.values() if hit)
             gaps.append(1.0 - achieved / len(subgoals))
-    # The regret term keeps a world the agent is stuck partway through (low reward
-    # spread, so learnability alone would retire it) at the frontier — the distance
-    # from the ceiling, assuming every listed subgoal is reachable.
+    # Regret keeps a world the agent is stuck partway through at the frontier, where
+    # learnability alone (low reward spread) would retire it.
     regret = sum(gaps) / len(gaps) if gaps else 0.0
     return learnability + regret
 
@@ -243,8 +238,8 @@ class WorldPool:
         max_repairs: int,
     ) -> tuple[set[tuple[str, str]], bool]:
         grown: set[tuple[str, str]] = set()
-        # A selected member that yields no child is a frontier cap: the curriculum
-        # wanted to advance it but no admissible harder world passed the gate.
+        # Frontier cap: a member was due to advance but no admissible harder world
+        # passed the gate.
         capped = False
         ran = sorted(
             (m for m in self._members.values() if reports.get(m.key)),
@@ -303,11 +298,9 @@ class RoundMetrics:
 
 
 class EvalPool:
-    """A held-out set of admitted worlds, fenced from training.
-
-    It is measured each round but never sampled into a group, evolved, or bounded,
-    so train-vs-held-out solve-rate is the generalization signal the pool bet rests
-    on (``docs/design/evolving-pool-curriculum.md`` §8).
+    """A held-out set of admitted worlds, measured each round but never sampled,
+    evolved, or bounded, so train-vs-held-out solve-rate is the generalization
+    signal (``docs/design/evolving-pool-curriculum.md`` §8).
     """
 
     def __init__(self, members: Sequence[_Member]) -> None:
@@ -363,11 +356,10 @@ def run_pool_curriculum(
     evolve_top: int = 1,
     eval_pool: EvalPool | None = None,
 ) -> list[RoundMetrics]:
-    """Run the curriculum, returning per-round train and held-out solve rates.
+    """Run the curriculum, updating ``pool`` in place.
 
-    The pool is updated in place. When ``eval_pool`` is given it is measured each
-    round but never trained on or evolved, so the train-vs-held-out gap is the
-    generalization signal (§8).
+    When ``eval_pool`` is given it is measured each round but never trained on or
+    evolved, so the train-vs-held-out gap is the generalization signal (§8).
     """
     metrics: list[RoundMetrics] = []
     for _ in range(rounds):

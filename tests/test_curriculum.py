@@ -421,8 +421,6 @@ def test_auto_evolve_picks_highest_relevance_in_direction() -> None:
     assert "vuln.sqli" in out.graph.nodes
     # The original snapshot is untouched (re-admission must not mutate).
     assert "ep.high" not in snap.graph.nodes
-    # Lineage carries one canonical, top-level _evolve block (same schema for
-    # every evolution path), so a reader never special-cases grow vs patch.
     evolve_meta = out.lineage["_evolve"]
     assert isinstance(evolve_meta, Mapping)
     assert evolve_meta["parent_snapshot_id"] == snap.snapshot_id
@@ -431,15 +429,14 @@ def test_auto_evolve_picks_highest_relevance_in_direction() -> None:
     assert evolve_meta["relevance"] == 0.9
     assert evolve_meta["family"] == "stub.family"
     assert evolve_meta["note"] == "high"
-    # The block is not nested under the manifest any more.
     out_manifest = out.lineage["manifest"]
     assert isinstance(out_manifest, Mapping)
     assert "_evolve" not in out_manifest
 
 
 def test_evolve_block_is_one_schema_across_paths() -> None:
-    # Grow and patch write the same six-field block, so a reader keying on
-    # ``relevance`` never KeyErrors on a grow child (it is present, just None).
+    # Grow leaves relevance/family present-but-None so callers keying on them
+    # never KeyError across paths.
     from openrange.core.curriculum import _evolve_block
 
     keys = {"parent_snapshot_id", "direction", "kind", "relevance", "family", "note"}

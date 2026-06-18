@@ -112,10 +112,8 @@ def auto_evolve(
                 continue
         return evolved
 
-    # The grow fallback is a difficulty-knob rebuild (a fresh resample), not an
-    # in-place chain step, so it is intentionally outside the gate: a pack that uses
-    # grow for a monotone frontier must keep ``default_prior`` None so this path
-    # never fires there.
+    # Intentionally outside the gate: a pack using grow for a monotone frontier
+    # must keep ``default_prior`` None so this fallback never fires there.
     try:
         return _grow_snapshot(snapshot, pack, direction, max_repairs=max_repairs)
     except Exception:  # noqa: BLE001 — pack-supplied code is untrusted
@@ -204,8 +202,7 @@ def _evolve_block(
     family: str | None = None,
     note: str = "",
 ) -> dict[str, object]:
-    # One schema for every path: grow's absent fields are explicit None, not
-    # omitted, so a reader never special-cases which path made the snapshot.
+    # Absent fields are explicit None, not omitted, so every path shares one schema.
     return {
         "parent_snapshot_id": parent_snapshot_id,
         "direction": direction,

@@ -1,9 +1,7 @@
 """A world's difficulty as one comparable number, read from the graph.
 
-The pivot chain depth — how many credentials must be looted and reused in
-sequence to reach the flag — is what makes a world harder, so it dominates; vuln
-count only breaks ties between equal-depth worlds. The weight exceeds the
-per-world vuln count (single digits) so depth always outranks surface.
+The chain weight must exceed the per-world vuln count (single digits) so chain
+depth always outranks vuln count, which only breaks ties between equal depths.
 """
 
 from __future__ import annotations

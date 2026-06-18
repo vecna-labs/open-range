@@ -325,8 +325,6 @@ def test_write_exec_world_is_not_poolable() -> None:
 
 
 def test_world_difficulty_rises_with_chain_depth() -> None:
-    # Difficulty is read from the graph and dominated by the pivot chain depth,
-    # so a credential chain outranks a flat world that merely carries more vulns.
     flat = world_difficulty(_admit(_DEFAULT_MANIFEST).graph)
     company = world_difficulty(_admit(_COMPANY_MANIFEST).graph)
     lateral = world_difficulty(
@@ -336,8 +334,6 @@ def test_world_difficulty_rises_with_chain_depth() -> None:
 
 
 def test_warm_cache_is_a_bounded_lru(tmp_path: Path) -> None:
-    # A round visiting more worlds than the cache budget keeps the most recent N
-    # warm and evicts the least-recently-used, rather than holding only one.
     snaps = [_admit({**_COMPANY_MANIFEST, "seed": s}) for s in (1, 2, 3)]
     assert len({s.snapshot_id for s in snaps}) == 3
     svc = EpisodeService(WebappPack(), tmp_path, warm_capacity=2)
@@ -356,8 +352,8 @@ def test_warm_cache_is_a_bounded_lru(tmp_path: Path) -> None:
 
 
 def test_pool_round_keeps_the_easy_tail() -> None:
-    # Even at the lowest priority, an easy-tier world stays in the round — the
-    # mix floor is enforced when the round is composed, not left to chance.
+    # The mix floor is enforced at round composition, so the easiest world stays in
+    # even when its priority is zeroed.
     pack = WebappPack()
     pool = WorldPool.seed(
         pack,
@@ -380,9 +376,6 @@ def test_pool_round_keeps_the_easy_tail() -> None:
 
 
 def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
-    # Drive the pool through the real episode harness on PROCESS: seed wide, breach
-    # each sampled world, evolve between rounds. The pool grows a harder world,
-    # stays bounded, keeps its easy tail, and is deterministic.
     pack = WebappPack()
     seeds = [{**_COMPANY_MANIFEST, "seed": s} for s in range(4)]
     round_no = [0]
@@ -423,9 +416,8 @@ def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
 
 
 def test_grown_child_survives_a_full_pool(tmp_path: Path) -> None:
-    # A freshly grown frontier child is the hardest, newest member; when the pool is
-    # full and older members have drifted up on staleness, it must not be the one
-    # evicted the same round it is born.
+    # A child must not be evicted the round it is born: older members are forced
+    # above it on staleness, yet eviction falls on one of them.
     pack = WebappPack()
     pool = WorldPool.seed(
         pack,
@@ -451,8 +443,6 @@ def test_grown_child_survives_a_full_pool(tmp_path: Path) -> None:
 
 
 def test_staleness_priority_is_capped() -> None:
-    # An idle member climbs on staleness but never past the ceiling, so a
-    # never-sampled world cannot run away and crowd out the learning frontier.
     pack = WebappPack()
     pool = WorldPool.seed(
         pack,
@@ -469,8 +459,8 @@ def test_staleness_priority_is_capped() -> None:
 
 
 def test_round_rows_never_exceeds_groups() -> None:
-    # mix_floor is a fraction; even if a caller passes one above 1, the easy floor
-    # never inflates a round past the group budget it was sized for.
+    # mix_floor is a fraction: a value above 1 must not inflate a round past its
+    # group budget.
     pack = WebappPack()
     pool = WorldPool.seed(
         pack,
@@ -488,8 +478,6 @@ def test_round_rows_never_exceeds_groups() -> None:
 
 
 def test_pool_holds_when_no_harder_world_admits(tmp_path: Path) -> None:
-    # When the frontier cannot advance — every candidate mutation is refused — the
-    # round still completes: no child is grown and the pool is left intact.
     pack = WebappPack()
     pool = WorldPool.seed(
         pack,
@@ -509,8 +497,8 @@ def test_pool_holds_when_no_harder_world_admits(tmp_path: Path) -> None:
 
 
 def test_regrowing_the_same_parent_does_not_duplicate(tmp_path: Path) -> None:
-    # Evolution is deterministic, so growing the same parent twice yields the same
-    # child key; the pool admits it once and the second round leaves the set intact.
+    # Evolution is deterministic: the same parent yields the same child key, so the
+    # second growth is a no-op rather than a duplicate.
     pack = WebappPack()
     pool = WorldPool.seed(
         pack,
@@ -536,9 +524,6 @@ def test_regrowing_the_same_parent_does_not_duplicate(tmp_path: Path) -> None:
 
 
 def test_append_a_hop_deepens_the_chain_and_stays_solvable(tmp_path: Path) -> None:
-    # The skill-extending frontier move: a breached lateral world evolves into one
-    # whose credential chain is a hop deeper, and the deeper world is still solvable
-    # end to end through the real harness.
     pack = WebappPack()
     parent = _admit(_LATERAL_MANIFEST)
     parent_diff = world_difficulty(parent.graph)
@@ -554,9 +539,9 @@ def test_append_a_hop_deepens_the_chain_and_stays_solvable(tmp_path: Path) -> No
 
 
 def test_append_a_hop_keeps_the_flag_owned_under_scoped_seeding(tmp_path: Path) -> None:
-    # Cross-backing parity: the deepened world must be solvable under the per-service
-    # scoped seed the CONTAINER backing uses, not only the shared PROCESS seed — so
-    # the new flag-gate host must OWN the flag store, not merely serve it.
+    # Cross-backing parity: under the per-service scoped seed CONTAINER uses (not the
+    # shared PROCESS seed), the new flag-gate host must OWN the flag store, not just
+    # serve it.
     pack = WebappPack()
     parent = _admit(_LATERAL_MANIFEST)
     report = _breach_report(pack, tmp_path, parent)
@@ -580,9 +565,6 @@ def test_append_a_hop_keeps_the_flag_owned_under_scoped_seeding(tmp_path: Path) 
 
 
 def test_monotone_chain_gate_requires_one_more_hop(tmp_path: Path) -> None:
-    # The independent check that a "harden" genuinely extends the chain: a world does
-    # not extend itself, a chainless world has nothing to extend, and the one-hop
-    # deeper child is accepted.
     pack = WebappPack()
     parent = _admit(_LATERAL_MANIFEST)
     any_mutation = available_mutations(parent.graph, "webapp.pentest", [])[0]
@@ -596,9 +578,6 @@ def test_monotone_chain_gate_requires_one_more_hop(tmp_path: Path) -> None:
 
 
 def test_pool_grows_a_deeper_chain_under_the_monotone_gate(tmp_path: Path) -> None:
-    # End to end: a pool of lateral worlds, driven by the real harness, evolves a
-    # member into one with a deeper credential chain. The monotone gate admits the
-    # appended hop; without a genuine extension nothing would grow.
     pack = WebappPack()
     pool = WorldPool.seed(
         pack,
@@ -632,9 +611,6 @@ def test_pool_grows_a_deeper_chain_under_the_monotone_gate(tmp_path: Path) -> No
 
 
 def test_pool_chain_deepens_until_internal_hosts_run_out(tmp_path: Path) -> None:
-    # With no gate, append-a-hop is the top harden, so the frontier deepens a hop a
-    # round; once every internal host is on the chain no hop is offered and the
-    # frontier caps (the verifier-ceiling case).
     pack = WebappPack()
     pool = WorldPool.seed(
         pack,
@@ -659,8 +635,6 @@ def test_pool_chain_deepens_until_internal_hosts_run_out(tmp_path: Path) -> None
 
 
 def test_held_out_eval_pool_is_fenced_and_measured(tmp_path: Path) -> None:
-    # The generalization bet (§8): an eval pool admitted alongside training but
-    # fenced from it — measured each round, never sampled into a group or evolved.
     pack = WebappPack()
     train = WorldPool.seed(
         pack,
@@ -697,8 +671,8 @@ def test_held_out_eval_pool_is_fenced_and_measured(tmp_path: Path) -> None:
         eval_pool=held_out,
     )
     assert len(metrics) == 2
-    # The scripted solver breaches every world, so both rates are 1.0 and the gap
-    # is 0 — what is under test is the wiring: both measured, the eval set fenced.
+    # The scripted solver breaches every world, so both rates are 1.0 and the gap is
+    # 0; the wiring (both measured, eval set fenced) is what is under test.
     assert all(m.train_solve_rate == 1.0 for m in metrics)
     assert all(m.held_out_solve_rate == 1.0 for m in metrics)
     assert all(m.generalization_gap == 0.0 for m in metrics)

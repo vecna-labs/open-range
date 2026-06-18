@@ -216,8 +216,8 @@ class EpisodeService:
         else:
             self.npc_agent_backend = None
         self._episodes: dict[str, _RunningEpisode] = {}
-        # An LRU of booted worlds: a round sampling D distinct worlds needs
-        # capacity >= D or it thrashes (boot-evict-boot).
+        # LRU of booted worlds; capacity below a round's distinct-world
+        # count thrashes (boot-evict-boot).
         self._warm: OrderedDict[str, RuntimeHandle] = OrderedDict()
         self._warm_capacity = max(1, warm_capacity)
         # Cached reports for stopped episodes — populated by
