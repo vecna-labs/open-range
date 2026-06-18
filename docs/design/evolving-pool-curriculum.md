@@ -288,17 +288,23 @@ Two anchors keep open-ended evolution from drifting:
   staleness), evolves the top-`M` into admitted children retaining parents, and
   bounds the size. Pack-agnostic (difficulty injected) and runner-agnostic (the
   caller runs a round), so a scripted solver drives it today and a trainer later.
+- The skill-extending frontier operator — the cyber vocab now includes
+  append-a-hop (deepen the credential chain by one hop), and `monotone_chain_gate`
+  admits a frontier step only when the parent's solve walk is a prefix of the
+  child's (§3, §6). The pool threads it as a per-parent gate.
+- The held-out eval pool — `EvalPool` is admitted alongside training but fenced
+  from it; `run_pool_curriculum` measures train-vs-held-out solve-rate each round
+  (`RoundMetrics`), so the generalization gap (§8) is observed, not assumed.
 
 **To build (where the work and the risk live):**
 - A replayable weighted sampler. The shipped round composes deterministic
   top-priority rows under the mix floor; a seed-contract weighted draw (frozen
   *within* a round, updated *between*) is the refinement that makes within-round
   sampling i.i.d.
-- The skill-extending operator (append-a-hop) and the monotonicity check (§3, §6).
 - The reward-std term in the priority, and a per-skill (not global) mix floor.
-- The held-out eval pool and the generalization metric (§8).
 - A behavioural difficulty term layered on the static metric, and persisting the
   metric onto the lineage so the dashboard can read it (§11).
+- The LLM-built variant of append-a-hop (§3's second axis), behind the same gate.
 
 The cost model: admission is static graph-reachability — cheap and content-
 addressable (cache verdicts by content-hash so unchanged members are not

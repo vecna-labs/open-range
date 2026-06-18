@@ -10,7 +10,7 @@ injected by the caller so the pool stays pack-agnostic.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from openrange_pack_sdk import Mutation, Pack, Snapshot
@@ -50,6 +50,53 @@ class _Member:
     @property
     def key(self) -> tuple[str, str]:
         return (self.snapshot.snapshot_id, self.task_id)
+
+
+def _members_of(
+    snapshot: Snapshot,
+    difficulty: float,
+    family: str | None,
+    out: list[_Member],
+) -> None:
+    for task in snapshot.tasks:
+        fam = str(task.meta.get("family", ""))
+        if family is not None and fam != family:
+            continue
+        out.append(
+            _Member(
+                snapshot=snapshot,
+                task_id=task.id,
+                instruction=task.instruction,
+                family=fam,
+                difficulty=difficulty,
+            )
+        )
+
+
+def _rows_for(members: Iterable[_Member], num_generations: int) -> list[PromptRow]:
+    rows: list[PromptRow] = []
+    for member in members:
+        for _ in range(num_generations):
+            rows.append(
+                {
+                    "prompt": [{"role": "user", "content": member.instruction}],
+                    "snapshot_id": member.snapshot.snapshot_id,
+                    "task_id": member.task_id,
+                }
+            )
+    return rows
+
+
+def _snapshots_of(members: Iterable[_Member]) -> list[Snapshot]:
+    by_id: dict[str, Snapshot] = {}
+    for member in members:
+        by_id.setdefault(member.snapshot.snapshot_id, member.snapshot)
+    return list(by_id.values())
+
+
+def _mean_pass_rate(report_groups: Iterable[Sequence[EpisodeReport]]) -> float:
+    rates = [sum(1 for r in g if r.passed) / len(g) for g in report_groups if g]
+    return sum(rates) / len(rates) if rates else 0.0
 
 
 def _member_priority(reports: Sequence[EpisodeReport]) -> float:
@@ -116,31 +163,10 @@ class WorldPool:
             result = admit(pack, dict(manifest), max_repairs=max_repairs)
             if isinstance(result, AdmissionFailure):
                 continue
-            cls._members_of(result, difficulty_fn(result), family, members)
+            _members_of(result, difficulty_fn(result), family, members)
         return cls(
             members, difficulty_fn=difficulty_fn, max_size=max_size, mix_floor=mix_floor
         )
-
-    @staticmethod
-    def _members_of(
-        snapshot: Snapshot,
-        difficulty: float,
-        family: str | None,
-        out: list[_Member],
-    ) -> None:
-        for task in snapshot.tasks:
-            fam = str(task.meta.get("family", ""))
-            if family is not None and fam != family:
-                continue
-            out.append(
-                _Member(
-                    snapshot=snapshot,
-                    task_id=task.id,
-                    instruction=task.instruction,
-                    family=fam,
-                    difficulty=difficulty,
-                )
-            )
 
     def __len__(self) -> int:
         return len(self._members)
@@ -149,23 +175,10 @@ class WorldPool:
         return set(self._members)
 
     def snapshots(self) -> list[Snapshot]:
-        by_id: dict[str, Snapshot] = {}
-        for member in self._members.values():
-            by_id.setdefault(member.snapshot.snapshot_id, member.snapshot)
-        return list(by_id.values())
+        return _snapshots_of(self._members.values())
 
     def round_rows(self, *, groups: int, num_generations: int) -> list[PromptRow]:
-        rows: list[PromptRow] = []
-        for member in self._select(groups):
-            for _ in range(num_generations):
-                rows.append(
-                    {
-                        "prompt": [{"role": "user", "content": member.instruction}],
-                        "snapshot_id": member.snapshot.snapshot_id,
-                        "task_id": member.task_id,
-                    }
-                )
-        return rows
+        return _rows_for(self._select(groups), num_generations)
 
     def _easy_tier(self) -> set[tuple[str, str]]:
         ranked = sorted(self._members.values(), key=lambda m: (m.difficulty, m.key))
@@ -269,6 +282,65 @@ class WorldPool:
             del self._members[evictable.pop(0).key]
 
 
+@dataclass(frozen=True)
+class RoundMetrics:
+    train_solve_rate: float
+    held_out_solve_rate: float | None = None
+
+    @property
+    def generalization_gap(self) -> float | None:
+        if self.held_out_solve_rate is None:
+            return None
+        return self.train_solve_rate - self.held_out_solve_rate
+
+
+class EvalPool:
+    """A held-out set of admitted worlds, fenced from training.
+
+    It is measured each round but never sampled into a group, evolved, or bounded,
+    so train-vs-held-out solve-rate is the generalization signal the pool bet rests
+    on (``docs/design/evolving-pool-curriculum.md`` §8).
+    """
+
+    def __init__(self, members: Sequence[_Member]) -> None:
+        self._members = list(members)
+
+    @classmethod
+    def seed(
+        cls,
+        pack: Pack,
+        manifests: Sequence[Mapping[str, object]],
+        *,
+        difficulty_fn: DifficultyFn,
+        family: str | None = None,
+        max_repairs: int = 2,
+    ) -> EvalPool:
+        members: list[_Member] = []
+        for manifest in manifests:
+            result = admit(pack, dict(manifest), max_repairs=max_repairs)
+            if isinstance(result, AdmissionFailure):
+                continue
+            _members_of(result, difficulty_fn(result), family, members)
+        return cls(members)
+
+    def __len__(self) -> int:
+        return len(self._members)
+
+    def keys(self) -> set[tuple[str, str]]:
+        return {m.key for m in self._members}
+
+    def snapshots(self) -> list[Snapshot]:
+        return _snapshots_of(self._members)
+
+    def rows(self, *, num_generations: int) -> list[PromptRow]:
+        return _rows_for(self._members, num_generations)
+
+    def solve_rate(self, reports: RoundReports) -> float:
+        return _mean_pass_rate(
+            reports[m.key] for m in self._members if m.key in reports
+        )
+
+
 def run_pool_curriculum(
     pool: WorldPool,
     run_round: RunRound,
@@ -281,10 +353,30 @@ def run_pool_curriculum(
     gate: EvolutionGate | None = None,
     gate_factory: GateFactory | None = None,
     evolve_top: int = 1,
-) -> WorldPool:
+    eval_pool: EvalPool | None = None,
+) -> list[RoundMetrics]:
+    """Run the curriculum, returning per-round train and held-out solve rates.
+
+    The pool is updated in place. When ``eval_pool`` is given it is measured each
+    round but never trained on or evolved, so the train-vs-held-out gap is the
+    generalization signal (§8).
+    """
+    metrics: list[RoundMetrics] = []
     for _ in range(rounds):
         rows = pool.round_rows(groups=groups, num_generations=num_generations)
         reports = run_round(rows, pool.snapshots())
+        held_out: float | None = None
+        if eval_pool is not None and len(eval_pool):
+            eval_reports = run_round(
+                eval_pool.rows(num_generations=num_generations), eval_pool.snapshots()
+            )
+            held_out = eval_pool.solve_rate(eval_reports)
+        metrics.append(
+            RoundMetrics(
+                train_solve_rate=_mean_pass_rate(reports.values()),
+                held_out_solve_rate=held_out,
+            )
+        )
         pool.update(
             reports,
             pack=pack,
@@ -293,4 +385,4 @@ def run_pool_curriculum(
             gate_factory=gate_factory,
             evolve_top=evolve_top,
         )
-    return pool
+    return metrics

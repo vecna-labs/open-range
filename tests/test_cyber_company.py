@@ -25,7 +25,13 @@ from cyber_webapp.mutation import available_mutations
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
-from openrange_trl import EpisodeEnv, WorldPool, run_pool_curriculum
+from openrange_trl import (
+    EpisodeEnv,
+    EvalPool,
+    RoundMetrics,
+    WorldPool,
+    run_pool_curriculum,
+)
 from openrange_trl._pool import _MAX_PRIORITY
 
 from examples.tools import WEB_TOOLS
@@ -622,6 +628,59 @@ def test_pool_chain_deepens_until_internal_hosts_run_out(tmp_path: Path) -> None
         pool, run_round, rounds=5, pack=pack, groups=1, num_generations=2
     )
     assert max(m.difficulty for m in pool._members.values()) >= start + 10
+
+
+def test_held_out_eval_pool_is_fenced_and_measured(tmp_path: Path) -> None:
+    # The generalization bet (§8): an eval pool admitted alongside training but
+    # fenced from it — measured each round, never sampled into a group or evolved.
+    pack = WebappPack()
+    train = WorldPool.seed(
+        pack,
+        [{**_COMPANY_MANIFEST, "seed": s} for s in (0, 1)],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=5,
+    )
+    held_out = EvalPool.seed(
+        pack,
+        [{**_COMPANY_MANIFEST, "seed": 2}, _LATERAL_MANIFEST],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+    )
+    assert len(held_out) == 2
+    eval_keys = held_out.keys()
+    assert not (train.keys() & eval_keys)
+    round_no = [0]
+
+    def run_round(
+        rows: list[dict[str, object]], snapshots: list[Snapshot]
+    ) -> dict[tuple[str, str], list[EpisodeReport]]:
+        round_no[0] += 1
+        return _solve_round(pack, tmp_path / f"r{round_no[0]}", rows, snapshots)
+
+    metrics = run_pool_curriculum(
+        train,
+        run_round,
+        rounds=2,
+        pack=pack,
+        groups=2,
+        num_generations=2,
+        gate=_pentest_only,
+        eval_pool=held_out,
+    )
+    assert len(metrics) == 2
+    # The scripted solver breaches every world, so both rates are 1.0 and the gap
+    # is 0 — what is under test is the wiring: both measured, the eval set fenced.
+    assert all(m.train_solve_rate == 1.0 for m in metrics)
+    assert all(m.held_out_solve_rate == 1.0 for m in metrics)
+    assert all(m.generalization_gap == 0.0 for m in metrics)
+    assert held_out.keys() == eval_keys
+    assert not (train.keys() & eval_keys)
+
+
+def test_generalization_gap_is_train_minus_held_out() -> None:
+    assert RoundMetrics(0.8, 0.5).generalization_gap == pytest.approx(0.3)
+    assert RoundMetrics(0.8).generalization_gap is None
 
 
 def test_services_are_realistically_named() -> None:
