@@ -1,8 +1,10 @@
 """The curriculum as an evolving pool of worlds-and-tasks.
 
-See ``docs/design/evolving-pool-curriculum.md``. The pool is harness-side (core
-ships no curriculum algorithm): it seeds wide, samples a round's prompts with a
-mix floor so an easy tail always survives, and between rounds shifts slowly —
+See ``docs/design/evolving-pool-curriculum.md``. Trainer-agnostic: it depends
+only on OpenRange core (admission, ``auto_evolve``) and the episode report, never
+on a training backend, so any adapter (``openrange-trl``, …) drives it through
+the caller-supplied ``run_round``. It seeds wide, samples a round's prompts with
+a mix floor so an easy tail always survives, and between rounds shifts slowly —
 re-prioritising members by how much they can still teach, evolving the most
 promising into admitted children while keeping their parents. Difficulty is
 injected by the caller so the pool stays pack-agnostic.

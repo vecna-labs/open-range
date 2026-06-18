@@ -291,6 +291,14 @@ Two anchors keep open-ended evolution from drifting:
   staleness), evolves the top-`M` into admitted children retaining parents, and
   bounds the size. Pack-agnostic (difficulty injected) and runner-agnostic (the
   caller runs a round), so a scripted solver drives it today and a trainer later.
+  It lives in `openrange.pool` — trainer-agnostic, depending only on core — so any
+  adapter drives it; it is *not* part of the TRL adapter. The TRL seam is concrete:
+  `run_round` builds a `datasets.Dataset` from `round_rows` and runs one short
+  GRPO pass per round (TRL reads `train_dataset` fresh each `train()`, so the
+  evolving set just gets reassigned between rounds), and the `snapshot_id`/`task_id`
+  columns flow into TRL's per-rollout `environment.reset()`. TRL has no
+  world-distribution curriculum of its own; its replay buffer and GFPO are
+  complementary *within-batch* signal boosters, a layer below this.
 - The skill-extending frontier operator — the cyber vocab now includes
   append-a-hop (deepen the credential chain by one hop), and `monotone_chain_gate`
   admits a frontier step only when the parent's solve walk is a prefix of the

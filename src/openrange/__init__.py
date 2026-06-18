@@ -56,6 +56,12 @@ from openrange.npc import (
     NPCS,
     NPCRegistry,
 )
+from openrange.pool import (
+    EvalPool,
+    RoundMetrics,
+    WorldPool,
+    run_pool_curriculum,
+)
 from openrange.runtime import (
     DashboardServerHandle,
     EpisodeContext,
@@ -99,6 +105,7 @@ __all__ = [
     "EpisodeRuntimeError",
     "EpisodeService",
     "EpisodeUpdate",
+    "EvalPool",
     "GraphPatch",
     "Issue",
     "NPCS",
@@ -112,6 +119,7 @@ __all__ = [
     "PackRegistry",
     "Reward",
     "Role",
+    "RoundMetrics",
     "RunConfig",
     "SnapshotStore",
     "Solver",
@@ -123,12 +131,14 @@ __all__ = [
     "TrajectoryStep",
     "Visibility",
     "WorldGraph",
+    "WorldPool",
     "admit",
     "apply_patch",
     "auto_evolve",
     "direction_from_reports",
     "episode_reward",
     "episode_trajectory",
+    "run_pool_curriculum",
     "snapshot_to_dict",
     "to_jsonl",
     "validate",

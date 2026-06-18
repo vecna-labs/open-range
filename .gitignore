@@ -47,3 +47,7 @@ docs/runtime/
 docs/cyber-pack-plan.md
 docs/v1-live-eval-audit.md
 .claude/
+
+# vendored read-only reference sources (TRL clone, etc.)
+.refs/
+/open-range.zip

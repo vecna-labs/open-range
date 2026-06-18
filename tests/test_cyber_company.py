@@ -26,19 +26,19 @@ from cyber_webapp.mutation import available_mutations
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
-from openrange_trl import (
-    EpisodeEnv,
-    EvalPool,
-    RoundMetrics,
-    WorldPool,
-    run_pool_curriculum,
-)
-from openrange_trl._pool import _MAX_PRIORITY
+from openrange_trl import EpisodeEnv
 
 from examples.tools import WEB_TOOLS
 from openrange.core.admit import admit
 from openrange.core.curriculum import auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService
+from openrange.pool import (
+    _MAX_PRIORITY,
+    EvalPool,
+    RoundMetrics,
+    WorldPool,
+    run_pool_curriculum,
+)
 
 _COMPANY_MANIFEST = {
     "pack": {"id": "webapp"},
