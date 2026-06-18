@@ -51,6 +51,7 @@ from openrange.core.episode import (
     EpisodeReport,
     EpisodeService,
 )
+from openrange.pool import PromptRow, RoundReports, RunRound
 from openrange.training import (
     Reward,
     Trajectory,
@@ -325,13 +326,18 @@ def build_grpo_dataset(snapshot: Snapshot, *, repeat: int = 1) -> list[dict[str,
     return rows
 
 
-def make_reward_func() -> Callable[..., list[float]]:
+def make_reward_func(
+    collector: dict[tuple[str, str], list[EpisodeReport]] | None = None,
+) -> Callable[..., list[float]]:
     """Return a TRL-shaped ``reward_func(prompts, completions, ...)``.
 
     In the agentic path TRL passes the rollouts' ``environments``; this finalizes
-    each (lazily stopping + grading the episode) and returns
-    ``[env.reward, ...]`` in order. All reward logic is the pack's structured
-    grade shaped by ``episode_reward`` — the trainer only *reads* it.
+    each (lazily stopping + grading the episode) and returns ``[env.reward, ...]``
+    in order. All reward logic is the pack's structured grade shaped by
+    ``episode_reward`` — the trainer only *reads* it. When ``collector`` is given,
+    each graded report is also recorded under its ``(snapshot_id, task_id)``, so a
+    curriculum reads one round's reports back from a multi-world batch (the trainer
+    itself keeps only the last episode per env slot).
     """
 
     def reward_func(
@@ -345,6 +351,9 @@ def make_reward_func() -> Callable[..., list[float]]:
         rewards: list[float] = []
         for env in environments or ():
             env._finalize()
+            if collector is not None and env.report is not None:
+                key = (env.report.snapshot_id, env.report.task_id)
+                collector.setdefault(key, []).append(env.report)
             rewards.append(float(env.reward))
         return rewards
 
@@ -407,6 +416,64 @@ def env_trajectory(env: EpisodeEnv) -> Trajectory:
     return episode_trajectory(env.report, env.turns)
 
 
+def make_grpo_run_round(
+    pack: Pack,
+    *,
+    model: Any,
+    args: Any,
+    tools: Sequence[Tool],
+    run_root: str | Path,
+    processing_class: Any = None,
+    peft_config: Any = None,
+    reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+    backing: Backing = Backing.PROCESS,
+    sandbox: bool = False,
+) -> RunRound:
+    """A ``run_round`` for :func:`openrange.pool.run_pool_curriculum`.
+
+    Each round drives one short ``trl.GRPOTrainer`` pass over the round's rows and
+    returns the graded reports keyed by ``(snapshot_id, task_id)``. The model
+    carries forward across rounds (``peft_config`` wraps it once); each round
+    re-roots the env factory onto the round's evolving snapshots. ``args`` is a
+    ``GRPOConfig`` whose ``max_steps`` bounds the round. ``trl`` is imported here so
+    importing :mod:`openrange_trl` stays torch-free.
+    """
+    from datasets import Dataset
+    from trl import GRPOTrainer  # type: ignore[attr-defined]
+
+    base = Path(run_root)
+    base.mkdir(parents=True, exist_ok=True)
+    current_model: Any = model
+    current_peft: Any = peft_config
+
+    def run_round(rows: list[PromptRow], snapshots: list[Snapshot]) -> RoundReports:
+        nonlocal current_model, current_peft
+        collector: dict[tuple[str, str], list[EpisodeReport]] = {}
+        factory = make_environment_factory(
+            pack,
+            snapshots,
+            base / uuid.uuid4().hex[:8],
+            tools=tools,
+            reward_fn=reward_fn,
+            backing=backing,
+            sandbox=sandbox,
+        )
+        trainer = GRPOTrainer(
+            model=current_model,
+            reward_funcs=[make_reward_func(collector)],  # type: ignore[list-item]
+            args=args,
+            train_dataset=Dataset.from_list(rows),
+            processing_class=processing_class,
+            environment_factory=factory,
+            peft_config=current_peft,
+        )
+        trainer.train()
+        current_model, current_peft = trainer.model, None
+        return collector
+
+    return run_round
+
+
 def reward_variance_policy(
     reports: Sequence[EpisodeReportLike],
     *,
@@ -452,7 +519,7 @@ __all__ = [
     "build_grpo_dataset",
     "env_trajectory",
     "make_environment_factory",
+    "make_grpo_run_round",
     "make_reward_func",
     "reward_variance_policy",
-    "run_pool_curriculum",
 ]

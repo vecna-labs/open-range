@@ -270,6 +270,39 @@ class TestSeams:
         rewards = make_reward_func()([], [], environments=[solved, floored])
         assert rewards == [1.0, 0.0]
 
+    def test_reward_func_records_reports_by_world(
+        self, make_env: EnvMaker, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        # The recording collector keys each graded rollout by (snapshot_id,
+        # task_id), so a multi-world GRPO batch reads back as the pool's per-member
+        # reports — what trainer.environments (last-per-slot) cannot give.
+        pack = WebappPack()
+        task = _pentest_task(snapshot)
+        env_a = make_env()
+        _start(env_a, snapshot, task)
+        _grade(env_a)
+
+        other = admit(pack, manifest={**_MANIFEST, "seed": 1})
+        assert isinstance(other, Snapshot)
+        other_task = _pentest_task(other)
+        svc = EpisodeService(pack, tmp_path / "other")
+        env_b = EpisodeEnv(
+            service=svc, snapshots={other.snapshot_id: other}, tools=WEB_TOOLS
+        )
+        try:
+            _start(env_b, other, other_task)
+            _grade(env_b)
+            collector: dict[tuple[str, str], list[EpisodeReport]] = {}
+            make_reward_func(collector)([], [], environments=[env_a, env_b])
+            assert set(collector) == {
+                (snapshot.snapshot_id, task.id),
+                (other.snapshot_id, other_task.id),
+            }
+            assert collector[(snapshot.snapshot_id, task.id)] == [env_a.report]
+            assert collector[(other.snapshot_id, other_task.id)] == [env_b.report]
+        finally:
+            svc.close()
+
     def test_factory_builds_isolated_envs(
         self, snapshot: Snapshot, tmp_path: Path
     ) -> None:

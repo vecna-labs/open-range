@@ -510,3 +510,92 @@ def test_live_grpo_curriculum_evolves_between_rounds(tmp_path: Path) -> None:
 
     # Three distinct worlds: the curriculum advanced as a chain across the rounds.
     assert len({s.snapshot_id for s in lineage}) == 3
+
+
+def test_live_grpo_pool_curriculum(tmp_path: Path) -> None:
+    """Two real GRPO rounds driven by the world POOL (not a single chain).
+
+    The pool samples a round's rows; ``make_grpo_run_round`` trains one GRPO pass
+    and returns the graded reports keyed by ``(snapshot_id, task_id)``; the pool
+    re-prioritises and evolves between rounds — the build-train-build-train loop on
+    a real trainer. A laptop model won't drive a spread, so the direction is forced;
+    learning the exploit is the GPU-scale step. This proves the pool↔GRPO seam.
+    """
+    datasets = pytest.importorskip("datasets")
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+    trl = pytest.importorskip("trl")
+    del datasets
+
+    from cyber_webapp import WebappPack
+    from cyber_webapp.difficulty import world_difficulty
+    from openrange_trl import make_grpo_run_round
+
+    from openrange.pool import WorldPool, run_pool_curriculum
+
+    pack = WebappPack()
+    manifest = {
+        "world": {"goal": "recover the hidden flag"},
+        "pack": {"id": "webapp"},
+        "runtime": {"tick": {"mode": "off"}},
+        "npc": [],
+        "seed": 0,
+        "loot_shapes": {"db": 1, "file": 0},
+        "vuln_kinds": {"sql_injection": 1},
+    }
+    pool = WorldPool.seed(
+        pack,
+        [manifest],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=4,
+    )
+    assert len(pool) == 1
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(_MODEL)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(_MODEL)
+    lora = peft.LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        task_type="CAUSAL_LM",
+    )
+    config = trl.GRPOConfig(
+        output_dir=str(tmp_path / "trainer"),
+        per_device_train_batch_size=2,
+        num_generations=2,
+        steps_per_generation=1,
+        max_steps=1,
+        beta=0.0,
+        max_completion_length=128,
+        max_tool_calling_iterations=3,
+        use_vllm=False,
+        report_to="none",
+        save_strategy="no",
+        bf16=False,
+        fp16=False,
+    )
+    run_round = make_grpo_run_round(
+        pack,
+        model=model,
+        args=config,
+        tools=WEB_TOOLS,
+        run_root=tmp_path / "envs",
+        processing_class=tokenizer,
+        peft_config=lora,
+    )
+    metrics = run_pool_curriculum(
+        pool,
+        run_round,
+        rounds=2,
+        pack=pack,
+        groups=1,
+        num_generations=2,
+        policy=_always_harden,
+        gate=lambda _snap, mut: mut.family == "webapp.pentest",
+    )
+    assert len(metrics) == 2
+    assert all(0.0 <= m.train_solve_rate <= 1.0 for m in metrics)
+    # Each round trained a real GRPO pass over the pool and evolved a harder world:
+    assert len(pool) > 1
