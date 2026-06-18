@@ -101,6 +101,13 @@ ignore_missing_imports = true
 module = ["datasets", "datasets.*"]
 ignore_missing_imports = true
 
+# trl is an optional (train-extra) lazy import; treat it as untyped whether or not
+# it's installed (it ships py.typed but does not export its public API cleanly).
+[[tool.mypy.overrides]]
+module = ["trl", "trl.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
 [tool.pytest.ini_options]
 # Repo root on the path so tests can import the example eval scripts (the
 # `examples` package) — they double as executable specs worth pinning.

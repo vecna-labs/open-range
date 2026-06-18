@@ -443,7 +443,7 @@ def make_grpo_rounds(
     ``trl`` is imported here so importing :mod:`openrange_trl` stays torch-free.
     """
     from datasets import Dataset
-    from trl import GRPOTrainer  # type: ignore[attr-defined]
+    from trl import GRPOTrainer
 
     base = Path(run_root)
     base.mkdir(parents=True, exist_ok=True)
@@ -470,7 +470,7 @@ def make_grpo_rounds(
         )
         trainer = GRPOTrainer(
             model=holder["model"],
-            reward_funcs=[make_reward_func(collector)],  # type: ignore[list-item]
+            reward_funcs=[make_reward_func(collector)],
             args=run_args,
             train_dataset=Dataset.from_list(rows),
             processing_class=processing_class,
