@@ -8,20 +8,18 @@ from graphschema import Node, WorldGraph
 def build_discovery(
     graph: WorldGraph, only_services: frozenset[str] | None = None
 ) -> dict[str, object]:
-    # ``only_services`` scopes the discovery doc to those services — a per-service app
-    # advertises only its own endpoints, not the rest of the (internal) estate.
-    # The single-app doc lists the whole estate; when recon disclosure is withheld it
-    # must advertise only the public entrypoint, leaving the internal estate to be
-    # discovered. Per-service docs already scope to their own service via only_services.
-    hide_internal = only_services is None and (
-        str(graph.meta.get("recon_disclosure", "full")) != "full"
-    )
+    # Show only the client's vantage: a per-service container its own endpoints
+    # (``only_services``), the single-app entrypoint only public services. The
+    # internal estate is reached by pivoting, never read off the public doc.
     services_by_id: dict[str, Node] = {
         n.id: n
         for n in graph.nodes.values()
         if n.kind == "service"
-        and (only_services is None or n.id in only_services)
-        and not (hide_internal and n.attrs.get("exposure") != "public")
+        and (
+            n.id in only_services
+            if only_services is not None
+            else n.attrs.get("exposure") == "public"
+        )
     }
     endpoints_by_service: dict[str, list[Node]] = {sid: [] for sid in services_by_id}
     for edge in graph.edges.values():

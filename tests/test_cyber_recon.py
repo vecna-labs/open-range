@@ -115,15 +115,16 @@ def test_full_discloses_the_estate_none_withholds_it() -> None:
     full = _admit(_COMPANY).graph
     blind = _admit(_NONE).graph
 
-    full_doc = {s["name"]: s["exposure"] for s in _services(full)}
-    blind_doc = {s["name"]: s["exposure"] for s in _services(blind)}
-    assert _internal_names(full) <= set(full_doc)  # full advertises internal hosts
-    assert _internal_names(blind).isdisjoint(blind_doc)  # none hides them entirely
+    # The public discovery doc never lists the internal estate, at either level —
+    # disclosure is the recon vuln's job, which the knob gates.
+    for graph in (full, blind):
+        listed = {str(s["name"]) for s in _services(graph)}
+        assert _internal_names(graph).isdisjoint(listed)
 
     recon = _vuln(full, "config_disclosure")
     assert recon is not None
     assert set(recon.attrs["params"]["internal_services"]) == _internal_names(full)
-    assert _vuln(blind, "config_disclosure") is None  # no free host list at all
+    assert _vuln(blind, "config_disclosure") is None  # none has no recon vuln at all
 
 
 @pytest.mark.parametrize("manifest", [_NONE, _LATERAL_NONE])
@@ -156,12 +157,17 @@ def test_blind_ssrf_confirms_a_real_host_and_rejects_a_typo(
     assert flag not in real_body and flag not in fake_body  # neither leaks the flag
 
 
-def test_default_world_keeps_full_disclosure() -> None:
+def test_unset_recon_defaults_to_full() -> None:
     graph = _admit(_DEFAULT).graph
-    assert graph.meta.get("recon_disclosure") == "full"
-    assert _vuln(graph, "config_disclosure") is None  # a flat world has no recon vuln
-    listed = {s["name"] for s in _services(graph)}
-    assert listed == {str(n.attrs.get("name")) for n in graph.by_kind("service")}
+    assert graph.meta.get("recon_disclosure") == "full"  # full is the default level
+    assert _vuln(graph, "config_disclosure") is None  # recon is a company-only vuln
+    listed = {str(s["name"]) for s in _services(graph)}
+    public = {
+        str(n.attrs.get("name"))
+        for n in graph.by_kind("service")
+        if n.attrs.get("exposure") == "public"
+    }
+    assert listed == public  # the doc is the public vantage, internals never listed
 
 
 def test_evolution_does_not_re_add_recon_to_a_blind_world() -> None:
