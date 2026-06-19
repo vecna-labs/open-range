@@ -1,16 +1,14 @@
-"""Reference tools for the in-process TRL training path.
+"""Reference tools for the TRL training path — examples, not part of OpenRange.
 
-A TRL/GRPO policy is a model emitting tokens — it has **no shell**, so it can only
-call the function-tools the env reflects. To act at all it needs minimal shims: an
-``http_get`` to reach an HTTP world, a ``submit`` to declare its answer, file ops to
-edit a code world. These are *examples* a user copies or replaces for their own
-policy, **not** part of OpenRange — a sandboxed agent has its own bash/curl/python
-and brings its own tools, so it needs none of this.
+The realistic model is a sandbox: ``EpisodeEnv(sandbox=True)`` gives the agent its own
+hardened container plus a ``run`` capability, and the agent composes ``curl`` /
+``python`` itself — one shell primitive, no HTTP tools shipped from the harness, the
+way a Kali/CTF agent works (proven end to end in ``tests/test_trl_sandbox_episode.py``).
+``shell`` is that primitive; ``submit`` records the answer for the held-out grader.
+``FILE_TOOLS`` are a shell-less convenience for editing a code world's workspace.
 
-A tool is a plain callable taking the live episode ``surface`` first, then the
-model's kwargs; the adapter (``openrange_trl.EpisodeEnv``) turns each into a TRL
-tool (schema from the signature + docstring, surface injected at call).
-``WEB_TOOLS`` / ``FILE_TOOLS`` bundle the common sets.
+A tool is a plain callable taking the live episode ``surface`` first, then the model's
+kwargs; ``EpisodeEnv`` reflects each as a TRL tool (schema from signature + docstring).
 """
 
 from __future__ import annotations
@@ -18,10 +16,34 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
-_HTTP_TIMEOUT = 5
+
+def shell(surface: Mapping[str, Any], command: str) -> str:
+    """Run a shell command on your own machine and return its combined output.
+
+    Compose requests yourself, e.g. ``curl -s http://target:8000/items?id=1`` or
+    ``curl -s -X POST --data 'user=admin&pw=x' http://target:8000/login``.
+
+    Args:
+        command: The shell command line to run.
+    """
+    run = surface.get("run")
+    if not callable(run):
+        return "error: no shell in this episode (start the env with sandbox=True)"
+    return str(run(command).output)
+
+
+def submit(surface: Mapping[str, Any], content: str) -> str:
+    """Submit your final answer; the held-out grader reads ``result.json``.
+
+    Args:
+        content: A JSON object carrying the requested field, e.g.
+            {"flag": "<the value you recovered>"}.
+    """
+    (Path(str(surface["solver_root"])) / "result.json").write_text(
+        content, encoding="utf-8"
+    )
+    return f"submitted {len(content)} byte(s)"
 
 
 class WorkspaceError(Exception):
@@ -80,58 +102,6 @@ class FileWorkspaceTools:
         occurrences = original.count(find)
         target.write_text(original.replace(find, replace), encoding="utf-8")
         return f"patched {path} ({occurrences} occurrence(s))"
-
-
-def http_get(surface: Mapping[str, Any], path: str) -> str:
-    """Send an HTTP GET to the running target and return its status + body.
-
-    Args:
-        path: Request path including any query string (e.g. /items?id=1),
-            resolved against the target's base URL.
-    """
-    base = str(surface["base_url"])
-    try:
-        with urlopen(Request(base + path), timeout=_HTTP_TIMEOUT) as resp:
-            return f"status={resp.status}\n{resp.read().decode('utf-8', 'replace')}"
-    except HTTPError as exc:
-        return f"status={exc.code}\n{exc.read().decode('utf-8', 'replace')}"
-
-
-def http_post(
-    surface: Mapping[str, Any],
-    path: str,
-    body: str = "",
-    content_type: str = "application/x-www-form-urlencoded",
-) -> str:
-    """Send an HTTP POST with a body to the running target and return its status + body.
-
-    Args:
-        path: Request path, resolved against the target's base URL.
-        body: The request body to send, e.g. form-encoded "user=admin&pw=x".
-        content_type: The body's media type; defaults to form encoding. Use
-            "application/json" to send a JSON body.
-    """
-    base = str(surface["base_url"])
-    req = Request(base + path, data=body.encode("utf-8"), method="POST")
-    req.add_header("Content-Type", content_type)
-    try:
-        with urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
-            return f"status={resp.status}\n{resp.read().decode('utf-8', 'replace')}"
-    except HTTPError as exc:
-        return f"status={exc.code}\n{exc.read().decode('utf-8', 'replace')}"
-
-
-def submit(surface: Mapping[str, Any], content: str) -> str:
-    """Submit your final answer; the held-out grader reads ``result.json``.
-
-    Args:
-        content: A JSON object carrying the requested field, e.g.
-            {"flag": "<the value you recovered>"}.
-    """
-    (Path(str(surface["solver_root"])) / "result.json").write_text(
-        content, encoding="utf-8"
-    )
-    return f"submitted {len(content)} byte(s)"
 
 
 def read_file(surface: Mapping[str, Any], path: str) -> str:
@@ -193,5 +163,5 @@ def run_tests(surface: Mapping[str, Any], node_ids: str = "") -> str:
     return f"{head}\n{stdout or '(no output)'}"
 
 
-WEB_TOOLS = (http_get, http_post, submit)
+WEB_TOOLS = (shell, submit)
 FILE_TOOLS = (read_file, write_file, list_dir, apply_patch, run_tests)

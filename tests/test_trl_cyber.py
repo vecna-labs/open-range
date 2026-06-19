@@ -1,9 +1,11 @@
 """The cyber webapp pack, trained through the TRL adapter's generic ``EpisodeEnv``.
 
-Live but **torch-free**: each test boots the pack's real HTTP server (no model)
-and drives the env's reference tools (``WEB_TOOLS``) by hand, as a rollout would.
-Pins ``seed=0`` — a deterministic world whose pentest oracle is a SQL-injection
-delivered as a POST body — so the reward surface is reproducible.
+The live rungs run as a real rollout: each boots the pack on the CONTAINER backing
+with ``sandbox=True``, and the agent acts the way a CTF agent does -- its own
+``curl`` from its own sandbox, over the network, against the ``http://target:8000``
+alias (no HTTP tool is shipped). Pins ``seed=0`` -- a deterministic world whose
+pentest oracle is a SQL-injection delivered as a POST body -- so the reward surface
+is reproducible.
 
 The reward is the world's held-out verdict over the *HTTP* path: GRPO learns from
 the spread of a group's rewards, so the integration only yields a gradient if
@@ -14,19 +16,23 @@ different actions earn different grades. ``webapp.pentest`` admits four:
     reach + submit a wrong value      -> 0.667  (reached + extracted_anything)
     exploit the vuln + submit flag    -> 1.0    (all three -> success)
 
-These lock that surface in, and prove a real exploit-over-HTTP reaches ``1.0``.
+These lock that surface in, and prove a real exploit-over-HTTP reaches ``1.0``. The
+live rungs need docker (the sandbox joins the target's container network); the
+dataset/plumbing/evolution checks stay torch-free and docker-free.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 from cyber_webapp import WebappPack
-from cyber_webapp.reference_solver import exploit_and_benign
-from openrange_pack_sdk import EpisodeResult, Snapshot, TaskSpec
+from cyber_webapp.reference_solver import Request, exploit_and_benign
+from openrange_pack_sdk import Backing, EpisodeResult, Snapshot, TaskSpec
 from openrange_trl import (
     EpisodeEnv,
     build_grpo_dataset,
@@ -36,7 +42,7 @@ from openrange_trl import (
     reward_variance_policy,
 )
 
-from examples.tools import WEB_TOOLS
+from examples.tools import shell, submit
 from openrange.core.admit import admit
 from openrange.core.curriculum import auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService
@@ -57,6 +63,23 @@ _MANIFEST = {
 EnvMaker = Callable[[], EpisodeEnv]
 
 
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        probe = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=10, check=False
+        )
+    except Exception:  # noqa: BLE001 - a best-effort probe; any failure means "no"
+        return False
+    return probe.returncode == 0
+
+
+gated = pytest.mark.skipif(
+    not _docker_available(), reason="docker engine not reachable"
+)
+
+
 @pytest.fixture(scope="module")
 def snapshot() -> Snapshot:
     result = admit(WebappPack(), manifest=_MANIFEST)
@@ -66,13 +89,40 @@ def snapshot() -> Snapshot:
 
 @pytest.fixture
 def make_env(snapshot: Snapshot, tmp_path: Path) -> Iterator[EnvMaker]:
+    # A real rollout env: the world realizes as a container and the agent's tools run
+    # in their own sandbox, so each `shell` is the agent's own curl over the network.
     services: list[EpisodeService] = []
 
     def _make() -> EpisodeEnv:
-        svc = EpisodeService(WebappPack(), tmp_path / f"svc{len(services)}")
+        svc = EpisodeService(
+            WebappPack(), tmp_path / f"svc{len(services)}", backing=Backing.CONTAINER
+        )
         services.append(svc)
         return EpisodeEnv(
-            service=svc, snapshots={snapshot.snapshot_id: snapshot}, tools=WEB_TOOLS
+            service=svc,
+            snapshots={snapshot.snapshot_id: snapshot},
+            tools=[shell, submit],
+            sandbox=True,
+        )
+
+    yield _make
+    for svc in services:
+        svc.close()
+
+
+@pytest.fixture
+def make_process_env(snapshot: Snapshot, tmp_path: Path) -> Iterator[EnvMaker]:
+    # A docker-free env for the plumbing checks that never act over HTTP (pre-reset
+    # fail-soft, report bookkeeping): PROCESS backing, no sandbox.
+    services: list[EpisodeService] = []
+
+    def _make() -> EpisodeEnv:
+        svc = EpisodeService(WebappPack(), tmp_path / f"proc{len(services)}")
+        services.append(svc)
+        return EpisodeEnv(
+            service=svc,
+            snapshots={snapshot.snapshot_id: snapshot},
+            tools=[shell, submit],
         )
 
     yield _make
@@ -107,11 +157,25 @@ def _grade(env: EpisodeEnv) -> float:
     return env.reward
 
 
+def _curl(request: Request) -> str:
+    # Frame the reference request as the agent's own curl against the in-network alias:
+    # a body-shaped class is a POST with its body under content_type, else a GET.
+    target = f"http://target:8000{request.path}"
+    if request.method == "POST":
+        return (
+            f"curl -s -X POST -H 'Content-Type: {request.content_type}' "
+            f"--data '{request.body or ''}' '{target}'"
+        )
+    return f"curl -s '{target}'"
+
+
+def _reach(env: EpisodeEnv, snapshot: Snapshot, task: TaskSpec) -> str:
+    return env.shell(f"curl -s 'http://target:8000{_entrypoint_url(snapshot, task)}'")
+
+
 def _drive_exploit(env: EpisodeEnv, snapshot: Snapshot) -> str:
     exploit, _benign = exploit_and_benign(snapshot.graph, "sql_injection")
-    if exploit.method == "POST":
-        return env.http_post(exploit.path, exploit.body or "")
-    return env.http_get(exploit.path)
+    return env.shell(_curl(exploit))
 
 
 def _report(
@@ -132,45 +196,53 @@ def _report(
 
 
 class TestWebTargetLifecycle:
+    @gated
     def test_reset_exposes_the_live_target(
         self, make_env: EnvMaker, snapshot: Snapshot
     ) -> None:
         task = _pentest_task(snapshot)
         env = make_env()
         obs = _start(env, snapshot, task)
-        # The reset observation carries the live base_url the dataset can't know.
-        assert "http://127.0.0.1" in obs
+        # The reset observation carries the in-network alias the dataset can't know.
+        assert "http://target:" in obs
 
+    @gated
     def test_tools_hit_the_server_and_record_turns(
         self, make_env: EnvMaker, snapshot: Snapshot
     ) -> None:
         task = _pentest_task(snapshot)
         env = make_env()
         _start(env, snapshot, task)
-        out = env.http_get("/")  # the app always serves "/"
-        assert out.startswith("status=200")
+        out = env.shell(
+            "curl -s -o /dev/null -w '%{http_code}' 'http://target:8000/'"
+        )  # the app always serves "/"
+        assert "200" in out
         assert env.submit('{"flag": "probe"}').startswith("submitted")
-        assert len(env.turns) == 2  # http_get + submit, both logged
+        assert len(env.turns) == 2  # shell + submit, both logged
 
+    @gated
     def test_bad_get_is_fail_soft(self, make_env: EnvMaker, snapshot: Snapshot) -> None:
         task = _pentest_task(snapshot)
         env = make_env()
         _start(env, snapshot, task)
         # A 404 returns its status, not an exception; the rollout survives.
-        out = env.http_get("/no/such/route")
-        assert out.startswith("status=") and "error" not in out.split("\n")[0]
+        out = env.shell(
+            "curl -s -o /dev/null -w '%{http_code}' 'http://target:8000/no/such/route'"
+        )
+        assert "404" in out and "error" not in out
 
-    def test_http_get_before_reset_is_fail_soft(self, make_env: EnvMaker) -> None:
+    def test_shell_before_reset_is_fail_soft(self, make_process_env: EnvMaker) -> None:
         # No episode started yet -> no surface -> fail-soft, not a crash.
-        assert make_env().http_get("/").startswith("error:")
+        assert make_process_env().shell("curl http://target:8000/").startswith("error:")
 
-    def test_submit_before_reset_is_fail_soft(self, make_env: EnvMaker) -> None:
-        assert make_env().submit('{"flag": "x"}').startswith("error:")
+    def test_submit_before_reset_is_fail_soft(self, make_process_env: EnvMaker) -> None:
+        assert make_process_env().submit('{"flag": "x"}').startswith("error:")
 
 
 class TestRewardRungs:
     """Each reward rung the pentest world admits, driven over real HTTP."""
 
+    @gated
     def test_no_action_floors_at_zero(
         self, make_env: EnvMaker, snapshot: Snapshot
     ) -> None:
@@ -179,25 +251,30 @@ class TestRewardRungs:
         _start(env, snapshot, task)
         assert _grade(env) == 0.0
 
+    @gated
     def test_reaching_the_endpoint_earns_one_third(
         self, make_env: EnvMaker, snapshot: Snapshot
     ) -> None:
         task = _pentest_task(snapshot)
         env = make_env()
         _start(env, snapshot, task)
-        env.http_get(_entrypoint_url(snapshot, task))
+        # A plain GET to the POST-shaped endpoint is a 405, but it still *reaches* the
+        # endpoint -- the exploit (the flag) needs the POST body, the rung below.
+        _reach(env, snapshot, task)
         assert _grade(env) == pytest.approx(1 / 3)
 
+    @gated
     def test_wrong_answer_earns_two_thirds(
         self, make_env: EnvMaker, snapshot: Snapshot
     ) -> None:
         task = _pentest_task(snapshot)
         env = make_env()
         _start(env, snapshot, task)
-        env.http_get(_entrypoint_url(snapshot, task))
+        _reach(env, snapshot, task)
         env.submit(json.dumps({"flag": "not-the-real-flag"}))
         assert _grade(env) == pytest.approx(2 / 3)
 
+    @gated
     def test_exploit_over_http_reaches_full_reward(
         self, make_env: EnvMaker, snapshot: Snapshot
     ) -> None:
@@ -206,7 +283,7 @@ class TestRewardRungs:
         env = make_env()
         _start(env, snapshot, task)
         resp = _drive_exploit(env, snapshot)
-        # The SQLi actually exfiltrated the hidden flag over HTTP.
+        # The POST-body SQLi actually exfiltrated the hidden flag over HTTP.
         assert truth in resp
         env.submit(json.dumps({"flag": truth}))
         assert _grade(env) == 1.0
@@ -214,13 +291,14 @@ class TestRewardRungs:
 
 
 class TestSeams:
+    @gated
     def test_trajectory_is_snapshot_tagged(
         self, make_env: EnvMaker, snapshot: Snapshot
     ) -> None:
         task = _pentest_task(snapshot)
         env = make_env()
         _start(env, snapshot, task)
-        env.http_get(_entrypoint_url(snapshot, task))
+        _reach(env, snapshot, task)
         traj = env_trajectory(env)
         assert traj.snapshot_id == snapshot.snapshot_id
         assert traj.task_id == task.id
@@ -237,6 +315,7 @@ class TestSeams:
         assert _pentest_task(snapshot).instruction in contents
         assert all(row["snapshot_id"] == snapshot.snapshot_id for row in rows)
 
+    @gated
     def test_reward_func_grades_web_envs_in_order(
         self, make_env: EnvMaker, snapshot: Snapshot
     ) -> None:
@@ -255,13 +334,15 @@ class TestSeams:
         assert rewards == [1.0, 0.0]
 
     def test_reward_func_records_reports_by_world(
-        self, make_env: EnvMaker, snapshot: Snapshot, tmp_path: Path
+        self, make_process_env: EnvMaker, snapshot: Snapshot, tmp_path: Path
     ) -> None:
         # trainer.environments keeps only the last episode per slot, so a
         # multi-world batch needs the collector to read back every world's report.
+        # No HTTP action here -- a floored episode per world is enough to key the
+        # reports -- so this stays docker-free on the PROCESS backing.
         pack = WebappPack()
         task = _pentest_task(snapshot)
-        env_a = make_env()
+        env_a = make_process_env()
         _start(env_a, snapshot, task)
         _grade(env_a)
 
@@ -270,7 +351,9 @@ class TestSeams:
         other_task = _pentest_task(other)
         svc = EpisodeService(pack, tmp_path / "other")
         env_b = EpisodeEnv(
-            service=svc, snapshots={other.snapshot_id: other}, tools=WEB_TOOLS
+            service=svc,
+            snapshots={other.snapshot_id: other},
+            tools=[shell, submit],
         )
         try:
             _start(env_b, other, other_task)
@@ -286,19 +369,28 @@ class TestSeams:
         finally:
             svc.close()
 
+    @gated
     def test_factory_builds_isolated_envs(
         self, snapshot: Snapshot, tmp_path: Path
     ) -> None:
         factory = make_environment_factory(
-            WebappPack(), [snapshot], tmp_path / "factory-envs", tools=WEB_TOOLS
+            WebappPack(),
+            [snapshot],
+            tmp_path / "factory-envs",
+            tools=[shell, submit],
+            backing=Backing.CONTAINER,
+            sandbox=True,
         )
         env = factory()
         assert isinstance(env, EpisodeEnv)
         task = _pentest_task(snapshot)
         try:
             obs = env.reset(snapshot_id=snapshot.snapshot_id, task_id=task.id)
-            assert "http://127.0.0.1" in obs
-            assert env.http_get("/").startswith("status=200")
+            assert "http://target:" in obs
+            code = env.shell(
+                "curl -s -o /dev/null -w '%{http_code}' 'http://target:8000/'"
+            )
+            assert "200" in code
         finally:
             env.service.close()
 
@@ -329,6 +421,7 @@ class TestCurriculum:
         assert evolved.snapshot_id != snapshot.snapshot_id
         assert any(event.phase == "evolve" for event in evolved.history)
 
+    @gated
     def test_curriculum_chains_distinct_worlds_across_rounds(
         self, snapshot: Snapshot, tmp_path: Path
     ) -> None:
@@ -342,9 +435,14 @@ class TestCurriculum:
             task = _pentest_task(snap)
             reports = []
             for j in range(2):
-                svc = EpisodeService(pack, tmp_path / f"r{i}s{j}")
+                svc = EpisodeService(
+                    pack, tmp_path / f"r{i}s{j}", backing=Backing.CONTAINER
+                )
                 env = EpisodeEnv(
-                    service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS
+                    service=svc,
+                    snapshots={snap.snapshot_id: snap},
+                    tools=[shell, submit],
+                    sandbox=True,
                 )
                 env.reset(snapshot_id=snap.snapshot_id, task_id=task.id)
                 _drive_exploit(env, snap)

@@ -1,5 +1,5 @@
 """The gym is bring-your-own-tools: a world is exposed only over HTTP, and the
-example ``http_get``/``submit`` helpers are conveniences, not part of OpenRange.
+example ``shell``/``submit`` helpers are conveniences, not part of OpenRange.
 
 These pin that contract so it can't regress: an episode is solvable and graded
 with nothing but a plain HTTP client and the answer file, and the gym core names
@@ -90,7 +90,6 @@ def test_episode_is_solvable_with_a_plain_http_client(tmp_path: Path) -> None:
 def test_gym_core_names_no_example_tool() -> None:
     core = Path(openrange.__file__).parent
     forbidden = (
-        "http_get",
         "WEB_TOOLS",
         "FILE_TOOLS",
         "examples.tools",

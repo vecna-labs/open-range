@@ -9,6 +9,8 @@ accepts both form-encoded and JSON bodies; the SSRF pivot stays a GET URL param.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,9 +20,10 @@ import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.reference_solver import Request, exploit_and_benign
 from cyber_webapp.vulnerabilities import BODY_SHAPED_KINDS
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import Backing, Snapshot
+from openrange_trl import EpisodeEnv
 
-from examples.tools import http_post
+from examples.tools import shell, submit
 from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
@@ -135,20 +138,52 @@ def test_the_ssrf_pivot_stays_a_get_url_param() -> None:
     assert _oracle_endpoint_method(snap, "ssrf") == "GET"
 
 
-def test_http_post_example_tool_reaches_a_post_endpoint(tmp_path: Path) -> None:
-    snap = _admit("db", "weak_credentials")
-    flag = _flag(snap)
-    exploit, _benign = exploit_and_benign(snap.graph, "weak_credentials")
-    assert exploit.method == "POST"
-    svc = EpisodeService(WebappPack(), tmp_path)
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
     try:
-        base = _base(snap, svc)
-        out = http_post(
-            {"base_url": base},
-            exploit.path,
-            str(exploit.body),
-            str(exploit.content_type),
+        probe = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=10, check=False
         )
+    except Exception:  # noqa: BLE001 - a best-effort probe; any failure means "no"
+        return False
+    return probe.returncode == 0
+
+
+gated = pytest.mark.skipif(
+    not _docker_available(), reason="docker engine not reachable"
+)
+
+
+def _pentest_task_id(snap: Snapshot) -> str:
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    return task.id
+
+
+@gated
+def test_http_post_example_tool_reaches_a_post_endpoint(tmp_path: Path) -> None:
+    # The agent, in its own sandbox, delivers a body-shaped exploit with its own curl: a
+    # POST body leaks the flag, and the same endpoint refuses a GET (a query string).
+    snap = _admit("file", "command_injection")
+    flag = _flag(snap)
+    exploit, _benign = exploit_and_benign(snap.graph, "command_injection")
+    assert exploit.method == "POST"
+    service = EpisodeService(WebappPack(), tmp_path / "svc", backing=Backing.CONTAINER)
+    env = EpisodeEnv(
+        service=service,
+        snapshots={snap.snapshot_id: snap},
+        tools=[shell, submit],
+        sandbox=True,
+    )
+    try:
+        env.reset(snapshot_id=snap.snapshot_id, task_id=_pentest_task_id(snap))
+        target = f"http://target:8000{exploit.path}"
+        leaked = env.shell(
+            f"curl -s -X POST -H 'Content-Type: {exploit.content_type}' "
+            f"--data '{exploit.body}' '{target}'"
+        )
+        get_status = env.shell(f"curl -s -o /dev/null -w '%{{http_code}}' '{target}'")
     finally:
-        svc.close()
-    assert flag in out  # the BYO example POST tool delivers the body and leaks
+        service.close()
+    assert flag in leaked  # the body delivery is the one that leaks
+    assert "405" in get_status  # a query-string GET to the same endpoint is refused

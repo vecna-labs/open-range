@@ -5,6 +5,7 @@ same recon→pivot recovers the flag across real containers."""
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import re
 import shutil
@@ -28,13 +29,11 @@ from cyber_webapp.mutation import available_mutations
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import Edge, Node, Visibility, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
-from openrange_trl import EpisodeEnv
 
-from examples.tools import WEB_TOOLS
 from examples.verify import consequence_gate, verdict
 from openrange.core.admit import admit
 from openrange.core.curriculum import _clone_graph, auto_evolve
-from openrange.core.episode import EpisodeReport, EpisodeService
+from openrange.core.episode import EpisodeHandle, EpisodeReport, EpisodeService
 from openrange.pool import (
     _MAX_PRIORITY,
     EvalPool,
@@ -43,6 +42,7 @@ from openrange.pool import (
     WorldPool,
     run_pool_curriculum,
 )
+from openrange.training import episode_reward
 
 _COMPANY_MANIFEST = {
     "pack": {"id": "webapp"},
@@ -80,6 +80,15 @@ def _get(base_url: str, path: str) -> tuple[int, str]:
         return exc.code, exc.read().decode()
 
 
+def _http(base: str, path: str) -> str:
+    try:
+        with urllib.request.urlopen(base + path, timeout=15) as resp:
+            raw: bytes = resp.read()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+    return raw.decode("utf-8", "replace")
+
+
 def _flag_from(body: str) -> str:
     try:
         obj = json.loads(body)
@@ -101,16 +110,16 @@ def _pentest_only(_evolved: Snapshot, mutation: object) -> bool:
 def _breach_report(pack: WebappPack, work_dir: Path, snap: Snapshot) -> EpisodeReport:
     task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(pack, work_dir)
-    env = EpisodeEnv(service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS)
     try:
+        handle = svc.start_episode(snap, task.id)
+        base = svc.base_url(handle)
         entry = str(snap.graph.nodes[task.entrypoints[0]].attrs["public_url"])
-        env.reset(snapshot_id=snap.snapshot_id, task_id=task.id)
-        env.http_get(entry)
-        trace = solve_chain(snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1])
-        env.submit(json.dumps({"flag": _flag_from(trace.terminal)}))
-        env._finalize()
-        assert env.report is not None
-        return env.report
+        _http(base, entry)
+        trace = solve_chain(snap.graph, lambda p: _http(base, p))
+        (svc.solver_root(handle) / "result.json").write_text(
+            json.dumps({"flag": _flag_from(trace.terminal)}), encoding="utf-8"
+        )
+        return svc.stop_episode(handle)
     finally:
         svc.close()
 
@@ -120,14 +129,12 @@ def _reach_only_report(
 ) -> EpisodeReport:
     task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(pack, work_dir)
-    env = EpisodeEnv(service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS)
     try:
+        handle = svc.start_episode(snap, task.id)
+        base = svc.base_url(handle)
         entry = str(snap.graph.nodes[task.entrypoints[0]].attrs["public_url"])
-        env.reset(snapshot_id=snap.snapshot_id, task_id=task.id)
-        env.http_get(entry)
-        env._finalize()
-        assert env.report is not None
-        return env.report
+        _http(base, entry)
+        return svc.stop_episode(handle)
     finally:
         svc.close()
 
@@ -140,23 +147,21 @@ def _solve_round(
 ) -> dict[tuple[str, str], list[EpisodeReport]]:
     by_id = {s.snapshot_id: s for s in snapshots}
     svc = EpisodeService(pack, work_dir, warm_capacity=len(by_id))
-    env = EpisodeEnv(service=svc, snapshots=by_id, tools=WEB_TOOLS)
     out: dict[tuple[str, str], list[EpisodeReport]] = {}
     try:
         for row in rows:
             sid, tid = str(row["snapshot_id"]), str(row["task_id"])
             snap = by_id[sid]
             task = next(t for t in snap.tasks if t.id == tid)
+            handle = svc.start_episode(snap, tid)
+            base = svc.base_url(handle)
             entry = str(snap.graph.nodes[task.entrypoints[0]].attrs["public_url"])
-            env.reset(snapshot_id=sid, task_id=tid)
-            env.http_get(entry)
-            trace = solve_chain(
-                snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
+            _http(base, entry)
+            trace = solve_chain(snap.graph, functools.partial(_http, base))
+            (svc.solver_root(handle) / "result.json").write_text(
+                json.dumps({"flag": _flag_from(trace.terminal)}), encoding="utf-8"
             )
-            env.submit(json.dumps({"flag": _flag_from(trace.terminal)}))
-            env._finalize()
-            assert env.report is not None
-            out.setdefault((sid, tid), []).append(env.report)
+            out.setdefault((sid, tid), []).append(svc.stop_episode(handle))
         return out
     finally:
         svc.close()
@@ -251,36 +256,37 @@ def test_company_reward_surface_grades_the_breach(tmp_path: Path) -> None:
 
     services: list[EpisodeService] = []
 
-    def _env() -> EpisodeEnv:
+    def _start() -> tuple[EpisodeService, EpisodeHandle]:
         svc = EpisodeService(WebappPack(), tmp_path / f"env{len(services)}")
         services.append(svc)
-        env = EpisodeEnv(
-            service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS
-        )
-        env.reset(snapshot_id=snap.snapshot_id, task_id=pentest.id)
-        return env
-
-    def _reward(env: EpisodeEnv) -> float:
-        env._finalize()
-        return env.reward
+        return svc, svc.start_episode(snap, pentest.id)
 
     try:
-        reach = _env()
-        reach.http_get(entry)
-        assert _reward(reach) == pytest.approx(1 / 3)  # reached_endpoint only
+        svc, reach = _start()
+        _http(svc.base_url(reach), entry)
+        report = svc.stop_episode(reach)
+        assert episode_reward(report).scalar == pytest.approx(1 / 3)  # reached only
 
-        wrong = _env()
-        wrong.http_get(entry)
-        wrong.submit(json.dumps({"flag": "not-the-real-flag"}))
-        assert _reward(wrong) == pytest.approx(2 / 3)  # + extracted_anything, but wrong
+        svc, wrong = _start()
+        _http(svc.base_url(wrong), entry)
+        (svc.solver_root(wrong) / "result.json").write_text(
+            json.dumps({"flag": "not-the-real-flag"}), encoding="utf-8"
+        )
+        report = svc.stop_episode(wrong)
+        # + extracted_anything, but wrong
+        assert episode_reward(report).scalar == pytest.approx(2 / 3)
 
-        breach = _env()
-        breach.http_get(entry)
-        trace = solve_chain(graph, lambda p: breach.http_get(p).split("\n", 1)[-1])
+        svc, breach = _start()
+        base = svc.base_url(breach)
+        _http(base, entry)
+        trace = solve_chain(graph, lambda p: _http(base, p))
         assert flag in trace.terminal  # genuinely exfiltrated over the wire
-        breach.submit(json.dumps({"flag": flag}))
-        assert _reward(breach) == 1.0
-        assert breach.report is not None and breach.report.passed
+        (svc.solver_root(breach) / "result.json").write_text(
+            json.dumps({"flag": flag}), encoding="utf-8"
+        )
+        report = svc.stop_episode(breach)
+        assert episode_reward(report).scalar == 1.0
+        assert report.passed
     finally:
         for svc in services:
             svc.close()
@@ -297,19 +303,18 @@ def test_warm_pool_reuses_a_poolable_world(tmp_path: Path) -> None:
     entry = str(snap.graph.nodes[pentest.entrypoints[0]].attrs["public_url"])
 
     svc = EpisodeService(WebappPack(), tmp_path)
-    env = EpisodeEnv(service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS)
     warm: list[object] = []
     try:
         for _ in range(2):
-            env.reset(snapshot_id=snap.snapshot_id, task_id=pentest.id)
-            env.http_get(entry)
-            trace = solve_chain(
-                snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
-            )
+            handle = svc.start_episode(snap, pentest.id)
+            base = svc.base_url(handle)
+            _http(base, entry)
+            trace = solve_chain(snap.graph, functools.partial(_http, base))
             assert flag in trace.terminal  # exfiltrated over the wire, each episode
-            env.submit(json.dumps({"flag": flag}))
-            env._finalize()
-            assert env.report is not None and env.report.passed
+            (svc.solver_root(handle) / "result.json").write_text(
+                json.dumps({"flag": flag}), encoding="utf-8"
+            )
+            assert svc.stop_episode(handle).passed
             warm.append(svc._warm[snap.snapshot_id])  # kept warm, not torn down
         assert warm[0] is warm[1]  # the SAME world was reused, not rebooted
     finally:
@@ -1046,19 +1051,18 @@ def test_warm_pool_reuses_real_containers(tmp_path: Path) -> None:
     entry = str(snap.graph.nodes[pentest.entrypoints[0]].attrs["public_url"])
 
     svc = EpisodeService(WebappPack(), tmp_path, backing=Backing.CONTAINER)
-    env = EpisodeEnv(service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS)
     warm: list[object] = []
     try:
         for _ in range(2):
-            env.reset(snapshot_id=snap.snapshot_id, task_id=pentest.id)
-            env.http_get(entry)
-            trace = solve_chain(
-                snap.graph, lambda p: env.http_get(p).split("\n", 1)[-1]
-            )
+            handle = svc.start_episode(snap, pentest.id)
+            base = svc.base_url(handle)
+            _http(base, entry)
+            trace = solve_chain(snap.graph, functools.partial(_http, base))
             assert flag in trace.terminal
-            env.submit(json.dumps({"flag": flag}))
-            env._finalize()
-            assert env.report is not None and env.report.passed
+            (svc.solver_root(handle) / "result.json").write_text(
+                json.dumps({"flag": flag}), encoding="utf-8"
+            )
+            assert svc.stop_episode(handle).passed
             warm.append(svc._warm[snap.snapshot_id])
         assert (
             warm[0] is warm[1]

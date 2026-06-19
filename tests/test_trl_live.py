@@ -3,9 +3,9 @@
 This is the live half of the training seam whose deterministic, torch-free tests
 live in ``test_trl_adapter.py`` (SWE) and ``test_trl_cyber.py`` (cyber). It runs
 one real GRPO step (tiny model, LoRA) against a live OpenRange world — once over a
-SWE workspace (file tools), once over a cyber webapp (HTTP tools) — and asserts the
-*mechanics* end to end: rollouts reach grading, the structured reward maps through,
-and a ``snapshot_id``-tagged trajectory comes back.
+SWE workspace (file tools), once over a cyber webapp (the agent curls the target from
+its sandbox) — and asserts the *mechanics* end to end: rollouts reach grading, the
+structured reward maps through, and a ``snapshot_id``-tagged trajectory comes back.
 
 It is skipped unless ``OPENRANGE_LIVE_TRL=1`` and the ``trl`` extra is installed::
 
@@ -48,6 +48,11 @@ def _docker_available() -> bool:
     except Exception:  # noqa: BLE001 - any failure means "no"
         return False
     return probe.returncode == 0
+
+
+gated = pytest.mark.skipif(
+    not _docker_available(), reason="docker engine not reachable"
+)
 
 
 pytestmark = pytest.mark.skipif(
@@ -132,9 +137,11 @@ def test_live_grpo_one_step(tmp_path: Path) -> None:
             env.service.close()
 
 
+@gated
 def test_live_grpo_one_step_cyber(tmp_path: Path) -> None:
-    """One real GRPO step over a live cyber webapp: the policy issues HTTP tool
-    calls against the booted server, rollouts grade, reward + trajectory flow."""
+    """One real GRPO step over a live cyber webapp: the policy issues curl tool calls
+    from its sandbox against the booted container, rollouts grade, reward + trajectory
+    flow."""
     datasets = pytest.importorskip("datasets")
     peft = pytest.importorskip("peft")
     transformers = pytest.importorskip("transformers")
@@ -166,7 +173,7 @@ def test_live_grpo_one_step_cyber(tmp_path: Path) -> None:
     )
 
     num_generations = 2
-    # Only the pentest task suits the HTTP action surface (build is code-gen).
+    # Only the pentest task suits acting against the running target (build is code-gen).
     rows = [
         row
         for row in build_grpo_dataset(snapshot, repeat=2)
@@ -174,7 +181,12 @@ def test_live_grpo_one_step_cyber(tmp_path: Path) -> None:
     ]
     dataset = datasets.Dataset.from_list(rows)
     factory = make_environment_factory(
-        pack, [snapshot], tmp_path / "envs", tools=WEB_TOOLS
+        pack,
+        [snapshot],
+        tmp_path / "envs",
+        tools=WEB_TOOLS,
+        backing=Backing.CONTAINER,
+        sandbox=True,
     )
     config = trl.GRPOConfig(
         output_dir=str(tmp_path / "trainer"),
@@ -219,7 +231,7 @@ def test_live_grpo_one_step_cyber(tmp_path: Path) -> None:
             env.service.close()
 
 
-@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+@gated
 def test_live_grpo_one_step_cyber_container(tmp_path: Path) -> None:
     """One real GRPO step over a *networked* cyber world on the CONTAINER backing:
     each rollout boots per-service containers, the policy acts over HTTP across the
@@ -268,7 +280,12 @@ def test_live_grpo_one_step_cyber_container(tmp_path: Path) -> None:
     ]
     dataset = datasets.Dataset.from_list(rows)
     factory = make_environment_factory(
-        pack, [snapshot], tmp_path / "envs", tools=WEB_TOOLS, backing=Backing.CONTAINER
+        pack,
+        [snapshot],
+        tmp_path / "envs",
+        tools=WEB_TOOLS,
+        backing=Backing.CONTAINER,
+        sandbox=True,
     )
     config = trl.GRPOConfig(
         output_dir=str(tmp_path / "trainer"),
@@ -314,7 +331,7 @@ def test_live_grpo_one_step_cyber_container(tmp_path: Path) -> None:
             env.service.close()
 
 
-@pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
+@gated
 def test_live_grpo_one_step_cyber_container_file_loot(tmp_path: Path) -> None:
     """One real GRPO step over a FILE-LOOT cyber world on the CONTAINER backing.
 
@@ -369,7 +386,12 @@ def test_live_grpo_one_step_cyber_container_file_loot(tmp_path: Path) -> None:
     ]
     dataset = datasets.Dataset.from_list(rows)
     factory = make_environment_factory(
-        pack, [snapshot], tmp_path / "envs", tools=WEB_TOOLS, backing=backing
+        pack,
+        [snapshot],
+        tmp_path / "envs",
+        tools=WEB_TOOLS,
+        backing=backing,
+        sandbox=True,
     )
     config = trl.GRPOConfig(
         output_dir=str(tmp_path / "trainer"),
@@ -422,6 +444,7 @@ def _always_harden(reports: Sequence[EpisodeReportLike]) -> Direction:
     return "harden"
 
 
+@gated
 def test_live_grpo_curriculum_evolves_between_rounds(tmp_path: Path) -> None:
     """Two real GRPO rounds with the world evolving between them.
 
@@ -486,7 +509,12 @@ def test_live_grpo_curriculum_evolves_between_rounds(tmp_path: Path) -> None:
             r for r in build_grpo_dataset(snap, repeat=2) if "pentest" in r["task_id"]
         ]
         factory = make_environment_factory(
-            pack, [snap], tmp_path / snap.snapshot_id[-12:], tools=WEB_TOOLS
+            pack,
+            [snap],
+            tmp_path / snap.snapshot_id[-12:],
+            tools=WEB_TOOLS,
+            backing=Backing.CONTAINER,
+            sandbox=True,
         )
         trainer = trl.GRPOTrainer(
             model=model,
@@ -512,6 +540,7 @@ def test_live_grpo_curriculum_evolves_between_rounds(tmp_path: Path) -> None:
     assert len({s.snapshot_id for s in lineage}) == 3
 
 
+@gated
 def test_live_grpo_pool_curriculum(tmp_path: Path) -> None:
     """Two real GRPO rounds driven by the world POOL (not a single chain).
 
@@ -584,6 +613,8 @@ def test_live_grpo_pool_curriculum(tmp_path: Path) -> None:
         run_root=tmp_path / "envs",
         processing_class=tokenizer,
         peft_config=lora,
+        backing=Backing.CONTAINER,
+        sandbox=True,
     )
     metrics = run_pool_curriculum(
         pool,
@@ -600,6 +631,7 @@ def test_live_grpo_pool_curriculum(tmp_path: Path) -> None:
     assert len(pool) > 1
 
 
+@gated
 def test_live_grpo_held_out_eval(tmp_path: Path) -> None:
     """A real GRPO round trains the pool while a fenced held-out pool is measured by
     a FROZEN round (learning_rate 0, no weight update) — the train-vs-held-out
@@ -677,6 +709,8 @@ def test_live_grpo_held_out_eval(tmp_path: Path) -> None:
         run_root=tmp_path / "envs",
         processing_class=tokenizer,
         peft_config=lora,
+        backing=Backing.CONTAINER,
+        sandbox=True,
     )
     metrics = run_pool_curriculum(
         train,

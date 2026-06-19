@@ -9,16 +9,18 @@ are rejected. No mocks — a real cyber episode boots behind each tool call.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 from cyber_webapp import WebappPack
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import Backing, Snapshot
 from openrange_trl import EpisodeEnv, Tool
 
-from examples.tools import WEB_TOOLS, http_get, submit
+from examples.tools import WEB_TOOLS, shell, submit
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
@@ -59,22 +61,39 @@ def _pentest_task(snapshot: Snapshot) -> Any:
     return next(t for t in snapshot.tasks if t.meta.get("family") == "webapp.pentest")
 
 
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        probe = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=10, check=False
+        )
+    except Exception:  # noqa: BLE001 - a best-effort probe; any failure means "no"
+        return False
+    return probe.returncode == 0
+
+
+gated = pytest.mark.skipif(
+    not _docker_available(), reason="docker engine not reachable"
+)
+
+
 def test_user_tools_reflect_with_the_schema_trl_reads(make_env: Any) -> None:
     get_json_schema = pytest.importorskip("transformers.utils").get_json_schema
 
     env = make_env(list(WEB_TOOLS))
-    fn = get_json_schema(env.http_get)["function"]
-    assert fn["name"] == "http_get"
-    assert "GET" in fn["description"]
+    fn = get_json_schema(env.shell)["function"]
+    assert fn["name"] == "shell"
     props = fn["parameters"]["properties"]
-    assert set(props) == {"path"}  # the surface-injection param is hidden from TRL
-    assert props["path"]["type"] == "string"
-    assert props["path"]["description"]  # required by get_json_schema, carried through
+    assert set(props) == {"command"}  # the surface-injection param is hidden from TRL
+    assert props["command"]["type"] == "string"
+    assert props["command"]["description"]  # carried through; get_json_schema needs it
     assert get_json_schema(env.submit)["function"]["name"] == "submit"
 
 
+@gated
 def test_a_custom_byo_tool_runs_against_a_live_world(
-    make_env: Any, snapshot: Snapshot
+    snapshot: Snapshot, tmp_path: Path
 ) -> None:
     seen: list[str] = []
 
@@ -85,15 +104,24 @@ def test_a_custom_byo_tool_runs_against_a_live_world(
             path: the request path to fetch.
         """
         seen.append(path)
-        return http_get(surface, path)
+        return shell(surface, f"curl -s 'http://target:8000{path}'")
 
-    # The adapter has never seen `recon`; the user brings it.
-    env = make_env([recon, submit])
-    env.reset(snapshot_id=snapshot.snapshot_id, task_id=_pentest_task(snapshot).id)
-    out = env.recon("/")
-    assert out.startswith("status=200")  # the user's tool hit the live server
-    assert seen == ["/"]
-    assert env.turns[-1].tool_calls[0]["tool"] == "recon"  # logged like any tool
+    # The adapter has never seen `recon`; the user brings it. It runs in the agent's
+    # own sandbox against a real CONTAINER world over the network.
+    svc = EpisodeService(WebappPack(), tmp_path / "svc", backing=Backing.CONTAINER)
+    env = EpisodeEnv(
+        service=svc,
+        snapshots={snapshot.snapshot_id: snapshot},
+        tools=[recon, submit],
+        sandbox=True,
+    )
+    try:
+        env.reset(snapshot_id=snapshot.snapshot_id, task_id=_pentest_task(snapshot).id)
+        env.recon("/")
+        assert seen == ["/"]  # the brought tool ran
+        assert env.turns[-1].tool_calls[0]["tool"] == "recon"  # logged like any tool
+    finally:
+        svc.close()
 
 
 def test_a_tool_with_a_default_arg_is_optional(
@@ -127,8 +155,8 @@ def test_run_tests_tool_reports_when_world_has_no_runner() -> None:
 
 
 def test_duplicate_tool_names_are_rejected(make_env: Any) -> None:
-    def http_get(surface: Mapping[str, Any], path: str) -> str:
-        """A second tool that collides on name.
+    def probe(surface: Mapping[str, Any], path: str) -> str:
+        """A tool brought twice under the same name.
 
         Args:
             path: x.
@@ -136,4 +164,4 @@ def test_duplicate_tool_names_are_rejected(make_env: Any) -> None:
         return ""
 
     with pytest.raises(ValueError, match="duplicate tool"):
-        make_env([http_get, http_get])
+        make_env([probe, probe])

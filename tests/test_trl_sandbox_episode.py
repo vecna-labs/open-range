@@ -27,6 +27,7 @@ from graphschema import WorldGraph
 from openrange_pack_sdk import Backing, Snapshot
 from openrange_trl import EpisodeEnv, SandboxError
 
+from examples.tools import shell
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
@@ -52,16 +53,8 @@ _SSRF_MANIFEST = {
 }
 
 
-# -- brought tools: shell runs in the sandbox, submit records the answer for grading --
-
-
-def shell(surface: Mapping[str, Any], command: str) -> str:
-    """Run a shell command on the agent's own sandbox machine.
-
-    Args:
-        command: the shell command to run.
-    """
-    return str(surface["run"](command).output)
+# The agent's `shell` is the shipped example tool (examples/tools.py); `submit` is the
+# user's own, recording the answer the held-out grader reads.
 
 
 def submit(surface: Mapping[str, Any], flag: str) -> str:
