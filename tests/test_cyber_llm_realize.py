@@ -9,6 +9,7 @@ families via the reference solver.
 
 from __future__ import annotations
 
+import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from cyber_webapp.llm_realize import (
     handler_from_result,
     realization_request,
     realize_service_surface,
+    realize_with_backend,
     realize_world,
     service_handlers_from_result,
     service_realization_request,
@@ -43,6 +45,7 @@ from openrange_pack_sdk import PackError, Snapshot
 
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
+from openrange.llm import ClaudeBackend
 
 
 def _admit(loot: str, kind: str, **pin: object) -> Snapshot:
@@ -629,6 +632,19 @@ def test_realize_world_skips_an_empty_proposal(tmp_path: Path) -> None:
     out = realize_world(snap, lambda _g, _k: "", _episode_runner(snap, tmp_path))
     assert out.lineage["realized_handlers"] == ()
     assert out.snapshot_id == before
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OPENRANGE_LIVE_LLM"),
+    reason="needs a live LLM CLI (set OPENRANGE_LIVE_LLM=1)",
+)
+def test_realize_with_backend_drives_a_live_llm(tmp_path: Path) -> None:
+    backend = ClaudeBackend()
+    backend.preflight()
+    snap = _admit("db", "sql_injection", context="single")
+    out = realize_with_backend(snap, backend, _episode_runner(snap, tmp_path))
+    assert "sql_injection" in out.lineage["realized_handlers"]
+    assert out.snapshot_id == out.graph.content_hash()
 
 
 def _faithful_cmdi(graph: WorldGraph) -> str:

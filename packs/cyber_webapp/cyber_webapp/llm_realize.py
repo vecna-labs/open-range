@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 
 from graphschema import Node, WorldGraph
-from openrange_pack_sdk import LLMRequest, PackError, Snapshot
+from openrange_pack_sdk import LLMBackend, LLMRequest, PackError, Snapshot
 
 from cyber_webapp.codegen.handlers import _extract_handle_body
 from cyber_webapp.realize_admit import (
@@ -488,6 +488,26 @@ def realize_world(
         lineage={**dict(snapshot.lineage), "realized_handlers": tuple(realized)},
         history=snapshot.history,
     )
+
+
+def realize_with_backend(
+    snapshot: Snapshot,
+    backend: LLMBackend,
+    run_probes: Callable[[str], tuple[str, str, str | None]],
+) -> Snapshot:
+    """LLM-realize a snapshot's handlers via this pack's prompts, gated by the verifier.
+
+    Proposes each realizable vuln's handler from ``backend`` (this pack's
+    ``realization_request`` + ``handler_from_result``) and runs ``realize_world``'s
+    generate-verify-freeze. The host injects ``run_probes`` — booting an episode to run
+    the verify probes stays a host concern, so the pack stays transport-free.
+    """
+
+    def propose(graph: WorldGraph, kind: str) -> str:
+        result = backend.complete(realization_request(graph, kind))
+        return handler_from_result(result.parsed_json)
+
+    return realize_world(snapshot, propose, run_probes)
 
 
 _SERVICE_SCHEMA: dict[str, object] = {

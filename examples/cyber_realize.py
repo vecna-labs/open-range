@@ -29,10 +29,8 @@ from cyber_webapp import WebappPack
 from cyber_webapp.llm_realize import (
     REALIZABLE_KINDS,
     benign_endpoints_of,
-    handler_from_result,
-    realization_request,
     realize_service_surface,
-    realize_world,
+    realize_with_backend,
     service_handlers_from_result,
     service_realization_request,
 )
@@ -83,15 +81,10 @@ def _fetch(url: str) -> str:
         return exc.read().decode()
 
 
-def realize_one(backend: LLMBackend, kind: str, base_dir: Path) -> Snapshot:
+def _realize(backend: LLMBackend, kind: str, base_dir: Path) -> Snapshot:
     snap = _admit(kind)
     task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     counter = iter(range(1000))
-
-    def propose(graph: WorldGraph, k: str) -> str:
-        return handler_from_result(
-            backend.complete(realization_request(graph, k)).parsed_json
-        )
 
     def run_probes(k: str) -> tuple[str, str, str | None]:
         svc = EpisodeService(WebappPack(), base_dir / f"{kind}{next(counter)}")
@@ -105,7 +98,7 @@ def realize_one(backend: LLMBackend, kind: str, base_dir: Path) -> Snapshot:
         finally:
             svc.close()
 
-    return realize_world(snap, propose, run_probes)
+    return realize_with_backend(snap, backend, run_probes)
 
 
 def _realize_service(
@@ -179,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(f"{kind} (service): {status} -> {realized.snapshot_id[:19]}")
             else:
-                realized = realize_one(backend, kind, Path(tmp))
+                realized = _realize(backend, kind, Path(tmp))
                 done = kind in realized.lineage["realized_handlers"]
                 status = "realized" if done else "fell back to template"
                 print(f"{kind}: {status} -> snapshot {realized.snapshot_id[:19]}")
