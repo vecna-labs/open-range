@@ -93,6 +93,7 @@ def test_catalog_yaml_round_trip() -> None:
         assert rt.family == v.family
         assert rt.target_kinds == v.target_kinds
         assert rt.template == v.template
+        assert rt.exploit_complexity == v.exploit_complexity
         assert rt.requires == v.requires
         assert rt.enables == v.enables
 
