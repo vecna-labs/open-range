@@ -17,7 +17,13 @@ from cyber_webapp.mutation import (
     _credential_walk,
     _oracle_path_targets,
 )
+from cyber_webapp.vulnerabilities import CATALOG
 
+# Default weights for the difficulty model. The chain-hop weight dominates, so a
+# world is ordered first by how many credential hops its solve walks and the rest
+# only break ties; a curriculum re-weights by injecting its own difficulty_fn into
+# the pool rather than editing these. Per-class exploit hardness is not here: it is
+# a property of each vuln kind, on the catalog (Vulnerability.exploit_complexity).
 _W_HOP = 10
 _W_PIVOT = 4
 _W_BOUNDARY = 3
@@ -30,22 +36,6 @@ _BODY_BUMP = 0.15
 _RECON_KIND = "config_disclosure"
 _CHAIN_KINDS = ("credential_leak", "credential_gated_relay", "credential_gated_flag")
 _OFF_PATH_EXCLUDED = {"ssrf", _RECON_KIND, "metadata_credential_leak", *_CHAIN_KINDS}
-
-_CLASS_HARDNESS = {
-    "idor": 0.2,
-    "weak_credentials": 0.3,
-    "broken_authz": 0.3,
-    "path_traversal": 0.5,
-    "ssrf": 0.5,
-    "metadata_credential_leak": 0.1,
-    "credential_leak": 0.1,
-    "credential_gated_relay": 0.1,
-    "credential_gated_flag": 0.1,
-    "sql_injection": 0.7,
-    "xxe": 0.7,
-    "ssti": 0.7,
-    "command_injection": 0.8,
-}
 
 
 def _entry_ssrf(graph: WorldGraph) -> Node | None:
@@ -89,9 +79,11 @@ def _class_weight(graph: WorldGraph, vuln: Node | None) -> float:
     if vuln is None:
         return 0.0
     kind = str(vuln.attrs.get("kind", ""))
+    spec = CATALOG.get(kind)
+    complexity = spec.exploit_complexity if spec is not None else 0.5
     endpoint = graph.nodes.get(_affects_target_id(graph, vuln.id) or "")
     body = endpoint is not None and endpoint.attrs.get("method") == "POST"
-    return _CLASS_HARDNESS.get(kind, 0.5) + (_BODY_BUMP if body else 0.0)
+    return complexity + (_BODY_BUMP if body else 0.0)
 
 
 def world_difficulty(graph: WorldGraph) -> float:

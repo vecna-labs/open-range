@@ -23,6 +23,9 @@ class Vulnerability:
     # How the exploit reaches the flag; the loot stage picks a vuln whose
     # shape matches the placed loot.
     shape: str = "response_leak"
+    # CVSS-style exploit difficulty (0 trivial .. 1 hard) the difficulty metric
+    # reads to weight this class when it is the flag-reading exploit.
+    exploit_complexity: float = 0.5
     requires: frozenset[str] = frozenset()
     enables: frozenset[str] = frozenset()
     attrs_schema: Mapping[str, str] = field(default_factory=dict)
@@ -35,6 +38,7 @@ class Vulnerability:
             "target_kinds": sorted(self.target_kinds),
             "template": self.template,
             "shape": self.shape,
+            "exploit_complexity": self.exploit_complexity,
             "requires": sorted(self.requires),
             "enables": sorted(self.enables),
             "attrs_schema": dict(self.attrs_schema),
@@ -46,6 +50,7 @@ class Vulnerability:
         requires_raw = data.get("requires", ())
         enables_raw = data.get("enables", ())
         attrs_raw = data.get("attrs_schema", {})
+        complexity_raw = data.get("exploit_complexity", 0.5)
         if not isinstance(target_kinds_raw, list | tuple | frozenset | set):
             raise ValueError("target_kinds must be a sequence")
         if not isinstance(requires_raw, list | tuple | frozenset | set):
@@ -54,6 +59,8 @@ class Vulnerability:
             raise ValueError("enables must be a sequence")
         if not isinstance(attrs_raw, Mapping):
             raise ValueError("attrs_schema must be a mapping")
+        if not isinstance(complexity_raw, int | float):
+            raise ValueError("exploit_complexity must be a number")
         return cls(
             id=str(data["id"]),
             family=str(data["family"]),
@@ -61,6 +68,7 @@ class Vulnerability:
             target_kinds=frozenset(str(k) for k in target_kinds_raw),
             template=str(data["template"]),
             shape=str(data.get("shape", "response_leak")),
+            exploit_complexity=float(complexity_raw),
             requires=frozenset(str(k) for k in requires_raw),
             enables=frozenset(str(k) for k in enables_raw),
             attrs_schema={str(k): str(v) for k, v in attrs_raw.items()},
@@ -69,6 +77,7 @@ class Vulnerability:
 
 SQL_INJECTION = Vulnerability(
     id="sql_injection",
+    exploit_complexity=0.7,
     family="code_web",
     description=(
         "Endpoint that interpolates an unparameterized query parameter "
@@ -87,6 +96,7 @@ SQL_INJECTION = Vulnerability(
 
 SSRF = Vulnerability(
     id="ssrf",
+    exploit_complexity=0.5,
     family="code_web",
     description=(
         "Endpoint that fetches a URL supplied by the client without "
@@ -105,6 +115,7 @@ SSRF = Vulnerability(
 
 BROKEN_AUTHZ = Vulnerability(
     id="broken_authz",
+    exploit_complexity=0.3,
     family="code_web",
     description=(
         "Endpoint trusts a client-controlled header for the user's role "
@@ -124,6 +135,7 @@ BROKEN_AUTHZ = Vulnerability(
 
 PATH_TRAVERSAL = Vulnerability(
     id="path_traversal",
+    exploit_complexity=0.5,
     family="code_web",
     description=(
         "Endpoint serves a file named by a client parameter, joining it onto "
@@ -142,6 +154,7 @@ PATH_TRAVERSAL = Vulnerability(
 
 COMMAND_INJECTION = Vulnerability(
     id="command_injection",
+    exploit_complexity=0.8,
     family="code_web",
     description=(
         "Diagnostic endpoint concatenates a client parameter into a shell "
@@ -160,6 +173,7 @@ COMMAND_INJECTION = Vulnerability(
 
 XXE = Vulnerability(
     id="xxe",
+    exploit_complexity=0.7,
     family="code_web",
     description=(
         "Endpoint parses client XML with external entities enabled, so a "
@@ -177,6 +191,7 @@ XXE = Vulnerability(
 
 SSTI = Vulnerability(
     id="ssti",
+    exploit_complexity=0.7,
     family="code_web",
     description=(
         "Endpoint renders a client parameter as a template, so a template "
@@ -194,6 +209,7 @@ SSTI = Vulnerability(
 
 IDOR = Vulnerability(
     id="idor",
+    exploit_complexity=0.2,
     family="code_web",
     description=(
         "Endpoint returns a record by a client-supplied id with no ownership "
@@ -210,6 +226,7 @@ IDOR = Vulnerability(
 
 WEAK_CREDENTIALS = Vulnerability(
     id="weak_credentials",
+    exploit_complexity=0.3,
     family="code_web",
     description=(
         "Authentication endpoint accepts a default/weak credential pair, so "
@@ -229,6 +246,7 @@ WEAK_CREDENTIALS = Vulnerability(
 
 METADATA_CREDENTIAL_LEAK = Vulnerability(
     id="metadata_credential_leak",
+    exploit_complexity=0.1,
     family="code_web",
     description=(
         "An unauthenticated internal endpoint (cloud-metadata / admin style) returns a "
@@ -244,6 +262,7 @@ METADATA_CREDENTIAL_LEAK = Vulnerability(
 
 CONFIG_DISCLOSURE = Vulnerability(
     id="config_disclosure",
+    exploit_complexity=0.0,
     family="code_web",
     description=(
         "A public status/config endpoint over-shares internal infrastructure — it "
@@ -263,6 +282,7 @@ CONFIG_DISCLOSURE = Vulnerability(
 
 CREDENTIAL_LEAK = Vulnerability(
     id="credential_leak",
+    exploit_complexity=0.1,
     family="code_web",
     description=(
         "An unauthenticated internal endpoint hands out a service credential (a db "
@@ -284,6 +304,7 @@ CREDENTIAL_LEAK = Vulnerability(
 
 CREDENTIAL_GATED_FLAG = Vulnerability(
     id="credential_gated_flag",
+    exploit_complexity=0.1,
     family="code_web",
     description=(
         "An internal data endpoint that serves the flag only to a caller presenting "
@@ -303,6 +324,7 @@ CREDENTIAL_GATED_FLAG = Vulnerability(
 
 CREDENTIAL_GATED_RELAY = Vulnerability(
     id="credential_gated_relay",
+    exploit_complexity=0.1,
     family="code_web",
     description=(
         "An intermediate internal relay: validates the reused db token, then hands "
