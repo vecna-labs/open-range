@@ -575,13 +575,7 @@ def sample_graph(
         _lateralize(graph, rng)
     else:
         _networkize_ssrf(graph)
-    recon_disclosure = (
-        str(prior.topology.get("recon_disclosure", "full"))
-        if prior is not None
-        else "full"
-    )
-    graph.meta["recon_disclosure"] = recon_disclosure
-    if company and recon_disclosure != "none":
+    if company and _recon_disclosure(prior) != "none":
         _add_recon_disclosure(graph, rng)
 
     return graph
@@ -593,6 +587,12 @@ def _is_company(prior: PackPrior | None) -> bool:
 
 def _is_lateral(prior: PackPrior | None) -> bool:
     return bool(prior is not None and prior.topology.get("lateral"))
+
+
+def _recon_disclosure(prior: PackPrior | None) -> str:
+    if prior is None:
+        return "full"
+    return str(prior.topology.get("recon_disclosure", "full"))
 
 
 def _add_networks(graph: WorldGraph, company: bool) -> None:

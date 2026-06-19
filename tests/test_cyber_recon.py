@@ -157,9 +157,8 @@ def test_blind_ssrf_confirms_a_real_host_and_rejects_a_typo(
     assert flag not in real_body and flag not in fake_body  # neither leaks the flag
 
 
-def test_unset_recon_defaults_to_full() -> None:
+def test_a_non_company_world_has_no_recon_and_a_public_doc() -> None:
     graph = _admit(_DEFAULT).graph
-    assert graph.meta.get("recon_disclosure") == "full"  # full is the default level
     assert _vuln(graph, "config_disclosure") is None  # recon is a company-only vuln
     listed = {str(s["name"]) for s in _services(graph)}
     public = {
