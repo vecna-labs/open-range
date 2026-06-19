@@ -2,8 +2,8 @@
 
 Live but **torch-free**: each test boots the pack's real HTTP server (no model)
 and drives the env's reference tools (``WEB_TOOLS``) by hand, as a rollout would.
-Pins ``seed=0`` — a deterministic world whose pentest entrypoint is a
-SQL-injection at ``GET /svc/db/records`` — so the reward surface is reproducible.
+Pins ``seed=0`` — a deterministic world whose pentest oracle is a SQL-injection
+delivered as a POST body — so the reward surface is reproducible.
 
 The reward is the world's held-out verdict over the *HTTP* path: GRPO learns from
 the spread of a group's rewards, so the integration only yields a gradient if
@@ -20,12 +20,12 @@ These lock that surface in, and prove a real exploit-over-HTTP reaches ``1.0``.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from urllib.parse import urlencode
 
 import pytest
 from cyber_webapp import WebappPack
+from cyber_webapp.reference_solver import exploit_and_benign
 from openrange_pack_sdk import EpisodeResult, Snapshot, TaskSpec
 from openrange_trl import (
     EpisodeEnv,
@@ -98,15 +98,6 @@ def _truth_flag(snapshot: Snapshot, task: TaskSpec) -> str:
     return str(snapshot.graph.nodes[task.goal_nodes[0]].attrs["value_ref"])
 
 
-def _sqli_params(snapshot: Snapshot) -> Mapping[str, object]:
-    for vuln in snapshot.graph.by_kind("vulnerability"):
-        if vuln.attrs.get("kind") == "sql_injection":
-            params = vuln.attrs["params"]
-            assert isinstance(params, Mapping)
-            return params
-    raise AssertionError("seed=0 should plant a sql_injection vulnerability")
-
-
 def _start(env: EpisodeEnv, snapshot: Snapshot, task: TaskSpec) -> str:
     return env.reset(snapshot_id=snapshot.snapshot_id, task_id=task.id)
 
@@ -116,18 +107,11 @@ def _grade(env: EpisodeEnv) -> float:
     return env.reward
 
 
-def _exploit_path(snapshot: Snapshot, task: TaskSpec) -> str:
-    url = _entrypoint_url(snapshot, task)
-    params = _sqli_params(snapshot)
-    union = f"UNION SELECT key, {params['leak_column']} FROM {params['table']} -- "
-    ctx = params.get("context", "single")
-    if ctx == "numeric":
-        payload = f"0 {union}"  # unquoted predicate
-    elif ctx == "double":
-        payload = f'" {union}'  # close the double-quoted literal
-    else:
-        payload = f"' {union}"  # close the single-quoted literal
-    return f"{url}?{urlencode({str(params['target_param']): payload})}"
+def _drive_exploit(env: EpisodeEnv, snapshot: Snapshot) -> str:
+    exploit, _benign = exploit_and_benign(snapshot.graph, "sql_injection")
+    if exploit.method == "POST":
+        return env.http_post(exploit.path, exploit.body or "")
+    return env.http_get(exploit.path)
 
 
 def _report(
@@ -221,7 +205,7 @@ class TestRewardRungs:
         truth = _truth_flag(snapshot, task)
         env = make_env()
         _start(env, snapshot, task)
-        resp = env.http_get(_exploit_path(snapshot, task))
+        resp = _drive_exploit(env, snapshot)
         # The SQLi actually exfiltrated the hidden flag over HTTP.
         assert truth in resp
         env.submit(json.dumps({"flag": truth}))
@@ -261,7 +245,7 @@ class TestSeams:
 
         solved = make_env()
         _start(solved, snapshot, task)
-        solved.http_get(_exploit_path(snapshot, task))
+        _drive_exploit(solved, snapshot)
         solved.submit(json.dumps({"flag": truth}))
 
         floored = make_env()
@@ -363,7 +347,7 @@ class TestCurriculum:
                     service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS
                 )
                 env.reset(snapshot_id=snap.snapshot_id, task_id=task.id)
-                env.http_get(_exploit_path(snap, task))
+                _drive_exploit(env, snap)
                 env.submit(json.dumps({"flag": _truth_flag(snap, task)}))
                 env._finalize()
                 assert env.report is not None and env.report.passed

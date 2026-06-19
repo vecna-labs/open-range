@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from graphschema import WorldGraph
 
 from cyber_webapp.consequence import detect_leak
-from cyber_webapp.reference_solver import exploit_and_benign
+from cyber_webapp.reference_solver import Request, exploit_and_benign
 
 
 @dataclass(frozen=True)
@@ -110,6 +110,6 @@ def classify_service_admission(
     return AdmissionVerdict(accepted, solvable, trivial, reason)
 
 
-def cmdi_exploit_and_benign(graph: WorldGraph) -> tuple[str, str]:
-    """The canonical command-injection exploit + a benign request, as URL paths."""
+def cmdi_exploit_and_benign(graph: WorldGraph) -> tuple[Request, Request]:
+    """The canonical command-injection exploit + a benign request to drive."""
     return exploit_and_benign(graph, "command_injection")

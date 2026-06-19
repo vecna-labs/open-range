@@ -23,6 +23,7 @@ from cyber_webapp.reference_solver import exploit_and_benign, solve_chain
 from graphschema import Edge, Node, WorldGraph
 from openrange_pack_sdk import PackError, Snapshot
 
+from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
@@ -70,13 +71,14 @@ def _fetcher(base: str) -> Callable[[str], str]:
 
 
 def _solve(snap: Snapshot, kind: str, workdir: Path) -> AdmissionVerdict:
-    exploit_path, benign_path = exploit_and_benign(snap.graph, kind)
+    exploit_req, benign_req = exploit_and_benign(snap.graph, kind)
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(WebappPack(), workdir)
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = str(svc.surface(handle)["base_url"])
-        exploit_body, benign_body = _get(base, exploit_path), _get(base, benign_path)
+        exploit_body = perform(base, exploit_req)
+        benign_body = perform(base, benign_req)
     finally:
         svc.close()
     return classify_admission(snap.graph, exploit_body, benign_body)

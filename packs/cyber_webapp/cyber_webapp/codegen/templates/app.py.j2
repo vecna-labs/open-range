@@ -164,16 +164,63 @@ ROUTES = {
 ROUTES.setdefault("/", _index)
 ROUTES.setdefault("/openapi.json", _openapi)
 
+# Each route's required HTTP method. A body-shaped endpoint is mounted as POST and
+# rejects GET, so an exploit must be delivered with the right request shape (a body),
+# not as a query string. Paths absent here (index, discovery) default to GET.
+_ROUTE_METHODS = {
+{% for route in routes %}
+    {{ route.path | tojson }}: {{ (route.method | default("GET")) | tojson }},
+{% endfor %}
+}
+
 
 class Handler(BaseHTTPRequestHandler):
     server: WebappServer  # type: ignore[name-defined]
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        self._dispatch(parsed.path, parse_qs(parsed.query, keep_blank_values=True))
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
         query = parse_qs(parsed.query, keep_blank_values=True)
-        handler = ROUTES.get(parsed.path)
+        for key, values in self._read_body().items():
+            query.setdefault(key, []).extend(values)
+        self._dispatch(parsed.path, query)
+
+    def _read_body(self):
+        # Body params are exposed in the same name->[value] shape parse_qs yields, so a
+        # handler reads its inputs identically whether they arrive as a GET query, a
+        # POST form body, or a JSON body -- only the request shape differs, not the code.
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        text = raw.decode("utf-8", "replace")
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if content_type == "application/json":
+            try:
+                data = json.loads(text or "{}")
+            except ValueError:
+                return {}
+            if not isinstance(data, dict):
+                return {}
+            return {
+                str(k): [str(v) for v in value]
+                if isinstance(value, list)
+                else [str(value)]
+                for k, value in data.items()
+            }
+        return parse_qs(text, keep_blank_values=True)
+
+    def _dispatch(self, path, query) -> None:
+        handler = ROUTES.get(path)
         if handler is None:
             self.respond_simple(404, "text/plain", b"not found\n")
+            return
+        if self.command != _ROUTE_METHODS.get(path, "GET"):
+            self.respond_simple(405, "text/plain", b"method not allowed\n")
             return
         try:
             status, headers, body = handler(query, self.server.state)

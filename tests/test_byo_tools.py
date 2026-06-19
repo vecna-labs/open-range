@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 from cyber_webapp import WebappPack
-from cyber_webapp.reference_solver import exploit_and_benign
+from cyber_webapp.reference_solver import Request, exploit_and_benign
 from openrange_pack_sdk import Snapshot
 
 import openrange
@@ -30,9 +30,17 @@ _FLAT_MANIFEST = {
 }
 
 
-def _http(url: str) -> str:
+def _http(base: str, request: Request) -> str:
+    # A genuinely plain client: it frames the request in its own shape with only
+    # urllib -- a body-shaped exploit is a POST with a body, everything else a GET.
+    data = request.body.encode() if request.body is not None else None
+    built = urllib.request.Request(
+        base + request.path, data=data, method=request.method
+    )
+    if request.content_type:
+        built.add_header("Content-Type", request.content_type)
     try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
+        with urllib.request.urlopen(built, timeout=15) as resp:
             raw: bytes = resp.read()
     except urllib.error.HTTPError as exc:
         raw = exc.read()
@@ -65,8 +73,8 @@ def test_episode_is_solvable_with_a_plain_http_client(tmp_path: Path) -> None:
     episode = svc.start_episode(snap, task.id)
     try:
         base = svc.base_url(episode)
-        leaked = _http(base + exploit)
-        control = _http(base + benign)
+        leaked = _http(base, exploit)
+        control = _http(base, benign)
         flag = _flag_from(leaked)
         assert flag, f"exploit over plain HTTP leaked nothing: {leaked[:200]!r}"
         assert flag not in control

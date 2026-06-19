@@ -10,7 +10,6 @@ so it lives here in the test, not in the pack.
 
 from __future__ import annotations
 
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
@@ -25,6 +24,7 @@ from cyber_webapp.realize_admit import (
 from graphschema import Edge, Node, Visibility, WorldGraph
 from openrange_pack_sdk import Snapshot
 
+from examples.verify import perform
 from openrange.core.admit import admit
 
 _FLAG = "ORANGE_LONG_FLAG_VALUE_0123"
@@ -66,18 +66,14 @@ def _run_and_classify(snap: Snapshot, tmp_path: Path) -> AdmissionVerdict:
     from openrange.core.episode import EpisodeService
 
     graph = snap.graph
-    exploit_path, benign_path = cmdi_exploit_and_benign(graph)
+    exploit_req, benign_req = cmdi_exploit_and_benign(graph)
     service = EpisodeService(WebappPack(), tmp_path)
     try:
         task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
         handle = service.start_episode(snap, task.id)
         base = str(service.surface(handle)["base_url"])
-        exploit_body = (
-            urllib.request.urlopen(base + exploit_path, timeout=10).read().decode()
-        )
-        benign_body = (
-            urllib.request.urlopen(base + benign_path, timeout=10).read().decode()
-        )
+        exploit_body = perform(base, exploit_req)
+        benign_body = perform(base, benign_req)
     finally:
         service.close()
     return classify_admission(graph, exploit_body, benign_body)

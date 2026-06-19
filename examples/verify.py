@@ -18,7 +18,7 @@ from pathlib import Path
 
 from cyber_webapp import _is_networked
 from cyber_webapp.realize_admit import AdmissionVerdict, classify_admission
-from cyber_webapp.reference_solver import exploit_and_benign, solve_chain
+from cyber_webapp.reference_solver import Request, exploit_and_benign, solve_chain
 from graphschema import WorldGraph
 from openrange_pack_sdk import Mutation, Pack, Snapshot
 
@@ -29,6 +29,26 @@ from openrange.core.episode import EpisodeService
 def _fetch(url: str) -> str:
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
+            raw: bytes = resp.read()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+    except Exception:  # noqa: BLE001 — an unreachable surface just can't leak
+        return ""
+    return raw.decode("utf-8", "replace")
+
+
+def perform(base_url: str, request: Request) -> str:
+    """Execute a reference-solver ``Request`` against a live world and return its body.
+    A GET carries its query in the path; a body-shaped (POST) request sends its payload
+    as the body with a content type, so an exploit is delivered in the right shape."""
+    data = request.body.encode() if request.body is not None else None
+    built = urllib.request.Request(
+        base_url + request.path, data=data, method=request.method
+    )
+    if request.content_type:
+        built.add_header("Content-Type", request.content_type)
+    try:
+        with urllib.request.urlopen(built, timeout=15) as resp:
             raw: bytes = resp.read()
     except urllib.error.HTTPError as exc:
         raw = exc.read()
@@ -54,12 +74,12 @@ def verdict(graph: WorldGraph, base_url: str, entry_path: str) -> AdmissionVerdi
         return classify_admission(graph, terminal, benign)
     for vuln in graph.by_kind("vulnerability"):
         try:
-            exploit_path, benign_path = exploit_and_benign(
-                graph, str(vuln.attrs["kind"])
-            )
+            exploit_req, benign_req = exploit_and_benign(graph, str(vuln.attrs["kind"]))
         except Exception:  # noqa: BLE001 — no reference exploit for this kind
             continue
-        return classify_admission(graph, fetch(exploit_path), fetch(benign_path))
+        return classify_admission(
+            graph, perform(base_url, exploit_req), perform(base_url, benign_req)
+        )
     return AdmissionVerdict(False, False, False, "no reference exploit to verify")
 
 

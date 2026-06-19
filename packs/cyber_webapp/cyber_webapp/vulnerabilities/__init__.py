@@ -341,6 +341,15 @@ CATALOG: Mapping[str, Vulnerability] = {
 }
 
 
+# Classes whose exploit is a request body -- an XML document, a login form, an
+# injected command -- rather than a query string. Generation mounts these as POST
+# and the reference solver delivers them in the body, so an agent learns the real
+# request shape instead of treating every exploit as a GET parameter.
+BODY_SHAPED_KINDS: frozenset[str] = frozenset(
+    {"command_injection", "sql_injection", "ssti", "weak_credentials", "xxe"}
+)
+
+
 def vuln(id_: str) -> Vulnerability:
     """Look up a vuln by id; raises KeyError on miss."""
     return CATALOG[id_]
@@ -407,6 +416,7 @@ def merge_catalog(
 
 
 __all__ = [
+    "BODY_SHAPED_KINDS",
     "BROKEN_AUTHZ",
     "CATALOG",
     "COMMAND_INJECTION",

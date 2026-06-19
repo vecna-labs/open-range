@@ -27,6 +27,7 @@ from cyber_webapp.reference_solver import (
     _flag_record_key,
     _idor_id,
     _path_payload,
+    _request,
     _sqli_payload,
     _ssrf_url,
     _ssti_payload,
@@ -35,9 +36,10 @@ from cyber_webapp.reference_solver import (
     exploit_and_benign,
 )
 from cyber_webapp.vulnerabilities import CATALOG
-from graphschema import WorldGraph
+from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Snapshot
 
+from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
@@ -160,9 +162,21 @@ def _path_traversal_target(graph: WorldGraph) -> tuple[str, str, str]:
     )
 
 
-def _exploit_url(kind: str, graph: WorldGraph, base: str) -> str:
+def _exploit_body(kind: str, graph: WorldGraph, base: str) -> str:
     # The pack's reference solver owns the recipe; the staged tests prove it leaks.
-    return f"{base}{exploit_and_benign(graph, kind)[0]}"
+    exploit, _benign = exploit_and_benign(graph, kind)
+    return perform(base, exploit)
+
+
+def _send(base: str, graph: WorldGraph, vuln: Node, value: str) -> str:
+    # Deliver a custom payload to the vuln's endpoint in that endpoint's request shape
+    # (a body-shaped class is POST), so a probe reaches the handler, not a 405.
+    params = vuln.attrs["params"]
+    assert isinstance(params, Mapping)
+    endpoint = graph.nodes[next(e.dst for e in graph.out_edges(vuln.id, "affects"))]
+    ep = str(endpoint.attrs["public_url"])
+    method = str(endpoint.attrs.get("method", "GET"))
+    return perform(base, _request(ep, method, str(params["target_param"]), value))
 
 
 _CLASS_CASES = [
@@ -192,11 +206,7 @@ def test_fanout_class_episode_recovers_flag(
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = svc.surface(handle)["base_url"]
-        recovered = (
-            urllib.request.urlopen(_exploit_url(kind, snap.graph, base), timeout=10)
-            .read()
-            .decode()
-        )
+        recovered = _exploit_body(kind, snap.graph, base)
         assert expected in recovered, recovered[:120]
         (svc.solver_root(handle) / "result.json").write_text(
             json.dumps({"flag": expected})
@@ -213,11 +223,7 @@ def _exploit_response_body(snap: Snapshot, kind: str, tmp_path: Path) -> str:
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = svc.surface(handle)["base_url"]
-        body: str = (
-            urllib.request.urlopen(_exploit_url(kind, snap.graph, base), timeout=10)
-            .read()
-            .decode()
-        )
+        body: str = _exploit_body(kind, snap.graph, base)
         return body
     finally:
         svc.close()
@@ -244,20 +250,13 @@ def test_consequence_verifier_silent_on_benign_response(tmp_path: Path) -> None:
         for n in snap.graph.by_kind("vulnerability")
         if n.attrs.get("kind") == "command_injection"
     )
-    params = vuln.attrs["params"]
-    assert isinstance(params, Mapping)
-    endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
-    url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
     svc = EpisodeService(WebappPack(), tmp_path)
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = svc.surface(handle)["base_url"]
-        url = (
-            f"{base}{url_path}?{params['target_param']}={urllib.parse.quote('8.8.8.8')}"
-        )
-        body = urllib.request.urlopen(url, timeout=10).read().decode()
+        body = _send(base, snap.graph, vuln, "8.8.8.8")
     finally:
         svc.close()
     assert not detect_leak(snap.graph, [body]).occurred
@@ -275,8 +274,6 @@ def test_consequence_verifier_silent_on_neutralized_attack(tmp_path: Path) -> No
     params = vuln.attrs["params"]
     assert isinstance(params, Mapping)
     flag_path = _flag_record_key(snap.graph)
-    endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
-    url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
     # The injection vector the sampled context strips — the wrong technique.
     if params.get("inj_context") == "substitution":
         wrong = f"x; cat {flag_path}"
@@ -288,8 +285,7 @@ def test_consequence_verifier_silent_on_neutralized_attack(tmp_path: Path) -> No
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = svc.surface(handle)["base_url"]
-        url = f"{base}{url_path}?{params['target_param']}={urllib.parse.quote(wrong)}"
-        body = urllib.request.urlopen(url, timeout=10).read().decode()
+        body = _send(base, snap.graph, vuln, wrong)
     finally:
         svc.close()
     assert not detect_leak(snap.graph, [body]).occurred
@@ -482,9 +478,7 @@ def test_live_episode_records_the_flag_leak_as_a_node_id(tmp_path: Path) -> None
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = svc.surface(handle)["base_url"]
-        urllib.request.urlopen(
-            _exploit_url("sql_injection", snap.graph, base), timeout=10
-        ).read()
+        _exploit_body("sql_injection", snap.graph, base)
         report = svc.stop_episode(handle)
     finally:
         svc.close()
@@ -608,8 +602,6 @@ def test_command_injection_feedback_distinguishes_attempt_from_benign(
     params = vuln.attrs["params"]
     assert isinstance(params, Mapping)
     flag_path = _flag_record_key(snap.graph)
-    endpoint_id = next(e.dst for e in snap.graph.out_edges(vuln.id, "affects"))
-    url_path = str(snap.graph.nodes[endpoint_id].attrs["public_url"])
     expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     # An injection vector the sampled context neutralizes (use the other one).
@@ -622,15 +614,8 @@ def test_command_injection_feedback_distinguishes_attempt_from_benign(
     try:
         handle = svc.start_episode(snap, pentest.id)
         base = svc.surface(handle)["base_url"]
-
-        def get(value: str) -> str:
-            payload = urllib.parse.quote(value)
-            url = f"{base}{url_path}?{params['target_param']}={payload}"
-            body: str = urllib.request.urlopen(url, timeout=10).read().decode()
-            return body
-
-        benign = get("8.8.8.8")
-        rejected = get(wrong)
+        benign = _send(base, snap.graph, vuln, "8.8.8.8")
+        rejected = _send(base, snap.graph, vuln, wrong)
     finally:
         svc.close()
     assert expected not in rejected

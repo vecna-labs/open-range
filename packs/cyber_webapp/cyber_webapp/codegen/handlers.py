@@ -76,7 +76,10 @@ def build_handlers_and_routes(
         # own container serving on its own port, so it routes on the bare ``path`` and a
         # caller reaches it at ``http://<service-name><path>``.
         route_path = path if only_services is not None else public_url
-        routes.append({"path": route_path, "handler": handler_name})
+        method = str(endpoint.attrs.get("method", "GET"))
+        routes.append(
+            {"path": route_path, "handler": handler_name, "method": method},
+        )
     return handlers, routes
 
 

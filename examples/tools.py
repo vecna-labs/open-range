@@ -97,6 +97,30 @@ def http_get(surface: Mapping[str, Any], path: str) -> str:
         return f"status={exc.code}\n{exc.read().decode('utf-8', 'replace')}"
 
 
+def http_post(
+    surface: Mapping[str, Any],
+    path: str,
+    body: str = "",
+    content_type: str = "application/x-www-form-urlencoded",
+) -> str:
+    """Send an HTTP POST with a body to the running target and return its status + body.
+
+    Args:
+        path: Request path, resolved against the target's base URL.
+        body: The request body to send, e.g. form-encoded "user=admin&pw=x".
+        content_type: The body's media type; defaults to form encoding. Use
+            "application/json" to send a JSON body.
+    """
+    base = str(surface["base_url"])
+    req = Request(base + path, data=body.encode("utf-8"), method="POST")
+    req.add_header("Content-Type", content_type)
+    try:
+        with urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+            return f"status={resp.status}\n{resp.read().decode('utf-8', 'replace')}"
+    except HTTPError as exc:
+        return f"status={exc.code}\n{exc.read().decode('utf-8', 'replace')}"
+
+
 def submit(surface: Mapping[str, Any], content: str) -> str:
     """Submit your final answer; the held-out grader reads ``result.json``.
 
@@ -169,5 +193,5 @@ def run_tests(surface: Mapping[str, Any], node_ids: str = "") -> str:
     return f"{head}\n{stdout or '(no output)'}"
 
 
-WEB_TOOLS = (http_get, submit)
+WEB_TOOLS = (http_get, http_post, submit)
 FILE_TOOLS = (read_file, write_file, list_dir, apply_patch, run_tests)

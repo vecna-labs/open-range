@@ -225,7 +225,7 @@ def test_byo_shell_tool_exploits_a_real_episode_in_its_sandbox(tmp_path: Path) -
     # no agent command, and the real grader returns full reward.
     snap = _admit_cmdi()
     graph = snap.graph
-    exploit_path, _benign = cmdi_exploit_and_benign(graph)
+    exploit_req, _benign = cmdi_exploit_and_benign(graph)
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
 
     service = EpisodeService(WebappPack(), tmp_path / "svc", backing=Backing.CONTAINER)
@@ -239,7 +239,15 @@ def test_byo_shell_tool_exploits_a_real_episode_in_its_sandbox(tmp_path: Path) -
         obs = env.reset(snapshot_id=snap.snapshot_id, task_id=_pentest_task_id(snap))
         assert "http://target:" in obs  # the brief points at the in-network alias
 
-        out = env.shell(f"curl -s 'http://target:8000{exploit_path}'")
+        target = f"http://target:8000{exploit_req.path}"
+        if exploit_req.method == "POST":
+            cmd = (
+                f"curl -s -X POST -H 'Content-Type: {exploit_req.content_type}' "
+                f"--data '{exploit_req.body}' '{target}'"
+            )
+        else:
+            cmd = f"curl -s '{target}'"
+        out = env.shell(cmd)
         assert flag in out  # recovered over the wire, from the sandbox, no shipped tool
         assert env.submit(flag) == "submitted"
 

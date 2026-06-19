@@ -171,13 +171,42 @@ def _vuln_of_kind(graph: WorldGraph, kind: str) -> Node:
     raise PackError(f"no {kind} vulnerability in the graph")
 
 
-def exploit_and_benign(graph: WorldGraph, kind: str) -> tuple[str, str]:
-    """Return (exploit, benign) request paths for a procedurally-built `kind`.
+@dataclass(frozen=True)
+class Request:
+    """A reference request the host executes against a live world. ``method`` and
+    ``body`` carry the request shape: a body-shaped class (POST) delivers its payload
+    in ``body`` under ``content_type``; everything else is a GET query in ``path``."""
 
-    Both are URL path+query (no host); the caller fetches each against a live world.
-    The exploit must leak the flag through the consequence verifier; the benign
-    control (a normal request to the same endpoint) must not. The technique matches
-    the vuln's sampled injection context, so a world's one admissible exploit is used.
+    path: str
+    method: str = "GET"
+    body: str | None = None
+    content_type: str | None = None
+
+
+_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+
+
+def _request(ep: str, method: str, param: str, value: str) -> Request:
+    if method == "POST":
+        body = urllib.parse.urlencode({param: value})
+        return Request(ep, "POST", body, _FORM_CONTENT_TYPE)
+    return Request(f"{ep}?{param}={urllib.parse.quote(value)}")
+
+
+def _request_raw(ep: str, method: str, query: str) -> Request:
+    if method == "POST":
+        return Request(ep, "POST", query, _FORM_CONTENT_TYPE)
+    return Request(f"{ep}?{query}" if query else ep)
+
+
+def exploit_and_benign(graph: WorldGraph, kind: str) -> tuple[Request, Request]:
+    """Return (exploit, benign) requests for a procedurally-built `kind`.
+
+    The caller executes each against a live world. The exploit must leak the flag
+    through the consequence verifier; the benign control (a normal request to the same
+    endpoint) must not. Each carries the endpoint's request shape: a body-shaped class
+    is delivered as a POST body, everything else as a GET query, matching the vuln's
+    sampled injection context so a world's one admissible exploit is used.
     """
     if kind not in SUPPORTED_KINDS:
         raise PackError(f"no reference exploit for kind {kind!r}")
@@ -186,29 +215,34 @@ def exploit_and_benign(graph: WorldGraph, kind: str) -> tuple[str, str]:
     if not isinstance(params, Mapping):
         raise PackError(f"{kind} vuln has no params mapping")
     endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
-    ep = str(graph.nodes[endpoint_id].attrs["public_url"])
+    endpoint = graph.nodes[endpoint_id]
+    ep = str(endpoint.attrs["public_url"])
+    method = str(endpoint.attrs.get("method", "GET"))
     flag_key = _flag_record_key(graph)
 
-    def with_param(value: str) -> str:
-        return f"{ep}?{params['target_param']}={urllib.parse.quote(value)}"
+    def deliver(value: str) -> Request:
+        return _request(ep, method, str(params["target_param"]), value)
+
+    def deliver_raw(query: str) -> Request:
+        return _request_raw(ep, method, query)
 
     if kind == "path_traversal":
-        return with_param(_path_payload(params, flag_key)), with_param("index.html")
+        return deliver(_path_payload(params, flag_key)), deliver("index.html")
     if kind == "command_injection":
-        return with_param(_cmdi_payload(params, flag_key)), with_param("127.0.0.1")
+        return deliver(_cmdi_payload(params, flag_key)), deliver("127.0.0.1")
     if kind == "xxe":
-        return with_param(_xxe_payload(params, flag_key)), with_param("<r>ping</r>")
+        return deliver(_xxe_payload(params, flag_key)), deliver("<r>ping</r>")
     if kind == "ssti":
-        return with_param(_ssti_payload(params, flag_key)), with_param("status")
+        return deliver(_ssti_payload(params, flag_key)), deliver("status")
     if kind == "sql_injection":
-        return with_param(_sqli_payload(params)), with_param("1")
+        return deliver(_sqli_payload(params)), deliver("1")
     if kind == "ssrf":
-        return with_param(_ssrf_url(params)), with_param("http://example.com/")
+        return deliver(_ssrf_url(params)), deliver("http://example.com/")
     if kind == "idor":
-        return with_param(_idor_id(params, flag_key)), with_param("does-not-exist")
+        return deliver(_idor_id(params, flag_key)), deliver("does-not-exist")
     if kind == "broken_authz":
-        return f"{ep}?{_broken_authz_query(params)}", ep
-    return f"{ep}?{_weak_cred_query(params)}", ep  # weak_credentials
+        return deliver_raw(_broken_authz_query(params)), deliver_raw("")
+    return deliver_raw(_weak_cred_query(params)), deliver_raw("")  # weak_credentials
 
 
 @dataclass(frozen=True)
@@ -216,7 +250,7 @@ class Control:
     """A faithfulness probe: a request a real handler must answer by computing or
     fetching a known non-flag value, so a flag-hard-coding handler fails it."""
 
-    request: str
+    request: Request
     expected: str
 
 
@@ -264,10 +298,12 @@ def control_request(graph: WorldGraph, kind: str) -> Control | None:
     if not isinstance(params, Mapping):
         return None
     endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
-    ep = str(graph.nodes[endpoint_id].attrs["public_url"])
+    endpoint = graph.nodes[endpoint_id]
+    ep = str(endpoint.attrs["public_url"])
+    method = str(endpoint.attrs.get("method", "GET"))
 
-    def with_param(value: str) -> str:
-        return f"{ep}?{params['target_param']}={urllib.parse.quote(value)}"
+    def with_param(value: str) -> Request:
+        return _request(ep, method, str(params["target_param"]), value)
 
     if kind == "sql_injection":
         opener = {"numeric": "0", "double": '"'}.get(str(params.get("context")), "'")

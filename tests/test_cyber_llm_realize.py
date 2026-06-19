@@ -43,6 +43,7 @@ from cyber_webapp.reference_solver import (
 from graphschema import Edge, Node, WorldGraph
 from openrange_pack_sdk import PackError, Snapshot
 
+from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 from openrange.llm import ClaudeBackend
@@ -80,16 +81,14 @@ def _fetch(url: str) -> str:
 def _gate(snap: Snapshot, kind: str, handler: str, workdir: Path) -> AdmissionVerdict:
     graph = snap.graph
     _vuln_of_kind(graph, kind).attrs["realized_handler"] = handler
-    exploit_path, benign_path = exploit_and_benign(graph, kind)
+    exploit_req, benign_req = exploit_and_benign(graph, kind)
     svc = EpisodeService(WebappPack(), workdir)
     try:
         task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
         handle = svc.start_episode(snap, task.id)
         base = str(svc.surface(handle)["base_url"])
-        exploit_body, benign_body = (
-            _fetch(base + exploit_path),
-            _fetch(base + benign_path),
-        )
+        exploit_body = perform(base, exploit_req)
+        benign_body = perform(base, benign_req)
     finally:
         svc.close()
     return classify_admission(graph, exploit_body, benign_body)
@@ -591,12 +590,12 @@ def _episode_runner(
         try:
             handle = svc.start_episode(snap, task.id)
             base = str(svc.surface(handle)["base_url"])
-            exploit_path, benign_path = exploit_and_benign(snap.graph, kind)
+            exploit_req, benign_req = exploit_and_benign(snap.graph, kind)
             control = control_request(snap.graph, kind)
-            control_body = _fetch(base + control.request) if control else None
+            control_body = perform(base, control.request) if control else None
             return (
-                _fetch(base + exploit_path),
-                _fetch(base + benign_path),
+                perform(base, exploit_req),
+                perform(base, benign_req),
                 control_body,
             )
         finally:
@@ -686,18 +685,16 @@ def _control_gate(
 ) -> AdmissionVerdict:
     graph = snap.graph
     _vuln_of_kind(graph, kind).attrs["realized_handler"] = handler
-    exploit_path, benign_path = exploit_and_benign(graph, kind)
+    exploit_req, benign_req = exploit_and_benign(graph, kind)
     control = control_request(graph, kind)
     svc = EpisodeService(WebappPack(), workdir)
     try:
         task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
         handle = svc.start_episode(snap, task.id)
         base = str(svc.surface(handle)["base_url"])
-        exploit_body, benign_body = (
-            _fetch(base + exploit_path),
-            _fetch(base + benign_path),
-        )
-        control_body = _fetch(base + control.request) if control else None
+        exploit_body = perform(base, exploit_req)
+        benign_body = perform(base, benign_req)
+        control_body = perform(base, control.request) if control else None
     finally:
         svc.close()
     return classify_admission_with_control(
@@ -769,7 +766,9 @@ def test_control_request_per_class() -> None:
         ("db", "idor"),
     ]:
         c = control_request(_admit(loot, kind).graph, kind)
-        assert c is not None and "?" in c.request and c.expected
+        assert c is not None and c.expected
+        # The control carries a payload: a GET query, or a body-shaped POST body.
+        assert c.request.body or "?" in c.request.path
     for loot, kind in [
         ("db", "broken_authz"),
         ("db", "weak_credentials"),
@@ -866,7 +865,7 @@ def _service_probes(
         try:
             handle = svc.start_episode(snap, task.id)
             base = str(svc.surface(handle)["base_url"])
-            ex_path, bn_path = exploit_and_benign(snap.graph, oracle_kind)
+            ex_req, bn_req = exploit_and_benign(snap.graph, oracle_kind)
             bodies = {
                 str(ep.attrs.get("path")): _fetch(base + str(ep.attrs["public_url"]))
                 for ep in benign_endpoints_of(snap.graph, service_id)
@@ -876,7 +875,7 @@ def _service_probes(
                     root_ok = resp.status == 200
             except urllib.error.HTTPError:
                 root_ok = False
-            return _fetch(base + ex_path), _fetch(base + bn_path), bodies, root_ok
+            return perform(base, ex_req), perform(base, bn_req), bodies, root_ok
         finally:
             svc.close()
 

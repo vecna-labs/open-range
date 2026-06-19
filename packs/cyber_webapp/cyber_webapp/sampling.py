@@ -11,6 +11,7 @@ from graphschema import Edge, Node, Role, Visibility, WorldGraph
 from openrange_pack_sdk import PackError, PackPrior
 
 from cyber_webapp.ontology import ONTOLOGY_ID
+from cyber_webapp.vulnerabilities import BODY_SHAPED_KINDS
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 
 # Secret formats modeled on real production credentials, not a CTF-style
@@ -806,6 +807,7 @@ def _sample_vulnerabilities(
 
     placed_pairs: set[tuple[str, str]] = set()
     placed_vulns: list[Node] = []
+    bound_endpoints: set[str] = set()
     for i in range(count):
         target_node: Node | None = None
         if i == 0 and oracle is not None:
@@ -854,6 +856,13 @@ def _sample_vulnerabilities(
                 "injection_site": str(target_node.attrs.get("path", "service")),
             },
         )
+        # Codegen renders one handler per endpoint (the first vuln bound to it), so the
+        # method must follow that vuln: a body-shaped one makes the endpoint POST, and a
+        # later co-located decoy must not change a method already decided.
+        if target_node.kind == "endpoint" and target_node.id not in bound_endpoints:
+            bound_endpoints.add(target_node.id)
+            if kind in BODY_SHAPED_KINDS:
+                target_node.attrs["method"] = "POST"
 
     by_kind: dict[str, str] = {}
     for vuln in placed_vulns:
@@ -1123,6 +1132,9 @@ def _networkize_ssrf(graph: WorldGraph) -> None:
                 )
             }
             break
+    # The SSRF is a GET URL-parameter vuln; if a body-shaped decoy made this endpoint
+    # POST, the pivot would be unreachable, so the SSRF's endpoint stays GET.
+    graph.nodes[public_ep].attrs["method"] = "GET"
     params = dict(ssrf.attrs.get("params", {}))
     params["internal_host"] = flag_name
     params["internal_path"] = _METADATA_PATH
@@ -1289,6 +1301,7 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
                 )
             }
             break
+    graph.nodes[public_ep].attrs["method"] = "GET"  # SSRF pivot stays a GET URL param
     internal_names = sorted(
         str(n.attrs.get("name"))
         for n in graph.by_kind("service")

@@ -34,9 +34,11 @@ from cyber_webapp.container import (
 )
 from cyber_webapp.realize import _content_tag, _image_present
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
+from cyber_webapp.reference_solver import Request
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, EpisodeResult, Snapshot
 
+from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 
@@ -249,10 +251,10 @@ def _pin_context(graph: WorldGraph, context: str) -> None:
     params["quote"] = "'"
 
 
-def _exploit_for(graph: WorldGraph, context: str) -> str:
+def _exploit_for(graph: WorldGraph, context: str) -> Request:
     _pin_context(graph, context)
-    exploit_path, _benign = cmdi_exploit_and_benign(graph)
-    return exploit_path
+    exploit_req, _benign = cmdi_exploit_and_benign(graph)
+    return exploit_req
 
 
 @pytest.mark.skipif(not _docker_available(), reason="docker engine not reachable")
@@ -261,9 +263,9 @@ def test_world_runs_in_a_container_and_is_exploited(tmp_path: Path) -> None:
     graph = snap.graph
     tag = f"openrange-m1-{snap.snapshot_id[:12]}"
     with _container(image_files(graph), tmp_path, tag) as base:
-        exploit_path, _benign = cmdi_exploit_and_benign(graph)
+        exploit_req, _benign = cmdi_exploit_and_benign(graph)
         expected = str(graph.nodes["secret_flag"].attrs["value_ref"])
-        body = urllib.request.urlopen(base + exploit_path, timeout=10).read().decode()
+        body = perform(base, exploit_req)
     assert expected in body, body[:200]
 
 
@@ -303,8 +305,8 @@ def test_world_container_is_hardened(tmp_path: Path) -> None:
         cap_eff = next(ln for ln in status.splitlines() if ln.startswith("CapEff:"))
         assert cap_eff.split()[1].strip("0") == "", cap_eff
 
-        exploit_path, _benign = cmdi_exploit_and_benign(graph)
-        body = _http_get(base + exploit_path)
+        exploit_req, _benign = cmdi_exploit_and_benign(graph)
+        body = perform(base, exploit_req)
     assert str(graph.nodes["secret_flag"].attrs["value_ref"]) in body, body[:200]
 
 
@@ -323,16 +325,12 @@ def test_real_shell_container_recovers_a_real_file_flag(tmp_path: Path) -> None:
     graph = snap.graph
     _pin_context(graph, "separator")
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
-    exploit_path, benign_path = cmdi_exploit_and_benign(graph)
+    exploit_req, benign_req = cmdi_exploit_and_benign(graph)
 
     tag = f"openrange-m1-realfs-{snap.snapshot_id[:12]}"
     with _container(image_files(graph), tmp_path, tag) as base:
-        exploit_body = (
-            urllib.request.urlopen(base + exploit_path, timeout=10).read().decode()
-        )
-        benign_body = (
-            urllib.request.urlopen(base + benign_path, timeout=10).read().decode()
-        )
+        exploit_body = perform(base, exploit_req)
+        benign_body = perform(base, benign_req)
     assert flag in exploit_body, exploit_body[:200]
     assert flag not in benign_body
 
@@ -359,8 +357,8 @@ def test_real_shell_contexts_are_mutually_exclusive(
 
     tag = f"openrange-m1-ctx-{live}-{snap.snapshot_id[:8]}"
     with _container(image_files(graph), tmp_path, tag) as base:
-        hit = urllib.request.urlopen(base + matching, timeout=10).read().decode()
-        miss = urllib.request.urlopen(base + mismatched, timeout=10).read().decode()
+        hit = perform(base, matching)
+        miss = perform(base, mismatched)
     assert flag in hit, hit[:200]
     assert flag not in miss
 
@@ -370,7 +368,7 @@ def _run_pentest_episode(
     task_id: str,
     backing: Backing,
     root: Path,
-    exploit_path: str,
+    exploit_req: Request,
     flag: str,
 ) -> EpisodeResult:
     service = EpisodeService(WebappPack(), root, backing=backing)
@@ -379,9 +377,7 @@ def _run_pentest_episode(
         surface = service.surface(handle)
         base_url = str(surface["base_url"])
         solver_root = Path(str(surface["solver_root"]))
-        body = (
-            urllib.request.urlopen(base_url + exploit_path, timeout=20).read().decode()
-        )
+        body = perform(base_url, exploit_req)
         assert flag in body, f"{backing}: {body[:200]}"
         (solver_root / "result.json").write_text(
             json.dumps({"flag": flag}), encoding="utf-8"
@@ -439,13 +435,13 @@ def test_container_and_process_backings_grade_identically(tmp_path: Path) -> Non
     _pin_context(graph, "separator")
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
     task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
-    exploit_path, _benign = cmdi_exploit_and_benign(graph)
+    exploit_req, _benign = cmdi_exploit_and_benign(graph)
 
     process = _run_pentest_episode(
-        snap, task.id, Backing.PROCESS, tmp_path / "proc", exploit_path, flag
+        snap, task.id, Backing.PROCESS, tmp_path / "proc", exploit_req, flag
     )
     container = _run_pentest_episode(
-        snap, task.id, Backing.CONTAINER, tmp_path / "cont", exploit_path, flag
+        snap, task.id, Backing.CONTAINER, tmp_path / "cont", exploit_req, flag
     )
 
     assert process.success is True
