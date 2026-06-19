@@ -237,7 +237,7 @@ def test_company_solves_on_process(tmp_path: Path) -> None:
 
 
 def test_company_reward_surface_grades_the_breach(tmp_path: Path) -> None:
-    # The notebook's reward surface (examples/trl_grpo_cyber.ipynb §4), pinned on the
+    # The notebook's reward surface (examples/trl_grpo_cyber.ipynb §5), pinned on the
     # company world: reaching the storefront earns 1/3, a wrong flag 2/3, and the full
     # recon→pivot→exfiltrate breach 1.0 (passed). That spread is the GRPO gradient.
     snap = _admit(_COMPANY_MANIFEST)
