@@ -798,6 +798,7 @@ def _sample_vulnerabilities(
         rng, oracle_shapes, pool, oracle_endpoints, graph, db_backed_services
     )
 
+    placed_pairs: set[tuple[str, str]] = set()
     placed_vulns: list[Node] = []
     for i in range(count):
         target_node: Node | None = None
@@ -808,17 +809,22 @@ def _sample_vulnerabilities(
             if kind not in VULN_CATALOG:
                 continue
             target_kinds = VULN_CATALOG[kind].target_kinds
-            eligible_endpoints = _eligible_endpoints_for(
-                kind, endpoints, graph, db_backed_services
-            )
             if "endpoint" in target_kinds:
-                if not eligible_endpoints:
-                    continue
-                target_node = eligible_endpoints[i % len(eligible_endpoints)]
-            elif "service" in target_kinds and services:
-                target_node = services[i % len(services)]
+                candidates = _eligible_endpoints_for(
+                    kind, endpoints, graph, db_backed_services
+                )
+            elif "service" in target_kinds:
+                candidates = services
             else:
                 continue
+            if not candidates:
+                continue
+            target_node = candidates[i % len(candidates)]
+        # The codegen renders one handler per (kind, endpoint), so a second vuln on
+        # the pair is a dead node the uniqueness invariant rejects.
+        if (kind, target_node.id) in placed_pairs:
+            continue
+        placed_pairs.add((kind, target_node.id))
         catalog_entry = VULN_CATALOG[kind]
         vuln_id = f"vuln_{kind}_{i}"
         vuln_node = Node(
