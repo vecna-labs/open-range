@@ -22,9 +22,9 @@ from cyber_webapp import (
     monotone_chain_gate,
 )
 from cyber_webapp.codegen.seeding import project_seed
-from cyber_webapp.difficulty import world_difficulty
+from cyber_webapp.difficulty import _DECOY_CAP, _entry_ssrf, world_difficulty
 from cyber_webapp.invariants import unique_vuln_per_endpoint
-from cyber_webapp.mutation import available_mutations
+from cyber_webapp.mutation import _oracle_path_targets, available_mutations
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import Edge, Node, Visibility, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
@@ -348,10 +348,98 @@ def test_write_exec_world_is_not_poolable() -> None:
 def test_world_difficulty_rises_with_chain_depth() -> None:
     flat = world_difficulty(_admit(_DEFAULT_MANIFEST).graph)
     company = world_difficulty(_admit(_COMPANY_MANIFEST).graph)
-    lateral = world_difficulty(
-        _admit({**_COMPANY_MANIFEST, "lateral_movement": True}).graph
-    )
+    lateral = world_difficulty(_admit(_LATERAL_MANIFEST).graph)
     assert flat < company < lateral
+
+
+def _add_off_path_vuln(graph: WorldGraph, i: int) -> None:
+    graph.add_node(
+        Node(
+            f"svc_decoy{i}",
+            "service",
+            attrs={"name": f"decoy{i}", "exposure": "internal"},
+        )
+    )
+    graph.add_node(
+        Node(f"ep_decoy{i}", "endpoint", attrs={"path": f"/d{i}", "method": "GET"})
+    )
+    graph.add_node(
+        Node(
+            f"v_decoy{i}",
+            "vulnerability",
+            attrs={"kind": "sql_injection", "params": {}},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    graph.add_edge(Edge(f"ed{i}exp", "exposes", f"svc_decoy{i}", f"ep_decoy{i}"))
+    graph.add_edge(Edge(f"ed{i}aff", "affects", f"v_decoy{i}", f"ep_decoy{i}"))
+
+
+def _add_oracle_sibling_decoy(graph: WorldGraph) -> None:
+    service = next(iter(_oracle_path_targets(graph)[1]))
+    graph.add_node(
+        Node(
+            "ep_oracle_sibling", "endpoint", attrs={"path": "/admin", "method": "POST"}
+        )
+    )
+    graph.add_edge(Edge("e_oracle_sib_exp", "exposes", service, "ep_oracle_sibling"))
+    graph.add_node(
+        Node(
+            "vuln_command_injection_9",
+            "vulnerability",
+            attrs={"kind": "command_injection", "params": {}},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    graph.add_edge(
+        Edge(
+            "e_oracle_sib_aff",
+            "affects",
+            "vuln_command_injection_9",
+            "ep_oracle_sibling",
+        )
+    )
+
+
+def test_off_path_decoys_cannot_outrank_a_real_hop() -> None:
+    graph = _admit(_LATERAL_MANIFEST).graph
+    base = world_difficulty(graph)
+    for i in range(20):
+        _add_off_path_vuln(graph, i)
+    assert world_difficulty(graph) - base <= _DECOY_CAP
+
+
+def test_an_oracle_sibling_decoy_is_never_scored_on_path() -> None:
+    for manifest in (_DEFAULT_MANIFEST, _LATERAL_MANIFEST):
+        graph = _admit(manifest).graph
+        base = world_difficulty(graph)
+        _add_oracle_sibling_decoy(graph)
+        assert world_difficulty(graph) - base < 1
+
+
+def test_a_chain_with_no_way_in_scores_like_a_flat_world() -> None:
+    graph = _admit(_LATERAL_MANIFEST).graph
+    flat = world_difficulty(_admit(_DEFAULT_MANIFEST).graph)
+    ssrf = _entry_ssrf(graph)
+    assert ssrf is not None
+    internal_ep = next(
+        edge.dst
+        for svc in graph.by_kind("service")
+        if svc.attrs.get("exposure") != "public"
+        for edge in graph.out_edges(svc.id, "exposes")
+    )
+    for affects in graph.out_edges(ssrf.id, "affects"):
+        affects.dst = internal_ep
+    assert _entry_ssrf(graph) is None
+    assert world_difficulty(graph) <= flat
+
+
+def test_blind_recon_is_harder_than_recon_given() -> None:
+    given = world_difficulty(_admit(_COMPANY_MANIFEST).graph)
+    blind = world_difficulty(
+        _admit({**_COMPANY_MANIFEST, "recon_disclosure": "none"}).graph
+    )
+    assert blind > given
 
 
 def test_warm_cache_is_a_bounded_lru(tmp_path: Path) -> None:
@@ -730,7 +818,7 @@ def test_append_a_hop_deepens_the_chain_and_stays_solvable(tmp_path: Path) -> No
         parent, report, pack=pack, gate=monotone_chain_gate(parent), max_repairs=3
     )
     assert child is not None
-    # +10 is the chain-depth weight: a hop was appended, not an off-path decoy (+1).
+    # A real appended hop adds the full chain-hop weight, far above any off-path decoy.
     assert world_difficulty(child.graph) - parent_diff >= 10
     assert _breach_report(pack, tmp_path / "child", child).passed
 
