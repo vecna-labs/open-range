@@ -25,7 +25,7 @@ from openrange_pack_sdk import (
 )
 
 from examples._briefing import agent_briefing
-from examples._verify import consequence_gate
+from examples.verify import consequence_gate
 from openrange.agent_backend import CodexAgentBackend
 from openrange.core import PACKS, auto_evolve
 from openrange.core.episode import AgentTurn, EpisodeReport

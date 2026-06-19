@@ -4,6 +4,7 @@ same recon→pivot recovers the flag across real containers."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import shutil
@@ -29,8 +30,9 @@ from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
 from openrange_trl import EpisodeEnv
 
 from examples.tools import WEB_TOOLS
+from examples.verify import consequence_gate, verdict
 from openrange.core.admit import admit
-from openrange.core.curriculum import auto_evolve
+from openrange.core.curriculum import _clone_graph, auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService
 from openrange.pool import (
     _MAX_PRIORITY,
@@ -624,6 +626,45 @@ def test_evolution_selects_whichever_world_the_agent_struggles_with(
     assert evolved_parent == stuck_id
     evolved_parent, stuck_id = evolve_with_stuck(stuck_is_hard=False)
     assert evolved_parent == stuck_id
+
+
+def _drop_credential_leak(snap: Snapshot) -> Snapshot:
+    graph = _clone_graph(snap.graph)
+    dead = {
+        n.id
+        for n in graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "credential_leak"
+    }
+    for nid in dead:
+        del graph.nodes[nid]
+    stale = [e.id for e in list(graph.edges.values()) if e.src in dead or e.dst in dead]
+    for eid in stale:
+        del graph.edges[eid]
+    return dataclasses.replace(snap, graph=graph)
+
+
+def test_consequence_gate_admits_a_solvable_evolution(tmp_path: Path) -> None:
+    pack = WebappPack()
+    parent = _admit(_LATERAL_MANIFEST)
+    report = _breach_report(pack, tmp_path / "parent", parent)
+    gate = consequence_gate(pack, tmp_path / "gate")
+    child = auto_evolve(parent, report, pack=pack, gate=gate, max_repairs=3)
+    assert child is not None
+    assert _breach_report(pack, tmp_path / "child", child).passed
+
+
+def test_consequence_gate_rejects_an_unsolvable_world(tmp_path: Path) -> None:
+    pack = WebappPack()
+    broken = _drop_credential_leak(_admit(_LATERAL_MANIFEST))
+    task = next(t for t in broken.tasks if t.meta.get("family") == "webapp.pentest")
+    entry = str(broken.graph.nodes[task.entrypoints[0]].attrs["public_url"])
+    svc = EpisodeService(pack, tmp_path)
+    try:
+        handle = svc.start_episode(broken, task.id)
+        base = str(svc.surface(handle)["base_url"])
+        assert not verdict(broken.graph, base, entry).accepted
+    finally:
+        svc.close()
 
 
 def test_append_a_hop_deepens_the_chain_and_stays_solvable(tmp_path: Path) -> None:
