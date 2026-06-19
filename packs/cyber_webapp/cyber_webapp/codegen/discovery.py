@@ -8,64 +8,41 @@ from graphschema import Node, WorldGraph
 def build_discovery(
     graph: WorldGraph, only_services: frozenset[str] | None = None
 ) -> dict[str, object]:
-    # Show only the client's vantage: a per-service container its own endpoints
-    # (``only_services``), the single-app entrypoint only public services. The
-    # internal estate is reached by pivoting, never read off the public doc.
-    services_by_id: dict[str, Node] = {
-        n.id: n
-        for n in graph.nodes.values()
-        if n.kind == "service"
-        and (
-            n.id in only_services
-            if only_services is not None
-            else n.attrs.get("exposure") == "public"
-        )
-    }
-    endpoints_by_service: dict[str, list[Node]] = {sid: [] for sid in services_by_id}
+    # A per-service container advertises its own endpoints; the single app only its
+    # public services -- internals are reached by pivoting, not read off the public doc.
+    if only_services is not None:
+        services = [n for n in graph.by_kind("service") if n.id in only_services]
+        url_key = "path"
+    else:
+        services = [
+            n for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
+        ]
+        url_key = "public_url"
+
+    service_ids = {s.id for s in services}
+    endpoints_by_service: dict[str, list[Node]] = {sid: [] for sid in service_ids}
     for edge in graph.edges.values():
-        if edge.kind != "exposes":
-            continue
-        if edge.src in endpoints_by_service:
-            endpoint = next(
-                (
-                    n
-                    for n in graph.nodes.values()
-                    if n.kind == "endpoint" and n.id == edge.dst
-                ),
-                None,
-            )
-            if endpoint is not None:
+        if edge.kind == "exposes" and edge.src in service_ids:
+            endpoint = graph.nodes.get(edge.dst)
+            if endpoint is not None and endpoint.kind == "endpoint":
                 endpoints_by_service[edge.src].append(endpoint)
 
-    services_payload: list[dict[str, object]] = []
-    for service_id, service in services_by_id.items():
-        name = str(service.attrs.get("name", service_id))
-        kind = str(service.attrs.get("kind", "unknown"))
-        exposure = str(service.attrs.get("exposure", "internal"))
-        paths: list[dict[str, str]] = []
-        for endpoint in endpoints_by_service[service_id]:
-            # Per-service: advertise the bare path the service serves on its own
-            # container (the single app uses the /svc/<name> namespace instead).
-            url_key = "path" if only_services is not None else "public_url"
-            paths.append(
+    services_payload: list[dict[str, object]] = [
+        {
+            "name": str(service.attrs.get("name", service.id)),
+            "kind": str(service.attrs.get("kind", "unknown")),
+            "exposure": str(service.attrs.get("exposure", "internal")),
+            "paths": [
                 {
                     "url": str(endpoint.attrs[url_key]),
                     "method": str(endpoint.attrs.get("method", "GET")),
-                },
-            )
-        services_payload.append(
-            {
-                "name": name,
-                "kind": kind,
-                "exposure": exposure,
-                "paths": paths,
-            },
-        )
-
-    return {
-        "title": _discovery_title(graph),
-        "services": services_payload,
-    }
+                }
+                for endpoint in endpoints_by_service[service.id]
+            ],
+        }
+        for service in services
+    ]
+    return {"title": _discovery_title(graph), "services": services_payload}
 
 
 def _discovery_title(graph: WorldGraph) -> str:
