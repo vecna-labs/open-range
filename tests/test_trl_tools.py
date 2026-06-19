@@ -20,9 +20,50 @@ from cyber_webapp import WebappPack
 from openrange_pack_sdk import Backing, Snapshot
 from openrange_trl import EpisodeEnv, Tool
 
-from examples.tools import WEB_TOOLS, shell, submit
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
+
+
+def shell(surface: Mapping[str, Any], command: str) -> str:
+    """Run a shell command on your machine and return its output.
+
+    Args:
+        command: The shell command line to run.
+    """
+    run = surface.get("run")
+    if not callable(run):
+        return "error: no shell in this episode (start the env with sandbox=True)"
+    return str(run(command).output)
+
+
+def submit(surface: Mapping[str, Any], content: str) -> str:
+    """Submit your final answer; the held-out grader reads ``result.json``.
+
+    Args:
+        content: A JSON object carrying the requested field.
+    """
+    (Path(str(surface["solver_root"])) / "result.json").write_text(
+        content, encoding="utf-8"
+    )
+    return f"submitted {len(content)} byte(s)"
+
+
+def run_tests(surface: Mapping[str, Any], node_ids: str = "") -> str:
+    """Run the workspace's own pytest suite, never the held-out grader.
+
+    Args:
+        node_ids: Space-separated pytest targets; empty runs the whole suite.
+    """
+    fn = surface.get("run_tests")
+    if not callable(fn):
+        return "error: this world exposes no run_tests tool"
+    res = fn(node_ids.split() or None)
+    verdict = "passed" if res.get("ok") else "failed"
+    head = f"tests {verdict} (returncode={res.get('returncode')})"
+    return f"{head}\n{str(res.get('stdout') or '').strip() or '(no output)'}"
+
+
+WEB_TOOLS = (shell, submit)
 
 _MANIFEST = {
     "pack": {"id": "webapp"},
@@ -149,8 +190,6 @@ def test_initial_observation_falls_back_for_an_opaque_surface(make_env: Any) -> 
 
 
 def test_run_tests_tool_reports_when_world_has_no_runner() -> None:
-    from examples.tools import run_tests
-
     assert run_tests({}, "").startswith("error:")  # no run_tests in the surface
 
 

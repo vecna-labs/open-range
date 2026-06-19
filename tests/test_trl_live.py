@@ -20,8 +20,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openrange_pack_sdk import Backing, EpisodeReportLike
@@ -33,9 +34,47 @@ from openrange_trl import (
     make_reward_func,
 )
 
-from examples.tools import FILE_TOOLS, WEB_TOOLS
 from openrange.core.admit import AdmissionFailure, admit
 from openrange.core.curriculum import Direction, auto_evolve
+
+
+def shell(surface: Mapping[str, Any], command: str) -> str:
+    "Run a shell command on your machine and return its output."
+    return str(surface["run"](command).output)
+
+
+def submit(surface: Mapping[str, Any], content: str) -> str:
+    "Submit your final answer; the grader reads result.json."
+    (Path(str(surface["solver_root"])) / "result.json").write_text(
+        content, encoding="utf-8"
+    )
+    return f"submitted {len(content)} byte(s)"
+
+
+def write_file(surface: Mapping[str, Any], path: str, content: str) -> str:
+    "Write a file in the workspace."
+    (Path(str(surface["solver_root"])) / path).write_text(content, encoding="utf-8")
+    return f"wrote {len(content)} byte(s) to {path}"
+
+
+def read_file(surface: Mapping[str, Any], path: str) -> str:
+    "Read a workspace file."
+    return (Path(str(surface["solver_root"])) / path).read_text(encoding="utf-8")
+
+
+def run_tests(surface: Mapping[str, Any], node_ids: str = "") -> str:
+    "Run the workspace's own pytest suite (never the held-out grader)."
+    fn = surface.get("run_tests")
+    if not callable(fn):
+        return "error: this world exposes no run_tests tool"
+    res = fn(node_ids.split() or None)
+    verdict = "passed" if res.get("ok") else "failed"
+    head = f"tests {verdict} (returncode={res.get('returncode')})"
+    return f"{head}\n{str(res.get('stdout') or '').strip() or '(no output)'}"
+
+
+WEB_TOOLS = (shell, submit)
+FILE_TOOLS = (write_file, read_file, run_tests)
 
 
 def _docker_available() -> bool:

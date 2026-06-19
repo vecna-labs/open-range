@@ -13,8 +13,9 @@ the same path the SWE pack's own tests take.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openrange_pack_sdk import Backing, EpisodeResult, Snapshot
@@ -29,12 +30,68 @@ from openrange_trl import (
 from swe import SwePack
 from swe.instances import load_instance
 
-from examples.tools import FILE_TOOLS, FileWorkspaceTools, WorkspaceError
 from openrange.core.admit import AdmissionFailure, admit
 from openrange.core.curriculum import auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService
 
 EnvMaker = Callable[[str], tuple[EpisodeEnv, Snapshot]]
+
+
+def _in_root(surface: Mapping[str, Any], path: str) -> Path:
+    root = Path(str(surface["solver_root"])).resolve()
+    target = (root / path).resolve()
+    if target != root and root not in target.parents:
+        raise ValueError(f"path {path!r} escapes the workspace root")
+    return target
+
+
+def read_file(surface: Mapping[str, Any], path: str) -> str:
+    "Read a workspace file."
+    return _in_root(surface, path).read_text(encoding="utf-8")
+
+
+def write_file(surface: Mapping[str, Any], path: str, content: str) -> str:
+    "Write a file in the workspace."
+    target = _in_root(surface, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return f"wrote {len(content)} byte(s) to {path}"
+
+
+def list_dir(surface: Mapping[str, Any], path: str = ".") -> str:
+    "List the entries of a workspace directory."
+    target = _in_root(surface, path)
+    if not target.exists():
+        raise ValueError(f"no such directory: {path!r}")
+    if target.is_file():
+        return path
+    names = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
+    return "\n".join(names) if names else "(empty)"
+
+
+def apply_patch(surface: Mapping[str, Any], path: str, find: str, replace: str) -> str:
+    "Replace exact text in a workspace file."
+    target = _in_root(surface, path)
+    original = target.read_text(encoding="utf-8")
+    if find not in original:
+        raise ValueError(f"patch text not found in {path!r}")
+    occurrences = original.count(find)
+    target.write_text(original.replace(find, replace), encoding="utf-8")
+    return f"patched {path} ({occurrences} occurrence(s))"
+
+
+def run_tests(surface: Mapping[str, Any], node_ids: str = "") -> str:
+    "Run the workspace's own pytest suite (never the held-out grader)."
+    fn = surface.get("run_tests")
+    if not callable(fn):
+        return "error: this world exposes no run_tests tool"
+    res = fn(node_ids.split() or None)
+    verb = "passed" if res.get("ok") else "failed"
+    head = f"tests {verb} (returncode={res.get('returncode')})"
+    return f"{head}\n{str(res.get('stdout') or '').strip() or '(no output)'}"
+
+
+FILE_TOOLS = (read_file, write_file, list_dir, apply_patch, run_tests)
 
 
 def _admit(instance: str) -> Snapshot:
@@ -128,61 +185,6 @@ class TestBuildDataset:
         snapshot = _admit("calc_sum")
         base = build_grpo_dataset(snapshot)
         assert len(build_grpo_dataset(snapshot, repeat=3)) == 3 * len(base)
-
-
-class TestFileWorkspaceTools:
-    def test_write_read_roundtrip(self, tmp_path: Path) -> None:
-        tools = FileWorkspaceTools(tmp_path)
-        assert tools.write_file("pkg/mod.py", "x = 1\n").startswith("wrote")
-        assert tools.read_file("pkg/mod.py") == "x = 1\n"
-
-    def test_list_dir_marks_subdirs(self, tmp_path: Path) -> None:
-        tools = FileWorkspaceTools(tmp_path)
-        tools.write_file("a.py", "")
-        tools.write_file("sub/b.py", "")
-        listing = tools.list_dir(".")
-        assert "a.py" in listing
-        assert "sub/" in listing
-
-    def test_apply_patch_replaces_text(self, tmp_path: Path) -> None:
-        tools = FileWorkspaceTools(tmp_path)
-        tools.write_file("m.py", "return 0\n")
-        assert "1 occurrence" in tools.apply_patch("m.py", "0", "42")
-        assert tools.read_file("m.py") == "return 42\n"
-
-    def test_apply_patch_missing_text_raises(self, tmp_path: Path) -> None:
-        tools = FileWorkspaceTools(tmp_path)
-        tools.write_file("m.py", "a\n")
-        with pytest.raises(WorkspaceError):
-            tools.apply_patch("m.py", "nope", "x")
-
-    def test_apply_patch_missing_file_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(WorkspaceError):
-            FileWorkspaceTools(tmp_path).apply_patch("gone.py", "a", "b")
-
-    def test_list_dir_on_a_file_returns_its_path(self, tmp_path: Path) -> None:
-        tools = FileWorkspaceTools(tmp_path)
-        tools.write_file("solo.py", "")
-        assert tools.list_dir("solo.py") == "solo.py"
-
-    def test_list_dir_on_empty_root_is_marked(self, tmp_path: Path) -> None:
-        assert FileWorkspaceTools(tmp_path).list_dir(".") == "(empty)"
-
-    def test_list_dir_missing_dir_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(WorkspaceError):
-            FileWorkspaceTools(tmp_path).list_dir("nope")
-
-    def test_read_missing_file_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(WorkspaceError):
-            FileWorkspaceTools(tmp_path).read_file("nope.py")
-
-    def test_traversal_escape_is_refused(self, tmp_path: Path) -> None:
-        tools = FileWorkspaceTools(tmp_path / "root")
-        with pytest.raises(WorkspaceError):
-            tools.write_file("../escape.py", "pwned")
-        with pytest.raises(WorkspaceError):
-            tools.read_file("../../etc/passwd")
-        assert not (tmp_path / "escape.py").exists()
 
 
 class TestEnvLifecycle:

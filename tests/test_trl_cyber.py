@@ -26,8 +26,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cyber_webapp import WebappPack
@@ -42,10 +43,23 @@ from openrange_trl import (
     reward_variance_policy,
 )
 
-from examples.tools import shell, submit
 from openrange.core.admit import admit
 from openrange.core.curriculum import auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService
+
+
+def shell(surface: Mapping[str, Any], command: str) -> str:
+    "Run a shell command on your machine and return its output."
+    return str(surface["run"](command).output)
+
+
+def submit(surface: Mapping[str, Any], content: str) -> str:
+    "Submit your final answer; the grader reads result.json."
+    (Path(str(surface["solver_root"])) / "result.json").write_text(
+        content, encoding="utf-8"
+    )
+    return f"submitted {len(content)} byte(s)"
+
 
 _MANIFEST = {
     "world": {"goal": "recover the hidden flag"},

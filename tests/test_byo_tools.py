@@ -1,9 +1,8 @@
-"""The gym is bring-your-own-tools: a world is exposed only over HTTP, and the
-example ``shell``/``submit`` helpers are conveniences, not part of OpenRange.
+"""The gym is bring-your-own-tools: a world is exposed only over HTTP, and OpenRange
+ships no agent tools at all — a consumer brings its own (a few lines, or a harness).
 
-These pin that contract so it can't regress: an episode is solvable and graded
-with nothing but a plain HTTP client and the answer file, and the gym core names
-no example tool.
+These pin that contract so it can't regress: an episode is solvable and graded with
+nothing but a plain HTTP client and the answer file, and the gym core names no tool.
 """
 
 from __future__ import annotations

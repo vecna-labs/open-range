@@ -14,7 +14,9 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cyber_webapp import WebappPack
@@ -23,10 +25,23 @@ from cyber_webapp.vulnerabilities import BODY_SHAPED_KINDS
 from openrange_pack_sdk import Backing, Snapshot
 from openrange_trl import EpisodeEnv
 
-from examples.tools import shell, submit
 from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
+
+
+def shell(surface: Mapping[str, Any], command: str) -> str:
+    "Run a shell command on your machine and return its output."
+    return str(surface["run"](command).output)
+
+
+def submit(surface: Mapping[str, Any], content: str) -> str:
+    "Submit your final answer; the grader reads result.json."
+    (Path(str(surface["solver_root"])) / "result.json").write_text(
+        content, encoding="utf-8"
+    )
+    return f"submitted {len(content)} byte(s)"
+
 
 _CLASS_CASES = [
     ("file", "path_traversal"),
