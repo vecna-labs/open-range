@@ -32,6 +32,8 @@ _APPEND_HOP_RELEVANCE = 0.9
 
 _GATE_PATH = "/internal/vault"
 _TOKEN_PARAMS: tuple[str, ...] = ("token", "api_key", "auth", "session", "key")
+# Recon that names the SSRF's internal pivot host; evolution must never drop it.
+_RECON_KIND = "config_disclosure"
 
 
 def coerce_string_list(value: object) -> list[str]:
@@ -63,6 +65,8 @@ def available_mutations(
     )
 
     for kind, node_ids in vulns_by_kind.items():
+        if kind == _RECON_KIND:
+            continue
         score = _exploitation_score(node_ids, paths_per_vuln, path_hits)
         relevance = max(score, _REMOVE_RELEVANCE_FLOOR)
         options.append(
@@ -205,6 +209,8 @@ def _diversify_swap_kind_mutations(
     existing_kinds_by_target = _existing_kinds_by_target(graph)
     mutations: list[Mutation] = []
     for kind in sorted(vulns_by_kind):
+        if kind == _RECON_KIND:
+            continue
         node_ids = sorted(vulns_by_kind[kind])
         if not node_ids:
             continue

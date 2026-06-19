@@ -22,6 +22,7 @@ from cyber_webapp.invariants import (
     oracle_path_exists,
     secret_must_be_held,
     sqli_targets_db_backed_service,
+    unique_vuln_per_endpoint,
 )
 from cyber_webapp.mutation import monotone_chain_gate
 from cyber_webapp.ontology import ONTOLOGY_ID, webapp_ontology
@@ -52,6 +53,7 @@ class WebappPack(Pack):
             oracle_path_exists,
             sqli_targets_db_backed_service,
             credential_reuse_binding,
+            unique_vuln_per_endpoint,
         ]
 
     def make_builder(self, prior: PackPrior | None) -> Builder:
