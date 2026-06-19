@@ -1129,9 +1129,8 @@ def _networkize_ssrf(graph: WorldGraph) -> None:
     params["internal_decimal"] = ""  # the target is a hostname, not an IP
     if params.get("ssrf_filter") == "decimal_ip":
         params["ssrf_filter"] = "host_allowlist"
-    # The agent confirms a named host is a real internal service (vs a typo) by
-    # probing it through the SSRF; the handler answers from this inventory without
-    # leaking the flag, so blind recon is a feedback loop, not a guess.
+    # The host-confirm banner answers from this inventory, so a blind agent can tell
+    # a real internal host from a typo without the flag leaking.
     params["internal_inventory"] = sorted(
         str(n.attrs.get("name"))
         for n in graph.by_kind("service")

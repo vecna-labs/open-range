@@ -18,6 +18,13 @@ import os
 from urllib.parse import parse_qs, urlparse
 
 
+def _confirm_host(host):
+    # Recon feedback: a real internal host answers with a benign banner, so a named
+    # candidate is told apart from a typo without any secret crossing the wire.
+    body = json.dumps({"service": host, "status": "ok"}).encode()
+    return 200, {"Content-Type": "application/json"}, body
+
+
 def handle(query, state):
     values = query.get({{ target_param | tojson }}, [""])
     target = values[0] if values else ""
@@ -36,8 +43,6 @@ def handle(query, state):
         return 502, {}, b"unsupported scheme"
     host = (parsed.hostname or "").lower()
     if host not in internal_hosts:
-        # An unknown host has no route; a real internal one answers below, so naming
-        # a candidate is recon feedback (it exists vs a typo), not a blind guess.
         return 404, {"Content-Type": "application/json"}, b'{"error": "no route to host"}'
     fetch_path = parsed.path or "/"
     if os.environ.get("OPENRANGE_NETWORKED"):
@@ -53,10 +58,7 @@ def handle(query, state):
             return 502, {}, ("ssrf fetch failed: " + str(exc)).encode()
     inner = ROUTES.get("/svc/" + host + (parsed.path or ""))
     if inner is None:
-        # A real internal host with nothing served at this path: confirm it exists,
-        # serve nothing sensitive.
-        banner = json.dumps({"service": host, "status": "ok"}).encode()
-        return 200, {"Content-Type": "application/json"}, banner
+        return _confirm_host(host)
     return inner(parse_qs(parsed.query, keep_blank_values=True), state)
 {% else %}
     internal_host = {{ (internal_host | default("169.254.169.254")) | tojson }}
@@ -155,11 +157,7 @@ def handle(query, state):
         body = json.dumps({"data": secret}).encode()
         return 200, {"Content-Type": "application/json"}, body
 
-    # A URL that passed the filter but isn't the flag target. A real internal host
-    # answers (recon feedback: it exists, but holds no secret here); anything else
-    # gets the empty stub.
     if host in internal_inventory:
-        banner = json.dumps({"service": host, "status": "ok"}).encode()
-        return 200, {"Content-Type": "application/json"}, banner
+        return _confirm_host(host)
     return 200, {"Content-Type": "application/json"}, b'{"data": ""}'
 {% endif %}
