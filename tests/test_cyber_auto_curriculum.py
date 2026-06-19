@@ -14,7 +14,11 @@ from types import MappingProxyType
 from typing import Any
 
 from cyber_webapp import WebappPack, WebappPentest
-from cyber_webapp.mutation import _oracle_path_targets, available_mutations
+from cyber_webapp.mutation import (
+    _RECON_KIND,
+    _oracle_path_targets,
+    available_mutations,
+)
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 from graphschema import GraphPatch, WorldGraph, apply_patch
 from openrange_pack_sdk import EpisodeReportLike, Mutation, Snapshot
@@ -108,10 +112,12 @@ def test_available_mutations_tags_family_argument() -> None:
 
 
 def test_available_mutations_covers_every_catalog_kind() -> None:
-    """Across the option list, every catalog kind shows up somewhere.
+    """Across the option list, every mutation-introducible catalog kind shows up.
 
-    A `harden` proposes an absent kind, `soften`/`diversify` operate on
-    present kinds; together they exhaust the catalog.
+    A `harden` proposes an absent kind, `soften`/`diversify` operate on present
+    kinds; together they exhaust the catalog except `config_disclosure`, which the
+    sampler plants from the world's own internal estate (graph-derived params the
+    recon_disclosure knob owns), so the operators never introduce a generic one.
     """
     snap = _build_snapshot()
     options = available_mutations(snap.graph, "webapp.pentest", ())
@@ -129,7 +135,7 @@ def test_available_mutations_covers_every_catalog_kind() -> None:
         for kind in VULN_CATALOG:
             if kind in opt.note:
                 kinds_seen.add(kind)
-    assert set(VULN_CATALOG).issubset(kinds_seen)
+    assert (set(VULN_CATALOG) - {_RECON_KIND}).issubset(kinds_seen)
 
 
 def test_directions_produce_different_patch_shapes() -> None:
