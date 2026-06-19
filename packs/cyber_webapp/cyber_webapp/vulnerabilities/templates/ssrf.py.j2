@@ -36,8 +36,9 @@ def handle(query, state):
         return 502, {}, b"unsupported scheme"
     host = (parsed.hostname or "").lower()
     if host not in internal_hosts:
-        # Resolves to something that isn't an internal service — nothing interesting.
-        return 200, {"Content-Type": "application/json"}, b'{"data": ""}'
+        # An unknown host has no route; a real internal one answers below, so naming
+        # a candidate is recon feedback (it exists vs a typo), not a blind guess.
+        return 404, {"Content-Type": "application/json"}, b'{"error": "no route to host"}'
     fetch_path = parsed.path or "/"
     if os.environ.get("OPENRANGE_NETWORKED"):
         import urllib.request
@@ -52,7 +53,10 @@ def handle(query, state):
             return 502, {}, ("ssrf fetch failed: " + str(exc)).encode()
     inner = ROUTES.get("/svc/" + host + (parsed.path or ""))
     if inner is None:
-        return 200, {"Content-Type": "application/json"}, b'{"data": ""}'
+        # A real internal host with nothing served at this path: confirm it exists,
+        # serve nothing sensitive.
+        banner = json.dumps({"service": host, "status": "ok"}).encode()
+        return 200, {"Content-Type": "application/json"}, banner
     return inner(parse_qs(parsed.query, keep_blank_values=True), state)
 {% else %}
     internal_host = {{ (internal_host | default("169.254.169.254")) | tojson }}
@@ -79,6 +83,7 @@ def handle(query, state):
     #                     rejected, so the gopher and ``@``-trick payloads (which
     #                     use the dotted/hostname internal_host) do NOT match.
     ssrf_filter = {{ (ssrf_filter | default("decimal_ip")) | tojson }}
+    internal_inventory = {{ (internal_inventory | default([])) | tojson }}
 
     parsed = urlparse(target)
     scheme = (parsed.scheme or "").lower()
@@ -150,7 +155,11 @@ def handle(query, state):
         body = json.dumps({"data": secret}).encode()
         return 200, {"Content-Type": "application/json"}, body
 
-    # A URL that passed the filter but points elsewhere fetches "nothing
-    # interesting" — no secret, just a benign stub response.
+    # A URL that passed the filter but isn't the flag target. A real internal host
+    # answers (recon feedback: it exists, but holds no secret here); anything else
+    # gets the empty stub.
+    if host in internal_inventory:
+        banner = json.dumps({"service": host, "status": "ok"}).encode()
+        return 200, {"Content-Type": "application/json"}, banner
     return 200, {"Content-Type": "application/json"}, b'{"data": ""}'
 {% endif %}

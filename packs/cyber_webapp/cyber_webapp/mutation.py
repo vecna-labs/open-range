@@ -32,7 +32,8 @@ _APPEND_HOP_RELEVANCE = 0.9
 
 _GATE_PATH = "/internal/vault"
 _TOKEN_PARAMS: tuple[str, ...] = ("token", "api_key", "auth", "session", "key")
-# Recon that names the SSRF's internal pivot host; evolution must never drop it.
+# Structural recon owned by the recon_disclosure knob (graph-derived params):
+# evolution must neither drop it (soften/diversify) nor add a generic one (harden).
 _RECON_KIND = "config_disclosure"
 
 
@@ -114,7 +115,7 @@ def _harden_add_absent_mutations(
 
     mutations: list[Mutation] = []
     for kind in sorted(VULN_CATALOG):
-        if kind in vulns_by_kind:
+        if kind in vulns_by_kind or kind == _RECON_KIND:
             continue
         catalog_entry = VULN_CATALOG[kind]
         target_kinds = catalog_entry.target_kinds

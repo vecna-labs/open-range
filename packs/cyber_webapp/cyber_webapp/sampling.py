@@ -575,7 +575,13 @@ def sample_graph(
         _lateralize(graph, rng)
     else:
         _networkize_ssrf(graph)
-    if company:
+    recon_disclosure = (
+        str(prior.topology.get("recon_disclosure", "full"))
+        if prior is not None
+        else "full"
+    )
+    graph.meta["recon_disclosure"] = recon_disclosure
+    if company and recon_disclosure != "none":
         _add_recon_disclosure(graph, rng)
 
     return graph
@@ -1123,6 +1129,14 @@ def _networkize_ssrf(graph: WorldGraph) -> None:
     params["internal_decimal"] = ""  # the target is a hostname, not an IP
     if params.get("ssrf_filter") == "decimal_ip":
         params["ssrf_filter"] = "host_allowlist"
+    # The agent confirms a named host is a real internal service (vs a typo) by
+    # probing it through the SSRF; the handler answers from this inventory without
+    # leaking the flag, so blind recon is a feedback loop, not a guess.
+    params["internal_inventory"] = sorted(
+        str(n.attrs.get("name"))
+        for n in graph.by_kind("service")
+        if n.attrs.get("exposure") != "public"
+    )
     ssrf.attrs["params"] = params
 
     # The internal half: a metadata endpoint on the flag service that serves the flag,
