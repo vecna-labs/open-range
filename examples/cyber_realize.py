@@ -83,7 +83,7 @@ def _fetch(url: str) -> str:
         return exc.read().decode()
 
 
-def _realize(backend: LLMBackend, kind: str, base_dir: Path) -> Snapshot:
+def realize_one(backend: LLMBackend, kind: str, base_dir: Path) -> Snapshot:
     snap = _admit(kind)
     task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     counter = iter(range(1000))
@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(f"{kind} (service): {status} -> {realized.snapshot_id[:19]}")
             else:
-                realized = _realize(backend, kind, Path(tmp))
+                realized = realize_one(backend, kind, Path(tmp))
                 done = kind in realized.lineage["realized_handlers"]
                 status = "realized" if done else "fell back to template"
                 print(f"{kind}: {status} -> snapshot {realized.snapshot_id[:19]}")
