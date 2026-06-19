@@ -112,6 +112,23 @@ def _breach_report(pack: WebappPack, work_dir: Path, snap: Snapshot) -> EpisodeR
         svc.close()
 
 
+def _reach_only_report(
+    pack: WebappPack, work_dir: Path, snap: Snapshot
+) -> EpisodeReport:
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    svc = EpisodeService(pack, work_dir)
+    env = EpisodeEnv(service=svc, snapshots={snap.snapshot_id: snap}, tools=WEB_TOOLS)
+    try:
+        entry = str(snap.graph.nodes[task.entrypoints[0]].attrs["public_url"])
+        env.reset(snapshot_id=snap.snapshot_id, task_id=task.id)
+        env.http_get(entry)
+        env._finalize()
+        assert env.report is not None
+        return env.report
+    finally:
+        svc.close()
+
+
 def _solve_round(
     pack: WebappPack,
     work_dir: Path,
@@ -522,6 +539,91 @@ def test_regrowing_the_same_parent_does_not_duplicate(tmp_path: Path) -> None:
         gate=_pentest_only,
     )
     assert pool.keys() == grew_to
+
+
+def test_evolution_hardens_a_world_the_agent_masters(tmp_path: Path) -> None:
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [_LATERAL_MANIFEST],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=8,
+    )
+    member = next(iter(pool._members.values()))
+    before = pool.keys()
+    report = _breach_report(pack, tmp_path, member.snapshot)
+    assert report.passed
+    pool.update({member.key: [report]}, pack=pack, gate=_pentest_only)
+    new = pool.keys() - before
+    assert len(new) == 1
+    child = pool._members[next(iter(new))]
+    evolve = child.snapshot.lineage["_evolve"]
+    assert evolve["direction"] == "harden"
+    assert child.difficulty > member.difficulty
+
+
+def test_evolution_softens_the_world_the_agent_is_stuck_on(tmp_path: Path) -> None:
+    pack = WebappPack()
+    pool = WorldPool.seed(
+        pack,
+        [_COMPANY_MANIFEST, _LATERAL_MANIFEST],
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=8,
+    )
+    by_diff = sorted(pool._members.values(), key=lambda m: m.difficulty)
+    easy, hard = by_diff[0], by_diff[-1]
+    before = pool.keys()
+    reports = {
+        easy.key: [_breach_report(pack, tmp_path / "easy", easy.snapshot)],
+        hard.key: [_reach_only_report(pack, tmp_path / "hard", hard.snapshot)],
+    }
+    assert reports[easy.key][0].passed and not reports[hard.key][0].passed
+    pool.update(reports, pack=pack, gate=_pentest_only)
+    new = pool.keys() - before
+    assert len(new) == 1
+    child = pool._members[next(iter(new))]
+    evolve = child.snapshot.lineage["_evolve"]
+    assert evolve["parent_snapshot_id"] == hard.snapshot.snapshot_id
+    assert evolve["direction"] == "soften"
+    assert child.difficulty < hard.difficulty
+
+
+def test_evolution_selects_whichever_world_the_agent_struggles_with(
+    tmp_path: Path,
+) -> None:
+    def evolve_with_stuck(stuck_is_hard: bool) -> tuple[str, str]:
+        pack = WebappPack()
+        pool = WorldPool.seed(
+            pack,
+            [_COMPANY_MANIFEST, _LATERAL_MANIFEST],
+            difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+            family="webapp.pentest",
+            max_size=8,
+        )
+        by_diff = sorted(pool._members.values(), key=lambda m: m.difficulty)
+        easy, hard = by_diff[0], by_diff[-1]
+        stuck, solved = (hard, easy) if stuck_is_hard else (easy, hard)
+        before = pool.keys()
+        tag = "hard" if stuck_is_hard else "easy"
+        reports = {
+            solved.key: [
+                _breach_report(pack, tmp_path / f"{tag}-solved", solved.snapshot)
+            ],
+            stuck.key: [
+                _reach_only_report(pack, tmp_path / f"{tag}-stuck", stuck.snapshot)
+            ],
+        }
+        pool.update(reports, pack=pack, gate=_pentest_only)
+        child = pool._members[next(iter(pool.keys() - before))]
+        parent = str(child.snapshot.lineage["_evolve"]["parent_snapshot_id"])
+        return parent, stuck.snapshot.snapshot_id
+
+    evolved_parent, stuck_id = evolve_with_stuck(stuck_is_hard=True)
+    assert evolved_parent == stuck_id
+    evolved_parent, stuck_id = evolve_with_stuck(stuck_is_hard=False)
+    assert evolved_parent == stuck_id
 
 
 def test_append_a_hop_deepens_the_chain_and_stays_solvable(tmp_path: Path) -> None:
