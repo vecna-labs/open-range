@@ -23,9 +23,10 @@ from cyber_webapp import (
 )
 from cyber_webapp.codegen.seeding import project_seed
 from cyber_webapp.difficulty import world_difficulty
+from cyber_webapp.invariants import unique_vuln_per_endpoint
 from cyber_webapp.mutation import available_mutations
 from cyber_webapp.reference_solver import solve_chain
-from graphschema import Node, WorldGraph
+from graphschema import Edge, Node, Visibility, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
 from openrange_trl import EpisodeEnv
 
@@ -665,6 +666,58 @@ def test_consequence_gate_rejects_an_unsolvable_world(tmp_path: Path) -> None:
         assert not verdict(broken.graph, base, entry).accepted
     finally:
         svc.close()
+
+
+def test_unique_vuln_invariant_flags_a_duplicate() -> None:
+    graph = _admit(_LATERAL_MANIFEST).graph
+    assert unique_vuln_per_endpoint(graph) == []
+    vuln = next(iter(graph.by_kind("vulnerability")))
+    target = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
+    graph.add_node(
+        Node(
+            id="vuln_dup",
+            kind="vulnerability",
+            attrs={"kind": vuln.attrs.get("kind"), "family": "code_web", "params": {}},
+            visibility=Visibility.HIDDEN,
+        )
+    )
+    graph.edges["e_dup"] = Edge(id="e_dup", kind="affects", src="vuln_dup", dst=target)
+    codes = [i.code for i in unique_vuln_per_endpoint(graph)]
+    assert codes == ["duplicate_vuln_on_endpoint"]
+
+
+def test_no_duplicate_same_kind_vuln_on_one_endpoint() -> None:
+    for seed in range(30):
+        for extra in ({}, {"company": True}):
+            graph = _admit({**_DEFAULT_MANIFEST, "seed": seed, **extra}).graph
+            seen: set[tuple[str, str]] = set()
+            for v in graph.by_kind("vulnerability"):
+                target = next((e.dst for e in graph.out_edges(v.id, "affects")), "")
+                key = (str(v.attrs.get("kind")), str(target))
+                assert key not in seen, f"seed={seed} {extra}: duplicate {key}"
+                seen.add(key)
+
+
+def test_evolution_never_removes_or_swaps_the_recon() -> None:
+    graph = _admit(_LATERAL_MANIFEST).graph
+    recon_ids = {
+        n.id
+        for n in graph.by_kind("vulnerability")
+        if n.attrs.get("kind") == "config_disclosure"
+    }
+    assert recon_ids
+    threatening = [
+        m
+        for m in available_mutations(graph, "webapp.pentest", [])
+        if m.direction in ("soften", "diversify")
+    ]
+    touched = {
+        nid
+        for m in threatening
+        for nid in (*m.patch.nodes_removed, *(n.id for n in m.patch.nodes_updated))
+    }
+    assert recon_ids.isdisjoint(touched)
+    assert touched
 
 
 def test_append_a_hop_deepens_the_chain_and_stays_solvable(tmp_path: Path) -> None:

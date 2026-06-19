@@ -134,6 +134,34 @@ def oracle_path_exists(graph: WorldGraph) -> list[Issue]:
     return issues
 
 
+def unique_vuln_per_endpoint(graph: WorldGraph) -> list[Issue]:
+    """A vulnerability's (kind, endpoint) is its identity: the codegen renders one
+    handler per pair, so a second same-kind vuln on the same endpoint is a dead node
+    the graph over-claims. Reject it so generation and evolution stay coherent."""
+    target_of: dict[str, str] = {}
+    for edge in graph.edges.values():
+        if edge.kind == "affects":
+            target_of.setdefault(edge.src, edge.dst)
+    seen: set[tuple[str, str]] = set()
+    issues: list[Issue] = []
+    for vuln in graph.by_kind("vulnerability"):
+        target = target_of.get(vuln.id)
+        if target is None:
+            continue
+        key = (str(vuln.attrs.get("kind")), target)
+        if key in seen:
+            issues.append(
+                Issue(
+                    "error",
+                    "duplicate_vuln_on_endpoint",
+                    f"a {key[0]} vulnerability already targets {target!r}",
+                    vuln.id,
+                )
+            )
+        seen.add(key)
+    return issues
+
+
 _CHAIN_PRODUCER_KINDS: frozenset[str] = frozenset(
     {"credential_leak", "credential_gated_relay"}
 )
