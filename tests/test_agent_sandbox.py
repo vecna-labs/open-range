@@ -225,8 +225,17 @@ def test_agent_exploits_an_http_world_from_its_sandbox(tmp_path: Path) -> None:
     # sandbox, exploits it with its OWN curl and recovers the flag. No shipped tool.
     snap = _admit_cmdi()
     graph = snap.graph
-    exploit_path, _benign = cmdi_exploit_and_benign(graph)
+    exploit_req, _benign = cmdi_exploit_and_benign(graph)
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+
+    target = f"http://target:8000{exploit_req.path}"
+    if exploit_req.method == "POST":
+        curl = (
+            f"curl -s -X POST -H 'Content-Type: {exploit_req.content_type}' "
+            f"--data '{exploit_req.body}' '{target}'"
+        )
+    else:
+        curl = f"curl -s '{target}'"
 
     network = f"openrange-agent-net-{snap.snapshot_id[:12]}"
     tag = f"openrange-agent-world-{snap.snapshot_id[:12]}"
@@ -241,7 +250,7 @@ def test_agent_exploits_an_http_world_from_its_sandbox(tmp_path: Path) -> None:
             _world_on_network(image_files(graph), tmp_path, tag, network, "target"),
             AgentSandbox({"base_url": "http://target:8000"}, network=network) as sb,
         ):
-            result = sb.run(f"curl -s 'http://target:8000{exploit_path}'")
+            result = sb.run(curl)
         assert result.exit_code == 0, result.output
         assert flag in result.output, result.output[:300]
     finally:
