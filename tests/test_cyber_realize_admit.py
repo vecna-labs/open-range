@@ -21,10 +21,10 @@ from cyber_webapp.realize_admit import (
     classify_admission,
     cmdi_exploit_and_benign,
 )
+from cyber_webapp.verify import perform
 from graphschema import Edge, Node, Visibility, WorldGraph
 from openrange_pack_sdk import Snapshot
 
-from examples.verify import perform
 from openrange.core.admit import admit
 
 _FLAG = "ORANGE_LONG_FLAG_VALUE_0123"

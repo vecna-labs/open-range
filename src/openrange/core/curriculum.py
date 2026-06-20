@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from graphschema import (
@@ -27,6 +28,8 @@ from openrange_pack_sdk import (
     TaskFamily,
     TaskSpec,
 )
+
+from openrange.core.episode import EpisodeService
 
 if TYPE_CHECKING:
     from openrange_pack_sdk import Snapshot
@@ -68,6 +71,32 @@ def _report_passed(report: EpisodeReportLike) -> bool:
 # "harden" that actually makes the task easier. Without a gate, the family's
 # label is trusted.
 EvolutionGate = Callable[["Snapshot", Mutation], bool]
+
+
+def consequence_gate(
+    pack: Pack,
+    workdir: str | Path,
+    accept: Callable[[Snapshot, str], bool],
+) -> EvolutionGate:
+    """An :data:`EvolutionGate` that realizes each evolved world and keeps it only when
+    ``accept(snapshot, base_url)`` confirms it — e.g. a pack's reference breach actually
+    leaks the flag. ``accept`` is the pack's verdict, so core needs no pack import. A
+    world with no realizable task can't be checked and passes through."""
+    root = Path(workdir)
+
+    def gate(evolved: Snapshot, mutation: Mutation) -> bool:
+        del mutation  # the world is verified regardless of which move produced it
+        task = next((t for t in evolved.tasks if t.entrypoints), None)
+        if task is None:
+            return True
+        svc = EpisodeService(pack, root)
+        try:
+            handle = svc.start_episode(evolved, task.id)
+            return accept(evolved, str(svc.surface(handle)["base_url"]))
+        finally:
+            svc.close()
+
+    return gate
 
 
 def auto_evolve(

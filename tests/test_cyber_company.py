@@ -27,12 +27,12 @@ from cyber_webapp.difficulty import _DECOY_CAP, _entry_ssrf, world_difficulty
 from cyber_webapp.invariants import unique_vuln_per_endpoint
 from cyber_webapp.mutation import _oracle_path_targets, available_mutations
 from cyber_webapp.reference_solver import solve_chain
+from cyber_webapp.verify import accepts, verdict
 from graphschema import Edge, Node, Visibility, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
 
-from examples.verify import consequence_gate, verdict
 from openrange.core.admit import admit
-from openrange.core.curriculum import _clone_graph, auto_evolve
+from openrange.core.curriculum import _clone_graph, auto_evolve, consequence_gate
 from openrange.core.episode import EpisodeHandle, EpisodeReport, EpisodeService
 from openrange.pool import (
     _MAX_PRIORITY,
@@ -741,7 +741,7 @@ def test_consequence_gate_admits_a_solvable_evolution(tmp_path: Path) -> None:
     pack = WebappPack()
     parent = _admit(_LATERAL_MANIFEST)
     report = _breach_report(pack, tmp_path / "parent", parent)
-    gate = consequence_gate(pack, tmp_path / "gate")
+    gate = consequence_gate(pack, tmp_path / "gate", accepts)
     child = auto_evolve(parent, report, pack=pack, gate=gate, max_repairs=3)
     assert child is not None
     assert _breach_report(pack, tmp_path / "child", child).passed

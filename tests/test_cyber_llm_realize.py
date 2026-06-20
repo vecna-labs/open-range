@@ -40,10 +40,10 @@ from cyber_webapp.reference_solver import (
     control_request,
     exploit_and_benign,
 )
+from cyber_webapp.verify import perform
 from graphschema import Edge, Node, WorldGraph
 from openrange_pack_sdk import PackError, Snapshot
 
-from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 from openrange.llm import ClaudeBackend

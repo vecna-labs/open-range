@@ -20,10 +20,10 @@ from cyber_webapp import WebappPack
 from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.realize_admit import AdmissionVerdict, classify_admission
 from cyber_webapp.reference_solver import exploit_and_benign, solve_chain
+from cyber_webapp.verify import perform
 from graphschema import Edge, Node, WorldGraph
 from openrange_pack_sdk import PackError, Snapshot
 
-from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 

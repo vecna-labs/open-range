@@ -35,10 +35,10 @@ from cyber_webapp.container import (
 from cyber_webapp.realize import _content_tag, _image_present
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from cyber_webapp.reference_solver import Request
+from cyber_webapp.verify import perform
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Backing, EpisodeResult, Snapshot
 
-from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 

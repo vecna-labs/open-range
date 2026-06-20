@@ -35,11 +35,11 @@ from cyber_webapp.reference_solver import (
     _xxe_payload,
     exploit_and_benign,
 )
+from cyber_webapp.verify import perform
 from cyber_webapp.vulnerabilities import CATALOG
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import Snapshot
 
-from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 

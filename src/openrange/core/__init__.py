@@ -15,6 +15,7 @@ from openrange.core.curriculum import (
     CurriculumPolicy,
     Direction,
     auto_evolve,
+    consequence_gate,
     direction_from_reports,
 )
 from openrange.core.errors import (
@@ -42,6 +43,7 @@ __all__ = [
     "StoreError",
     "admit",
     "auto_evolve",
+    "consequence_gate",
     "direction_from_reports",
     "snapshot_to_dict",
     "validate_task_bindings",

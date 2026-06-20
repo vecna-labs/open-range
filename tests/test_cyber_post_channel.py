@@ -21,11 +21,11 @@ from typing import Any
 import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.reference_solver import Request, exploit_and_benign
+from cyber_webapp.verify import perform
 from cyber_webapp.vulnerabilities import BODY_SHAPED_KINDS
 from openrange_pack_sdk import Backing, Snapshot
 from openrange_trl import EpisodeEnv
 
-from examples.verify import perform
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
 

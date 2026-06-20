@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from cyber_webapp.verify import accepts
 from openrange_pack_sdk import (
     LLMBackendError,
     LLMRequest,
@@ -25,9 +26,8 @@ from openrange_pack_sdk import (
 )
 
 from examples._briefing import agent_briefing
-from examples.verify import consequence_gate
 from openrange.agent_backend import CodexAgentBackend
-from openrange.core import PACKS, auto_evolve
+from openrange.core import PACKS, auto_evolve, consequence_gate
 from openrange.core.episode import AgentTurn, EpisodeReport
 from openrange.llm import CodexBackend
 from openrange.runtime import (
@@ -156,7 +156,7 @@ def main() -> None:
             report,
             pack=pack,
             llm=curriculum_llm,
-            gate=consequence_gate(pack, run.root / "_gate"),
+            gate=consequence_gate(pack, run.root / "_gate", accepts),
         )
         if evolved is None:
             break
