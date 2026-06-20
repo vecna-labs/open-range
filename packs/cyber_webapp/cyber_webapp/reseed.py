@@ -13,13 +13,15 @@ from __future__ import annotations
 import dataclasses
 
 from graphschema import Edge, Node, WorldGraph
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import PackError, Snapshot
 
 
 def replant_flag(snapshot: Snapshot, new_value: str) -> Snapshot:
     """Return a copy of ``snapshot`` whose flag is ``new_value`` and whose structure is
     otherwise identical (a fresh ``snapshot_id``). Raises if the world has no flag."""
     graph = snapshot.graph
+    if "secret_flag" not in graph.nodes:
+        raise PackError("world has no flag to replant")
     old_value = str(graph.nodes["secret_flag"].attrs["value_ref"])
 
     clone = WorldGraph(ontology=graph.ontology, meta=dict(graph.meta))

@@ -472,6 +472,26 @@ def _sqli_exploit_prompt(params: Mapping[str, object]) -> str:
     )
 
 
+def _idor_exploit_prompt(params: Mapping[str, object], flag_key: str) -> str:
+    param = str(params["target_param"])
+    ctx = str(params.get("ref_context", "direct"))
+    if ctx == "base64":
+        how = "the reference is base64-decoded into the db key"
+    elif ctx == "prefixed":
+        prefix = str(params.get("ref_prefix", ""))
+        how = f"the reference is the db key behind a {prefix!r} prefix"
+    else:
+        how = "the reference is the raw db key"
+    return (
+        "Write an exploit for an insecure-direct-object-reference (IDOR) lookup "
+        "endpoint.\n"
+        f"- {param!r} selects a record by key with no ownership check; {how}.\n"
+        f"- The flag is in the record keyed {flag_key!r} (you do NOT know its value).\n"
+        f"- Give the {param!r} value that references that record, and a benign value "
+        "referencing a non-existent record.\n" + _EXPLOIT_RETURN
+    )
+
+
 def exploit_request(graph: WorldGraph, kind: str) -> LLMRequest:
     """The LLM request to author an (exploit, benign) payload pair for `kind`, tuned to
     its sampled context. The prompt names the flag's LOCATION (table/column/path), never
@@ -486,6 +506,8 @@ def exploit_request(graph: WorldGraph, kind: str) -> LLMRequest:
     where = f"{endpoint.attrs.get('method', 'GET')} {endpoint.attrs['public_url']}"
     if kind == "sql_injection":
         body = _sqli_exploit_prompt(params)
+    elif kind == "idor":
+        body = _idor_exploit_prompt(params, _flag_record_key(graph))
     else:
         raise PackError(f"no exploit-author prompt for kind {kind!r}")
     return LLMRequest(
