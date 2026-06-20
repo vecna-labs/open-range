@@ -79,8 +79,8 @@ def consequence_gate(
     accept: Callable[[Snapshot, str], bool],
 ) -> EvolutionGate:
     """An :data:`EvolutionGate` that realizes each evolved world and keeps it only when
-    ``accept(snapshot, base_url)`` confirms it — e.g. a pack's reference breach actually
-    leaks the flag. ``accept`` is the pack's verdict, so core needs no pack import. A
+    ``accept(snapshot, base_url)`` confirms it — a pack-supplied check run against the
+    realized world. ``accept`` is the pack's verdict, so core needs no pack import. A
     world with no realizable task can't be checked and passes through."""
     root = Path(workdir)
 
