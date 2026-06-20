@@ -761,6 +761,58 @@ def test_consequence_gate_rejects_an_unsolvable_world(tmp_path: Path) -> None:
         svc.close()
 
 
+def test_pool_curriculum_only_evolves_breach_verified_worlds(tmp_path: Path) -> None:
+    # Brick 1 -- self-verifying by default: with the consequence gate wired into the
+    # curriculum, every world the pool evolves into must still leak via the reference
+    # breach, so training never inherits a world that hardened its way to unsolvable.
+    pack = WebappPack()
+    seeds = [{**_COMPANY_MANIFEST, "seed": s} for s in range(3)]
+    pool = WorldPool.seed(
+        pack,
+        seeds,
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=8,
+    )
+    seed_ids = {m.snapshot.snapshot_id for m in pool._members.values()}
+    round_no = [0]
+
+    def run_round(
+        rows: list[dict[str, object]], snapshots: list[Snapshot]
+    ) -> dict[tuple[str, str], list[EpisodeReport]]:
+        round_no[0] += 1
+        return _solve_round(pack, tmp_path / f"r{round_no[0]}", rows, snapshots)
+
+    verify = consequence_gate(pack, tmp_path / "gate", accepts)
+    run_pool_curriculum(
+        pool,
+        run_round,
+        rounds=2,
+        pack=pack,
+        groups=3,
+        num_generations=2,
+        gate=lambda snap, mut: _pentest_only(snap, mut) and verify(snap, mut),
+    )
+
+    final_ids = {m.snapshot.snapshot_id for m in pool._members.values()}
+    assert final_ids - seed_ids, "the gate rejected every evolution; nothing to verify"
+
+    svc = EpisodeService(pack, tmp_path / "check")
+    try:
+        for member in pool._members.values():
+            task = next(
+                t
+                for t in member.snapshot.tasks
+                if t.meta.get("family") == "webapp.pentest"
+            )
+            handle = svc.start_episode(member.snapshot, task.id)
+            verified = accepts(member.snapshot, svc.base_url(handle))
+            svc.stop_episode(handle)
+            assert verified, f"unverified world in pool: {member.snapshot.snapshot_id}"
+    finally:
+        svc.close()
+
+
 def test_unique_vuln_invariant_flags_a_duplicate() -> None:
     graph = _admit(_LATERAL_MANIFEST).graph
     assert unique_vuln_per_endpoint(graph) == []
