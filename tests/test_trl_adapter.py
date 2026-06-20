@@ -186,6 +186,20 @@ def test_base_env_resets_with_no_tools(tmp_path: Path) -> None:
         service.close()
 
 
+def test_env_close_releases_the_service(tmp_path: Path) -> None:
+    # TRL builds envs from a factory and never closes them, so env.close() is the
+    # only hook to stop the live episode + warm worlds. Without it, CONTAINER rollouts
+    # leak a container stack per env. close() is idempotent and safe before any reset.
+    snapshot = _admit("calc_sum")
+    service = EpisodeService(SwePack(), tmp_path / "close")
+    env = EpisodeEnv(service=service, snapshots={snapshot.snapshot_id: snapshot})
+    env.reset(snapshot_id=snapshot.snapshot_id)
+    assert service._episodes  # a live episode is registered
+    env.close()
+    assert not service._episodes  # closed: nothing left running
+    env.close()  # idempotent
+
+
 class TestBuildDataset:
     def test_rows_carry_prompt_and_tags(self) -> None:
         snapshot = _admit("calc_sum")
