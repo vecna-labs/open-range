@@ -245,6 +245,29 @@ def exploit_and_benign(graph: WorldGraph, kind: str) -> tuple[Request, Request]:
     return deliver_raw(_weak_cred_query(params)), deliver_raw("")  # weak_credentials
 
 
+_RAW_QUERY_KINDS = frozenset({"broken_authz", "weak_credentials"})
+
+
+def wrap_payload(graph: WorldGraph, kind: str, value: str) -> Request:
+    """Wrap an authored payload string into the same Request shape the reference solver
+    uses for `kind`, so an LLM-authored exploit runs through the identical perform/gate.
+    Most kinds carry `value` under the vuln's `target_param`; broken_authz and
+    weak_credentials carry their own multi-field query as `value`."""
+    if kind not in SUPPORTED_KINDS:
+        raise PackError(f"no exploit wrap for kind {kind!r}")
+    vuln = _vuln_of_kind(graph, kind)
+    params = vuln.attrs["params"]
+    if not isinstance(params, Mapping):
+        raise PackError(f"{kind} vuln has no params mapping")
+    endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
+    endpoint = graph.nodes[endpoint_id]
+    ep = str(endpoint.attrs["public_url"])
+    method = str(endpoint.attrs.get("method", "GET"))
+    if kind in _RAW_QUERY_KINDS:
+        return _request_raw(ep, method, value)
+    return _request(ep, method, str(params["target_param"]), value)
+
+
 @dataclass(frozen=True)
 class Control:
     """A faithfulness probe: a request a real handler must answer by computing or

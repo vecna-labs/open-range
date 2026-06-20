@@ -19,7 +19,12 @@ from openrange_pack_sdk import Snapshot
 
 from cyber_webapp import _is_networked
 from cyber_webapp.realize_admit import AdmissionVerdict, classify_admission
-from cyber_webapp.reference_solver import Request, exploit_and_benign, solve_chain
+from cyber_webapp.reference_solver import (
+    Request,
+    exploit_and_benign,
+    solve_chain,
+    wrap_payload,
+)
 
 
 def _fetch(url: str) -> str:
@@ -91,3 +96,17 @@ def accepts(snapshot: Snapshot, base_url: str) -> bool:
         return True
     entry = str(snapshot.graph.nodes[task.entrypoints[0]].attrs["public_url"])
     return verdict(snapshot.graph, base_url, entry).accepted
+
+
+def verdict_authored(
+    graph: WorldGraph, base_url: str, kind: str, exploit: str, benign: str
+) -> AdmissionVerdict:
+    """Drive an authored (exploit, benign) payload pair against a running world and
+    classify it with the same gate the reference solver uses -- source (b) of #317. The
+    payloads wrap into the kind's request shape; the flag still leaks (or not) from the
+    live world, so a memorized value can't pass a re-seeded world (see ``reseed``)."""
+    exploit_req = wrap_payload(graph, kind, exploit)
+    benign_req = wrap_payload(graph, kind, benign)
+    return classify_admission(
+        graph, perform(base_url, exploit_req), perform(base_url, benign_req)
+    )
