@@ -49,12 +49,20 @@ from openrange.core.episode import EpisodeReport, EpisodeService
 
 
 def shell(surface: Mapping[str, Any], command: str) -> str:
-    "Run a shell command on your machine and return its output."
+    """Run a shell command on your machine and return its output.
+
+    Args:
+        command: The shell command line to run (e.g. a curl invocation).
+    """
     return str(surface["run"](command).output)
 
 
 def submit(surface: Mapping[str, Any], content: str) -> str:
-    "Submit your final answer; the grader reads result.json."
+    """Submit your final answer; the grader reads result.json.
+
+    Args:
+        content: A JSON object carrying the recovered field, e.g. {"flag": "..."}.
+    """
     (Path(str(surface["solver_root"])) / "result.json").write_text(
         content, encoding="utf-8"
     )

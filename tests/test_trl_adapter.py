@@ -46,12 +46,21 @@ def _in_root(surface: Mapping[str, Any], path: str) -> Path:
 
 
 def read_file(surface: Mapping[str, Any], path: str) -> str:
-    "Read a workspace file."
+    """Read a workspace file.
+
+    Args:
+        path: Path to the file or directory, relative to the workspace root.
+    """
     return _in_root(surface, path).read_text(encoding="utf-8")
 
 
 def write_file(surface: Mapping[str, Any], path: str, content: str) -> str:
-    "Write a file in the workspace."
+    """Write a file in the workspace.
+
+    Args:
+        path: Path to the file or directory, relative to the workspace root.
+        content: The full text to write into the file.
+    """
     target = _in_root(surface, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
@@ -59,7 +68,11 @@ def write_file(surface: Mapping[str, Any], path: str, content: str) -> str:
 
 
 def list_dir(surface: Mapping[str, Any], path: str = ".") -> str:
-    "List the entries of a workspace directory."
+    """List the entries of a workspace directory.
+
+    Args:
+        path: Path to the file or directory, relative to the workspace root.
+    """
     target = _in_root(surface, path)
     if not target.exists():
         raise ValueError(f"no such directory: {path!r}")
@@ -70,7 +83,13 @@ def list_dir(surface: Mapping[str, Any], path: str = ".") -> str:
 
 
 def apply_patch(surface: Mapping[str, Any], path: str, find: str, replace: str) -> str:
-    "Replace exact text in a workspace file."
+    """Replace exact text in a workspace file.
+
+    Args:
+        path: Path to the file or directory, relative to the workspace root.
+        find: The exact text to search for in the file.
+        replace: The text to substitute for every match.
+    """
     target = _in_root(surface, path)
     original = target.read_text(encoding="utf-8")
     if find not in original:
@@ -81,7 +100,11 @@ def apply_patch(surface: Mapping[str, Any], path: str, find: str, replace: str) 
 
 
 def run_tests(surface: Mapping[str, Any], node_ids: str = "") -> str:
-    "Run the workspace's own pytest suite (never the held-out grader)."
+    """Run the workspace's own pytest suite (never the held-out grader).
+
+    Args:
+        node_ids: Space-separated pytest targets; empty runs the whole suite.
+    """
     fn = surface.get("run_tests")
     if not callable(fn):
         return "error: this world exposes no run_tests tool"

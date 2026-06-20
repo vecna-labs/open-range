@@ -39,12 +39,20 @@ from openrange.core.curriculum import Direction, auto_evolve
 
 
 def shell(surface: Mapping[str, Any], command: str) -> str:
-    "Run a shell command on your machine and return its output."
+    """Run a shell command on your machine and return its output.
+
+    Args:
+        command: The shell command line to run (e.g. a curl invocation).
+    """
     return str(surface["run"](command).output)
 
 
 def submit(surface: Mapping[str, Any], content: str) -> str:
-    "Submit your final answer; the grader reads result.json."
+    """Submit your final answer; the grader reads result.json.
+
+    Args:
+        content: A JSON object carrying the recovered field, e.g. {"flag": "..."}.
+    """
     (Path(str(surface["solver_root"])) / "result.json").write_text(
         content, encoding="utf-8"
     )
@@ -52,18 +60,31 @@ def submit(surface: Mapping[str, Any], content: str) -> str:
 
 
 def write_file(surface: Mapping[str, Any], path: str, content: str) -> str:
-    "Write a file in the workspace."
+    """Write a file in the workspace.
+
+    Args:
+        path: Path to the file or directory, relative to the workspace root.
+        content: The full text to write into the file.
+    """
     (Path(str(surface["solver_root"])) / path).write_text(content, encoding="utf-8")
     return f"wrote {len(content)} byte(s) to {path}"
 
 
 def read_file(surface: Mapping[str, Any], path: str) -> str:
-    "Read a workspace file."
+    """Read a workspace file.
+
+    Args:
+        path: Path to the file or directory, relative to the workspace root.
+    """
     return (Path(str(surface["solver_root"])) / path).read_text(encoding="utf-8")
 
 
 def run_tests(surface: Mapping[str, Any], node_ids: str = "") -> str:
-    "Run the workspace's own pytest suite (never the held-out grader)."
+    """Run the workspace's own pytest suite (never the held-out grader).
+
+    Args:
+        node_ids: Space-separated pytest targets; empty runs the whole suite.
+    """
     fn = surface.get("run_tests")
     if not callable(fn):
         return "error: this world exposes no run_tests tool"
