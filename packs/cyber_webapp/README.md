@@ -8,8 +8,8 @@ two roles:** the same app is something to break into (`webapp.pentest`) *and*
 code to write (`webapp.build`).
 
 The world is dialed entirely from the **manifest** — one auto↔specific control surface,
-from fully-auto (`{"seed": 7}`) through partial (bias a vuln kind, force a `company` shape)
-to fully-specific (pin exact vulns) — with `generate` as the open, LLM-driven end. See
+from fully-auto (`{"seed": 7}`) through partial (bias a vuln kind, or pick a `company`
+shape) to fully-specific (pin exact vulns) — with `generate` as the open, LLM-driven end. See
 [docs/manifest.md](../../docs/manifest.md).
 
 Published as `openrange-cyber-webapp`; discovered via the `openrange.packs`
@@ -20,8 +20,8 @@ entry point.
 - services: `web`, `api`, `auth`, `db`, `db1` + a backing data store
 - 8 HTTP endpoints
 - vulns: `sql_injection`, `ssrf`
-- a **hidden** admin flag (`secret_flag`, a UUID) stored in the data, reachable
-  only by exploiting the vuln chain
+- a **hidden** admin flag (`secret_flag`, a production-style credential) stored in
+  the data, reachable only by exploiting the vuln chain
 
 Optional NPCs (browsing users, office personas) populate the world so it isn't a
 ghost town. Admission proves the flag is actually reachable before any episode

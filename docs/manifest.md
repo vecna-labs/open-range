@@ -28,8 +28,8 @@ surface's `generate` knob (see below), always behind the consequence verifier.
 // fully-auto      — the gym decides; seeded + reproducible
 {"pack": "webapp", "seed": 7}
 
-// partial         — bias one kind, force the company shape, auto-fill the rest
-{"pack": "webapp", "seed": 7, "topology": "company", "vuln": {"weights": {"xxe": 5}}}
+// partial         — bias one vuln kind, auto-fill the rest (count, loot, placement)
+{"pack": "webapp", "seed": 7, "topology": "flat", "vuln": {"weights": {"xxe": 5}}}
 
 // fully-specific  — exactly these vulns on a flat world, no LLM, byte-reproducible
 {"pack": "webapp", "seed": 7, "topology": "flat",
@@ -49,8 +49,8 @@ surface's `generate` knob (see below), always behind the consequence verifier.
 - `vuln` (mapping, `flat` only) — exactly one of:
   - `{"weights": {kind: int}}` — **bias** the sampling pool toward these kinds (merged
     over the defaults; the rest stay available).
-  - `{"pin": [{"kind": K, "endpoint"?: path}]}` — place **exactly** these kinds, one each
-    (`vuln_count` becomes the pin length).
+  - `{"pin": [{"kind": K}, ...]}` — place **exactly** these kinds, one each
+    (`vuln_count` becomes the pin length). Kinds must be distinct and the list non-empty.
   Unknown kinds, or internal-only chain kinds (composed via `topology`), raise `PackError`.
 - `loot` (mapping, `flat` only) — `{"db": int, "file": int}`, merged over the defaults,
   fixing where the flag lives (queryable rows vs an in-memory file).

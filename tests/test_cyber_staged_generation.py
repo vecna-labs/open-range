@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from cyber_webapp import WebappPack
+from cyber_webapp import WebappBuilder, WebappPack
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.consequence import LeakVerdict, detect_leak, guarded_values
 from cyber_webapp.reference_solver import (
@@ -38,7 +38,7 @@ from cyber_webapp.reference_solver import (
 from cyber_webapp.verify import perform
 from cyber_webapp.vulnerabilities import CATALOG
 from graphschema import Node, WorldGraph
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import PackError, Snapshot
 
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
@@ -105,20 +105,13 @@ def test_file_loot_keeps_flag_out_of_db_and_secrets() -> None:
     assert flag not in seed["secrets"].values()
 
 
-def test_manifest_knobs_ignore_non_mapping_values() -> None:
-    # A bad loot value is dropped, not crashed on.
-    snap = admit(
-        WebappPack(),
-        manifest={
-            "pack": {"id": "webapp"},
-            "seed": 7,
-            "runtime": {"tick": {"mode": "off"}},
-            "npc": [],
-            "loot": "not-a-mapping",
-        },
-        max_repairs=3,
-    )
-    assert isinstance(snap, Snapshot), snap
+def test_a_malformed_loot_knob_is_rejected() -> None:
+    # The control surface fails loud: a non-mapping loot is a manifest error, not a
+    # value silently dropped back to auto.
+    with pytest.raises(PackError):
+        WebappBuilder(None)._effective_prior(
+            {"pack": {"id": "webapp"}, "npc": [], "loot": "not-a-mapping"}
+        )
 
 
 def test_degenerate_loot_weights_fall_back_to_db() -> None:

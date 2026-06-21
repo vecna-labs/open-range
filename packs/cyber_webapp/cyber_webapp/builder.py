@@ -40,6 +40,13 @@ _RENAMED_KEYS: Mapping[str, str] = {
 _GENERATE_MODES = (False, "vuln", "service", "world")
 
 
+def _as_int(value: object, ctx: str) -> int:
+    # bool is an int subclass; reject it so loot:{db: True} is a clear error.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PackError(f"{ctx} must be an integer, got {value!r}")
+    return value
+
+
 def _validate_vuln_kinds(kinds: object) -> None:
     for kind in kinds:
         if kind not in VULN_CATALOG:
@@ -63,11 +70,23 @@ def _apply_vuln_knob(
     if (weights is None) == (pin is None):
         raise PackError("vuln takes exactly one of 'weights' or 'pin'")
     if weights is not None:
-        biased = {str(k): int(v) for k, v in weights.items()}
+        if not isinstance(weights, Mapping):
+            raise PackError("vuln.weights must be a mapping of kind -> int")
+        biased = {
+            str(k): _as_int(v, f"vuln.weights[{k!r}]") for k, v in weights.items()
+        }
         _validate_vuln_kinds(biased)
         kind_weights["vuln_kinds"] = {**_DEFAULT_VULN_KIND_WEIGHTS, **biased}
     else:
-        pinned = [str(entry["kind"]) for entry in pin]
+        if not isinstance(pin, list | tuple) or not pin:
+            raise PackError("vuln.pin must be a non-empty list of {kind: ...} entries")
+        pinned: list[str] = []
+        for entry in pin:
+            if not isinstance(entry, Mapping) or "kind" not in entry:
+                raise PackError("each vuln.pin entry must be a mapping with a 'kind'")
+            pinned.append(str(entry["kind"]))
+        if len(set(pinned)) != len(pinned):
+            raise PackError("vuln.pin kinds must be distinct (it places one of each)")
         _validate_vuln_kinds(pinned)
         topology["vuln_pin"] = pinned
         count_ranges["vuln_count"] = {"min": len(pinned), "max": len(pinned)}
@@ -134,6 +153,10 @@ class WebappBuilder(ProceduralBuilder):
                 f"topology {topo!r} forces its vuln/loot shape; "
                 "set vuln/loot only on topology 'flat'"
             )
+        if recon is not None and not company:
+            raise PackError("recon applies only to topology 'company' or 'chain'")
+        if chain is not None and not lateral:
+            raise PackError("chain applies only to topology 'chain'")
         if not company and all(x is None for x in (scale, vuln, loot, chain, recon)):
             return base  # fully-auto flat world: the base prior, untouched
 
@@ -155,18 +178,23 @@ class WebappBuilder(ProceduralBuilder):
             for key, spec in scale.items():
                 if isinstance(spec, Mapping):
                     count_ranges[str(key)] = dict(spec)
-        if isinstance(chain, Mapping) and isinstance(chain.get("depth"), Mapping):
-            depth = chain["depth"]
-            topology["chain_depth"] = {
-                "min": int(depth["min"]),
-                "max": int(depth["max"]),
-            }
+        if chain is not None:
+            depth = chain.get("depth") if isinstance(chain, Mapping) else None
+            if not isinstance(depth, Mapping):
+                raise PackError("chain must be {depth: {min: int, max: int}}")
+            lo = _as_int(depth.get("min"), "chain.depth.min")
+            hi = _as_int(depth.get("max"), "chain.depth.max")
+            if not 1 <= lo <= hi:
+                raise PackError(f"chain.depth needs 1 <= min <= max, got {lo}..{hi}")
+            topology["chain_depth"] = {"min": lo, "max": hi}
         if vuln is not None:
             _apply_vuln_knob(vuln, topology, kind_weights, count_ranges)
-        if isinstance(loot, Mapping):
+        if loot is not None:
+            if not isinstance(loot, Mapping):
+                raise PackError("loot must be a mapping like {db: int, file: int}")
             kind_weights["loot_shapes"] = {
                 **_DEFAULT_LOOT_WEIGHTS,
-                **{str(k): int(v) for k, v in loot.items()},
+                **{str(k): _as_int(v, f"loot[{k!r}]") for k, v in loot.items()},
             }
         if company:
             # The networked SSRF pivot to a db-backed internal flag IS the preset's
