@@ -26,7 +26,6 @@ _CYBER_GENERATION_CONFIG: dict[str, Any] = {
         "ssrf": 2,
         "broken_authz": 2,
     },
-    "account_count": {"min": 1, "max": 3},
     "vuln_chain_depth": {"min": 1, "max": 2},
 }
 

@@ -146,21 +146,6 @@ _CORP_DOMAINS: tuple[str, ...] = (
 )
 _HOST_ENVS: tuple[str, ...] = ("prod", "stg", "infra")
 
-# Realistic people for the background accounts (DESIGN.md §2: `alice@corp.example`),
-# assigned deterministically and qualified with the world's corp domain.
-_PERSON_HANDLES: tuple[str, ...] = (
-    "alice.chen",
-    "brian.okafor",
-    "carla.diaz",
-    "devin.patel",
-    "erin.walsh",
-    "felix.nardi",
-    "grace.kim",
-    "hana.suzuki",
-    "ivan.petrov",
-    "julia.ross",
-)
-
 
 # Realistic service names by kind, sampled deterministically so a world reads like a
 # real company's estate rather than ``api1`` / ``db2`` (DESIGN.md §2: realism is
@@ -318,7 +303,6 @@ _DEFAULT_COUNTS: Mapping[str, tuple[int, int]] = {
     "service_count": (2, 5),
     "endpoints_per_service": (1, 3),
     "vuln_count": (1, 3),
-    "account_count": (1, 3),
 }
 
 _DEFAULT_SERVICE_KIND_WEIGHTS: Mapping[str, int] = {
@@ -565,7 +549,7 @@ def sample_graph(
         attrs={"field": "value"},
     )
 
-    _sample_accounts(graph, rng, prior, corp_domain)
+    _burn_retired_account_rng(rng)
     _sample_vulnerabilities(
         graph,
         rng,
@@ -740,41 +724,14 @@ def _public_url(service: Mapping[str, str], path: str) -> str:
     return f"/svc/{service['name']}{path}"
 
 
-def _sample_accounts(
-    graph: WorldGraph,
-    rng: random.Random,
-    prior: PackPrior | None,
-    corp_domain: str,
-) -> None:
-    # Accounts are tagged ``Role.NPC``: they aren't the agent; they're background
-    # identities the realized world is seeded with. Names are real people at the
-    # company domain (deterministic, no rng draw) rather than admin / user1.
-    count = _sample_int(rng, prior, "account_count")
-    for i in range(count):
-        is_admin = i == 0
-        account_id = f"acct_{i}"
-        handle = _PERSON_HANDLES[i % len(_PERSON_HANDLES)]
-        graph.add_node(
-            Node(
-                id=account_id,
-                kind="account",
-                attrs={
-                    "username": f"{handle}@{corp_domain}",
-                    "role": "admin" if is_admin else "user",
-                    "active": True,
-                },
-                roles={Role.NPC},
-            )
-        )
-        credential_id = f"cred_{i}"
-        graph.add_node(
-            Node(
-                id=credential_id,
-                kind="credential",
-                attrs={"kind": "password", "value_ref": _b62(rng, 16)},
-            )
-        )
-        _add_edge(graph, "has_credential", account_id, credential_id)
+def _burn_retired_account_rng(rng: random.Random) -> None:
+    # These NPC account/credential nodes were dead -- no handler, solver, verifier,
+    # or template ever read them (#298). The cleanup is behaviorally inert, so the rng
+    # draws they consumed (a 1-3 account count, then a 16-char secret each) stay here
+    # as a no-op: every world keeps the same vulns, chain, and flag -- only its
+    # content-hash id moves, since the removed nodes were hashed.
+    for _ in range(rng.randint(1, 3)):
+        _b62(rng, 16)
 
 
 def _sample_vulnerabilities(

@@ -97,7 +97,6 @@ def _load_seed_and_init_state(seed_path: Path) -> dict:
     return {
         "db": db,
         "secrets": payload["secrets"],
-        "accounts": payload["accounts"],
         "files": files,
         "schema": schema,
         "guarded": payload.get("guarded", {}),

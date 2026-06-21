@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
-from graphschema import Node, WorldGraph
+from graphschema import WorldGraph
 from openrange_pack_sdk import PackError
 
 from cyber_webapp.consequence import guarded_values
@@ -37,17 +37,8 @@ def project_seed(
     """
     flag = ""
     flag_secret_id = ""
-    accounts: dict[str, dict[str, object]] = {}
     secrets: dict[str, str] = {}
     raw_records: dict[str, tuple[str, dict[str, str]]] = {}
-
-    creds_by_account: dict[str, str] = {}
-    for edge in graph.edges.values():
-        if edge.kind == "has_credential":
-            creds_by_account[edge.src] = edge.dst
-    cred_by_id: dict[str, Node] = {
-        n.id: n for n in graph.nodes.values() if n.kind == "credential"
-    }
 
     service_of_record, service_of_secret = _service_ownership(graph)
 
@@ -67,17 +58,6 @@ def project_seed(
             secrets[str(node.attrs.get("kind", node.id))] = str(
                 node.attrs.get("value_ref", ""),
             )
-        elif node.kind == "account":
-            cred_id = creds_by_account.get(node.id)
-            password = ""
-            if cred_id is not None:
-                cred = cred_by_id.get(cred_id)
-                if cred is not None:
-                    password = str(cred.attrs.get("value_ref", ""))
-            accounts[str(node.attrs.get("username", node.id))] = {
-                "role": str(node.attrs.get("role", "user")),
-                "password": password,
-            }
         elif node.kind == "record":
             if not _owned(service_of_record.get(node.id)):
                 continue
@@ -124,7 +104,6 @@ def project_seed(
     return MappingProxyType(
         {
             "flag": flag,
-            "accounts": accounts,
             "secrets": secrets_out,
             "records": records_for_schema,
             "files": files_out,

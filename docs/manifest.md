@@ -20,7 +20,7 @@ Each pack documents the keys it expects in its own source. For the built-in
 - `scale` (mapping) — optional sampler count-range overrides, so a world
   can be scaled from the manifest without hand-building a `PackPrior`.
   Maps sampler count keys (`service_count`, `endpoints_per_service`,
-  `vuln_count`, `account_count`) to `{"min": int, "max": int}`; keys left
+  `vuln_count`) to `{"min": int, "max": int}`; keys left
   out keep their defaults. Example:
   `{"scale": {"service_count": {"min": 8, "max": 10}}}`.
 - `runtime.backing` (string) — optional desired runtime substrate

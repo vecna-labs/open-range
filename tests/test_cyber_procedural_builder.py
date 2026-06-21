@@ -40,10 +40,10 @@ def test_builder_graph_carries_expected_kinds() -> None:
     """A seeded build emits every node kind a fully-shaped webapp needs.
 
     The sampler always lays down at least one of each core kind so the
-    invariants pass and both families can bind tasks. The set we assert
-    on is the intersection of "always present" kinds across the
-    sampler — ``account`` / ``credential`` are sampled in batches >= 1,
-    ``network`` is single-instance, etc.
+    invariants pass and both families can bind tasks. ``network`` is
+    single-instance, etc. ``credential`` is chain-only (the synthesized
+    credential-reuse chain), so a plain world has none — it is exercised
+    in the lateral-movement tests instead.
     """
     builder = WebappBuilder(default_prior())
     result = builder.build({"seed": 0})
@@ -56,8 +56,6 @@ def test_builder_graph_carries_expected_kinds() -> None:
         "record",
         "secret",
         "vulnerability",
-        "account",
-        "credential",
         "network",
     }
     missing = expected - kinds

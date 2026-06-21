@@ -103,11 +103,11 @@ def test_realize_graph_app_py_compiles_across_seeds() -> None:
 
 
 def test_realize_graph_seed_json_carries_expected_keys() -> None:
-    """seed.json is valid JSON and carries accounts/secrets/records/schema."""
+    """seed.json is valid JSON and carries secrets/records/schema."""
     files = _realize_graph(_sample_graph())
     payload = json.loads(files[SEED_FILE_NAME])
     assert isinstance(payload, dict)
-    for key in ("accounts", "secrets", "records", "schema"):
+    for key in ("secrets", "records", "schema"):
         assert key in payload, f"seed.json missing top-level key {key!r}"
     # The schema is what the SQLi handler reads against — must name a table
     # and the column we'll be SELECTing on.

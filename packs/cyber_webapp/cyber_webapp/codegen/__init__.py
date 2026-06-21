@@ -33,14 +33,12 @@ def _realize_graph(
         discovery=discovery,
     )
 
-    accounts = cast("Mapping[str, Mapping[str, object]]", seed["accounts"])
     secrets = cast("Mapping[str, object]", seed["secrets"])
     records = cast("Mapping[str, Mapping[str, object]]", seed["records"])
     files = cast("Mapping[str, object]", seed["files"])
     schema = cast("Mapping[str, object]", seed["schema"])
     guarded = cast("Mapping[str, object]", seed["guarded"])
     seed_payload = {
-        "accounts": {k: dict(v) for k, v in accounts.items()},
         "secrets": dict(secrets),
         "records": {k: dict(v) for k, v in records.items()},
         "files": dict(files),
