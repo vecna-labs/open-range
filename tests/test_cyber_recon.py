@@ -182,6 +182,38 @@ def test_evolution_does_not_re_add_recon_to_a_blind_world() -> None:
     assert "config_disclosure" not in added
 
 
+def test_evolution_leaves_the_credential_chain_intact_but_still_deepens_it() -> None:
+    # Internal-only kinds (recon + the synthesized credential-reuse chain) must never
+    # be dropped, swapped, or added as a decoy -- only the append-hop may extend the
+    # chain. Without this, admission rejects the move after the fact, wasting budget.
+    internal_only = {
+        "config_disclosure",
+        "metadata_credential_leak",
+        "credential_leak",
+        "credential_gated_relay",
+        "credential_gated_flag",
+    }
+    chain_kinds = {"credential_leak", "credential_gated_relay", "credential_gated_flag"}
+    graph = _admit({**_COMPANY, "lateral_movement": True}).graph
+    moves = available_mutations(graph, "webapp.pentest", [])
+
+    for move in moves:
+        if move.direction in ("soften", "diversify"):
+            assert not any(ck in move.note for ck in chain_kinds), move.note
+
+    appended = False
+    for move in moves:
+        if move.direction != "harden":
+            continue
+        if move.note.startswith("append a credential hop"):
+            appended = True
+            continue
+        for node in move.patch.nodes_added:
+            if node.kind == "vulnerability":
+                assert node.attrs.get("kind") not in internal_only, move.note
+    assert appended  # the legitimate chain-deepening frontier move is still offered
+
+
 @pytest.mark.parametrize("seed", [1, 2, 3, 5, 7])
 def test_a_blind_world_always_names_the_flag_host_in_the_ssrf_pool(seed: int) -> None:
     graph = _admit({**_NONE, "seed": seed}).graph
