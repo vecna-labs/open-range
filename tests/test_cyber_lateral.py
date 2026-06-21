@@ -88,6 +88,32 @@ def test_admission_rejects_a_broken_credential_binding() -> None:
     assert any(i.code == "credential_binding" and i.severity == "error" for i in issues)
 
 
+def test_admission_rejects_a_drifted_credential_value() -> None:
+    # The credential node is the single source of truth: if a gate's param-string
+    # token drifts from the node's value_ref, admission rejects it even though the
+    # structural binding is still intact.
+    import dataclasses
+
+    from cyber_webapp.invariants import credential_value_binding
+    from graphschema import validate
+
+    pack = WebappPack()
+    graph = _admit().graph
+    assert not credential_value_binding(graph)  # a fresh world is value-consistent
+
+    gate = next(
+        n
+        for n in graph.by_kind("vulnerability")
+        if n.attrs.get("kind") in ("credential_gated_relay", "credential_gated_flag")
+    )
+    drifted = {**gate.attrs, "params": {**gate.attrs["params"], "credential": "WRONG"}}
+    graph.nodes[gate.id] = dataclasses.replace(gate, attrs=drifted)
+
+    assert any(i.code == "credential_value" for i in credential_value_binding(graph))
+    issues = validate(graph, pack.ontology(), pack.invariants())
+    assert any(i.code == "credential_value" and i.severity == "error" for i in issues)
+
+
 def test_chain_credentials_are_not_guarded() -> None:
     # PUBLIC credential nodes must NOT join the guarded set — a HIDDEN token would
     # be swept in, and the leak handler serving it would trip the verifier on a

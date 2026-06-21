@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from graphschema import Issue, WorldGraph
 
 _ORPHAN_EXEMPT: frozenset[str] = frozenset({"host", "network"})
@@ -175,9 +177,9 @@ def credential_reuse_binding(graph: WorldGraph) -> list[Issue]:
     one strictly-earlier hop on the `enables` chain, and the producing and
     gating vulns must keep their credential-chain kinds.
 
-    Binds by credential-node identity + enable ordering; it does not read
-    `value_ref` or detect cycles (the chain is a DAG by construction), and the
-    handler param-name / response-shape contract stays the verifier's job. The
+    Binds by credential-node identity + enable ordering; value-consistency is
+    `credential_value_binding`'s job and cycle-freedom holds by DAG construction,
+    while the handler param-name / response-shape contract stays the verifier's. The
     kind check is what stops a mutation that rewrites a chain vuln in place from
     leaving the binding structurally intact but the world unsolvable. Endpoints
     without a `requires_credential` edge are untouched.
@@ -267,6 +269,67 @@ def credential_reuse_binding(graph: WorldGraph) -> list[Issue]:
                         endpoint_id,
                     )
                 )
+    return issues
+
+
+def credential_value_binding(graph: WorldGraph) -> list[Issue]:
+    """The credential node is the single source of truth for its token value: the
+    producing hop emits exactly the node's ``value_ref`` and the gating hop validates
+    against exactly that same value. This catches drift between the node and the
+    handler param-string copies -- a mutation or hand-edit that changes one but not
+    the other, leaving the chain structurally bound yet unsolvable. The reference
+    solver stays response-driven; this is the admission backstop that lets the graph
+    node be authoritative.
+    """
+    cred_value = {
+        n.id: str(n.attrs.get("value_ref", "")) for n in graph.by_kind("credential")
+    }
+    vuln = {n.id: n for n in graph.by_kind("vulnerability")}
+    affects: dict[str, list[str]] = {}
+    for edge in graph.edges.values():
+        if edge.kind == "affects":
+            affects.setdefault(edge.dst, []).append(edge.src)
+
+    def _param(vuln_id: str, key: str) -> str | None:
+        node = vuln.get(vuln_id)
+        params = node.attrs.get("params") if node is not None else None
+        if not isinstance(params, Mapping):
+            return None
+        value = params.get(key)
+        return None if value is None else str(value)
+
+    issues: list[Issue] = []
+    for edge in graph.edges.values():
+        if edge.kind == "produces":
+            kind = str(vuln[edge.src].attrs.get("kind", "")) if edge.src in vuln else ""
+            relay = kind == "credential_gated_relay"
+            emitted = _param(edge.src, "next_credential" if relay else "credential")
+            if emitted is not None and emitted != cred_value.get(edge.dst):
+                issues.append(
+                    Issue(
+                        "error",
+                        "credential_value",
+                        f"producer {edge.src!r} emits a token that does not match "
+                        f"credential node {edge.dst!r}'s value_ref",
+                        edge.src,
+                    )
+                )
+        elif edge.kind == "requires_credential":
+            expected = cred_value.get(edge.dst)
+            for gate in affects.get(edge.src, []):
+                if str(vuln[gate].attrs.get("kind", "")) not in _CHAIN_GATE_KINDS:
+                    continue
+                got = _param(gate, "credential")
+                if got is not None and got != expected:
+                    issues.append(
+                        Issue(
+                            "error",
+                            "credential_value",
+                            f"gate {gate!r} validates a token that does not match "
+                            f"credential node {edge.dst!r}'s value_ref",
+                            gate,
+                        )
+                    )
     return issues
 
 
