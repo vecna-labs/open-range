@@ -14,7 +14,7 @@ import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.reference_solver import solve_chain
 from graphschema import WorldGraph, validate
-from openrange_pack_sdk import Backing, Snapshot
+from openrange_pack_sdk import Backing, Snapshot, TaskSpec
 
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
@@ -38,7 +38,7 @@ def _admit(seed: int) -> Snapshot:
     return snap
 
 
-def _pentest(snap: Snapshot):
+def _pentest(snap: Snapshot) -> TaskSpec:
     return next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
 

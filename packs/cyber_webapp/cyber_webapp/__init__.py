@@ -34,7 +34,7 @@ from cyber_webapp.realize import (
     WebappRuntime,
     WebappRuntimeError,
 )
-from cyber_webapp.sampling import _is_networked
+from cyber_webapp.sampling import _is_networked as _is_networked  # re-export
 
 
 class WebappPack(Pack):
