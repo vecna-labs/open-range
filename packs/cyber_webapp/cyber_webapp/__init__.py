@@ -34,6 +34,7 @@ from cyber_webapp.realize import (
     WebappRuntime,
     WebappRuntimeError,
 )
+from cyber_webapp.sampling import _is_networked
 
 
 class WebappPack(Pack):
@@ -78,24 +79,6 @@ class WebappPack(Pack):
 
     def task_families(self) -> list[TaskFamily]:
         return [WebappBuild(), WebappPentest()]
-
-
-def _is_networked(graph: WorldGraph) -> bool:
-    # Networked = the flag is reachable only by pivoting: an SSRF on a PUBLIC service
-    # reaches an internal service that holds the flag. A vuln co-located with the flag
-    # on one service is not networked — it stays single-container.
-    public_services = {
-        n.id for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
-    }
-    service_of_endpoint = {
-        e.dst: e.src for e in graph.edges.values() if e.kind == "exposes"
-    }
-    return any(
-        service_of_endpoint.get(edge.dst) in public_services
-        for vuln in graph.by_kind("vulnerability")
-        if vuln.attrs.get("kind") == "ssrf"
-        for edge in graph.out_edges(vuln.id, "affects")
-    )
 
 
 __all__ = [

@@ -214,6 +214,18 @@ def test_evolution_leaves_the_credential_chain_intact_but_still_deepens_it() -> 
     assert appended  # the legitimate chain-deepening frontier move is still offered
 
 
+def test_evolution_keeps_the_networked_foothold() -> None:
+    # In a networked world the SSRF is the only public entry; soften/diversify must
+    # neither remove it nor swap it away (that strips the foothold -> unsolvable, which
+    # admission rejects), but the world must still be evolvable by other moves.
+    graph = _admit(_COMPANY).graph
+    moves = available_mutations(graph, "webapp.pentest", [])
+    for move in moves:
+        if move.direction in ("soften", "diversify"):
+            assert "ssrf" not in move.note, move.note  # the foothold is protected
+    assert any(m.direction in ("soften", "diversify") for m in moves)  # not frozen
+
+
 @pytest.mark.parametrize("seed", [1, 2, 3, 5, 7])
 def test_a_blind_world_always_names_the_flag_host_in_the_ssrf_pool(seed: int) -> None:
     graph = _admit({**_NONE, "seed": seed}).graph
