@@ -114,6 +114,32 @@ def test_admission_rejects_a_drifted_credential_value() -> None:
     assert any(i.code == "credential_value" and i.severity == "error" for i in issues)
 
 
+def test_admission_rejects_a_short_circuitable_chain() -> None:
+    # The flag must live only in the gated HIDDEN secret; planting the real value in a
+    # reachable node (here the loot record) would let one response-leak skip the chain.
+    import dataclasses
+
+    from cyber_webapp.invariants import flag_confined_to_gate
+    from graphschema import validate
+
+    pack = WebappPack()
+    graph = _admit().graph
+    assert not flag_confined_to_gate(graph)  # a fresh chain confines the flag
+
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    record = next(
+        graph.nodes[e.src]
+        for e in graph.edges.values()
+        if e.kind == "holds" and e.dst == "secret_flag"
+    )
+    leaky = {**record.attrs, "fields": {**record.attrs["fields"], "value": flag}}
+    graph.nodes[record.id] = dataclasses.replace(record, attrs=leaky)
+
+    assert any(i.code == "flag_short_circuit" for i in flag_confined_to_gate(graph))
+    issues = validate(graph, pack.ontology(), pack.invariants())
+    assert any(i.code == "flag_short_circuit" and i.severity == "error" for i in issues)
+
+
 def test_chain_credentials_are_not_guarded() -> None:
     # PUBLIC credential nodes must NOT join the guarded set — a HIDDEN token would
     # be swept in, and the leak handler serving it would trip the verifier on a

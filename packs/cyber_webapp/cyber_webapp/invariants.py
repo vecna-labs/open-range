@@ -333,6 +333,46 @@ def credential_value_binding(graph: WorldGraph) -> list[Issue]:
     return issues
 
 
+def _contains_value(obj: object, needle: str) -> bool:
+    if isinstance(obj, str):
+        return needle in obj
+    if isinstance(obj, Mapping):
+        return any(_contains_value(v, needle) for v in obj.values())
+    if isinstance(obj, (list, tuple, set)):
+        return any(_contains_value(v, needle) for v in obj)
+    return False
+
+
+def flag_confined_to_gate(graph: WorldGraph) -> list[Issue]:
+    """In a credential-reuse chain the flag is served only by the terminal gate out of
+    the HIDDEN ``secret_flag``, so the real value must appear nowhere else: the loot
+    record holds a decoy and no PUBLIC node or vuln param carries it. Otherwise a single
+    response-leak on an earlier hop would short-circuit the whole chain. Chain-only --
+    a single-service world legitimately keeps the flag in its loot record.
+    """
+    if not any(
+        v.attrs.get("kind") == "credential_gated_flag"
+        for v in graph.by_kind("vulnerability")
+    ):
+        return []
+    if "secret_flag" not in graph.nodes:
+        return []  # presence is secret_must_be_held's job
+    flag = str(graph.nodes["secret_flag"].attrs.get("value_ref", ""))
+    if not flag:
+        return []
+    return [
+        Issue(
+            "error",
+            "flag_short_circuit",
+            f"node {nid!r} ({node.kind}) exposes the real flag value outside the "
+            f"gated secret -- the chain could be short-circuited",
+            nid,
+        )
+        for nid, node in graph.nodes.items()
+        if nid != "secret_flag" and _contains_value(node.attrs, flag)
+    ]
+
+
 def sqli_targets_db_backed_service(graph: WorldGraph) -> list[Issue]:
     """SQL-injection vulns must target endpoints of services with a
     `backed_by` data_store edge (else the handler queries nothing)."""

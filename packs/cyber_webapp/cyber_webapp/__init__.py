@@ -19,6 +19,7 @@ from cyber_webapp.families import WebappBuild, WebappPentest
 from cyber_webapp.invariants import (
     credential_reuse_binding,
     credential_value_binding,
+    flag_confined_to_gate,
     no_orphan_nodes,
     oracle_path_exists,
     secret_must_be_held,
@@ -55,6 +56,7 @@ class WebappPack(Pack):
             sqli_targets_db_backed_service,
             credential_reuse_binding,
             credential_value_binding,
+            flag_confined_to_gate,
             unique_vuln_per_endpoint,
         ]
 
@@ -108,6 +110,7 @@ __all__ = [
     "WebappRuntime",
     "credential_reuse_binding",
     "credential_value_binding",
+    "flag_confined_to_gate",
     "minimum_backing",
     "monotone_chain_gate",
     "no_orphan_nodes",
