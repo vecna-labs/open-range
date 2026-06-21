@@ -14,6 +14,7 @@ from openrange_pack_sdk import (
     TaskSpec,
 )
 
+from cyber_webapp.difficulty import world_difficulty
 from cyber_webapp.families import WebappBuild, WebappPentest
 from cyber_webapp.priors import default_prior
 from cyber_webapp.sampling import sample_graph
@@ -37,6 +38,9 @@ class WebappBuilder(ProceduralBuilder):
                 "seed": self.current_seed,
                 "prior_source": prior.source,
                 "manifest_keys": sorted(manifest.keys()),
+                # The #322 solve-path-cost metric, recorded so the pool / dashboard /
+                # lineage can read a world's difficulty without re-deriving it.
+                "world_difficulty": float(world_difficulty(graph)),
             },
         )
 

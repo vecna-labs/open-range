@@ -537,8 +537,9 @@ def test_real_webapp_pack_seed_yields_distinct_worlds() -> None:
 
 def test_real_webapp_pack_lineage_carries_pack_provenance() -> None:
     """The Snapshot's lineage captures pack id, version, attempt count,
-    and the builder's admission_meta (seed, prior source, etc.)."""
+    and the builder's admission_meta (seed, prior source, world difficulty)."""
     from cyber_webapp import WebappPack
+    from cyber_webapp.difficulty import world_difficulty
 
     snap = admit(WebappPack(), manifest={"seed": 0})
     assert isinstance(snap, Snapshot)
@@ -547,6 +548,8 @@ def test_real_webapp_pack_lineage_carries_pack_provenance() -> None:
     assert snap.lineage["builder"] == "cyber.webapp.v2"
     assert snap.lineage["seed"] == 0
     assert "prior_source" in snap.lineage
+    # the #322 solve-path-cost metric is persisted, queryable without recompute
+    assert snap.lineage["world_difficulty"] == float(world_difficulty(snap.graph))
 
 
 def test_real_webapp_pack_history_records_all_phases() -> None:
