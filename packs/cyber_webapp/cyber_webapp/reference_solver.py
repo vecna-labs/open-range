@@ -283,14 +283,18 @@ def exploit_recipe(graph: WorldGraph, kind: str) -> str:
 
     if kind == "sql_injection":
         ctx = str(params.get("context", "single"))
-        wrap = {"numeric": "an unquoted", "double": 'a double-quoted (")'}.get(
-            ctx, "a single-quoted (')"
-        )
+        col = str(params["leak_column"])
+        table = str(params["table"])
+        if ctx == "numeric":
+            how = "the input is unquoted, so lead with a number like 0 (add no quote)"
+        else:
+            q = '"' if ctx == "double" else "'"
+            how = f"break out of the {q}-quoted string with a leading {q}"
         return (
             f"SQL injection: {p!r} is concatenated into a WHERE clause with no "
-            f"parameterization, in {wrap} string context. The secret is the "
-            f"{str(params['leak_column'])!r} column of table {str(params['table'])!r}; "
-            "break out of the string and UNION-select that column."
+            f"parameterization ({ctx} context). The base query selects TWO columns, so "
+            f"your UNION must select two -- UNION SELECT key, {col} FROM {table} -- . "
+            f"The secret is the {col!r} column; {how}."
         )
     if kind == "command_injection":
         ctx = str(params.get("inj_context", "separator"))
@@ -332,15 +336,17 @@ def exploit_recipe(graph: WorldGraph, kind: str) -> str:
         )
     if kind == "ssti":
         ctx = str(params.get("render_sink", "attribute"))
-        how = (
-            "the input lands in a Jinja comment {# ... #}, so close it with #} before "
-            "your expression and re-open {# after"
-            if ctx == "comment"
-            else "the input is rendered as a template expression"
-        )
+        access = f"config[{_flag_record_key(graph)!r}]"
+        if ctx == "comment":
+            how = f"close the comment, then print: #}}{{{{ {access} }}}}{{#"
+        elif ctx == "expr":
+            how = f"you are already inside {{{{ }}}}, so use a bare {access}"
+        else:
+            how = f"inject a print tag {{{{ {access} }}}}"
         return (
-            f"SSTI: {p!r} is rendered by a Jinja2 template; {how}. Use a template "
-            f"expression that reads the flag file at {_flag_record_key(graph)!r}."
+            f"SSTI: {p!r} is rendered by a sandboxed Jinja2 template; the file map is "
+            f"the `config` variable, so the flag is {access} (a dict key, not an OS "
+            f"file). {how}."
         )
     if kind == "idor":
         ctx = str(params.get("ref_context", "direct"))
@@ -387,20 +393,22 @@ def exploit_recipe(graph: WorldGraph, kind: str) -> str:
         return (
             "Broken authorization: the trusted role is a client-supplied query param "
             f"with no real check; {how} to read the "
-            f"{str(params.get('leak_field', ''))!r} secret."
+            f"{str(params.get('leak_field', ''))!r} secret. Emit the exploit as a full "
+            "URL-encoded query string assembling every param (a=1&b=2)."
         )
     # weak_credentials
     fmt = str(params.get("cred_format", "pair"))
     user = str(params.get("weak_user", "admin"))
     pw = str(params.get("weak_password", ""))
     pw_param = str(params.get("password_param", ""))
+    user_param = str(params.get("user_param", "username"))
     how = {
-        "basic": f"send base64('{user}:{pw}') in {pw_param!r}",
-        "combined": f"send '{user}:{pw}' in {pw_param!r}",
-    }.get(fmt, f"send user={user!r} and password={pw!r} as separate params")
+        "basic": f"set {pw_param}=base64('{user}:{pw}')",
+        "combined": f"set {pw_param}='{user}:{pw}'",
+    }.get(fmt, f"set {user_param}={user} and {pw_param}={pw}")
     return (
-        f"Weak credentials: the login accepts a default credential; {how} to "
-        "authenticate and receive the flag."
+        f"Weak credentials: the login accepts a default credential; {how}. Emit the "
+        "exploit as a full URL-encoded query string assembling every param (a=1&b=2)."
     )
 
 
