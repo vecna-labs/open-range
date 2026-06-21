@@ -311,14 +311,25 @@ def exploit_recipe(graph: WorldGraph, kind: str) -> str:
         )
     if kind == "path_traversal":
         ctx = str(params.get("confinement", "absolute_only"))
-        how = {
-            "relative": "a relative ../ chain climbs out of the base directory",
-            "dotdot_filter": "a single ../ is stripped, so the ....// form survives",
-        }.get(ctx, "an absolute path overrides the base directory")
+        base = str(params.get("base_dir", ""))
+        flag_path = _flag_record_key(graph)
+        if ctx == "absolute_only":
+            how = "relative chains are stripped, so pass the flag's absolute path as-is"
+        else:
+            depth = len([s for s in base.strip("/").split("/") if s])
+            token = "....//" if ctx == "dotdot_filter" else "../"
+            extra = (
+                " (a lone ../ is filtered, so ....// is the form that survives)"
+                if ctx == "dotdot_filter"
+                else ""
+            )
+            how = (
+                f"climb to root with {depth} {token!r} segments, then append the flag "
+                f"path without its leading '/'{extra}"
+            )
         return (
-            f"Path traversal: {p!r} is joined onto base dir "
-            f"{str(params.get('base_dir', ''))!r} without confinement; {how}. Reach "
-            f"the flag file at {_flag_record_key(graph)!r}."
+            f"Path traversal: {p!r} is joined onto base dir {base!r} without "
+            f"confinement; {how}. Reach the flag file at {flag_path!r}."
         )
     if kind == "xxe":
         ctx = str(params.get("entity_context", "element_content"))
