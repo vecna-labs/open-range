@@ -49,7 +49,7 @@ _COMPANY_MANIFEST = {
     "runtime": {"tick": {"mode": "off"}},
     "npc": [],
     "seed": 3,
-    "company": True,
+    "topology": "company",
 }
 _DEFAULT_MANIFEST = {
     "pack": {"id": "webapp"},
@@ -57,7 +57,7 @@ _DEFAULT_MANIFEST = {
     "npc": [],
     "seed": 3,
 }
-_LATERAL_MANIFEST = {**_COMPANY_MANIFEST, "lateral_movement": True}
+_LATERAL_MANIFEST = {**_COMPANY_MANIFEST, "topology": "chain"}
 
 
 def _admit(manifest: dict[str, object]) -> Snapshot:
@@ -330,8 +330,8 @@ def test_write_exec_world_is_not_poolable() -> None:
         _admit(
             {
                 **_DEFAULT_MANIFEST,
-                "loot_shapes": {"file": 1, "db": 0},
-                "vuln_kinds": {"command_injection": 1},
+                "loot": {"file": 1, "db": 0},
+                "vuln": {"pin": [{"kind": "command_injection"}]},
             }
         ).graph,
         Backing.PROCESS,
@@ -341,8 +341,8 @@ def test_write_exec_world_is_not_poolable() -> None:
         _admit(
             {
                 **_DEFAULT_MANIFEST,
-                "loot_shapes": {"db": 1, "file": 0},
-                "vuln_kinds": {"sql_injection": 1},
+                "loot": {"db": 1, "file": 0},
+                "vuln": {"pin": [{"kind": "sql_injection"}]},
             }
         ).graph,
         Backing.PROCESS,
@@ -441,9 +441,7 @@ def test_a_chain_with_no_way_in_scores_like_a_flat_world() -> None:
 
 def test_blind_recon_is_harder_than_recon_given() -> None:
     given = world_difficulty(_admit(_COMPANY_MANIFEST).graph)
-    blind = world_difficulty(
-        _admit({**_COMPANY_MANIFEST, "recon_disclosure": "none"}).graph
-    )
+    blind = world_difficulty(_admit({**_COMPANY_MANIFEST, "recon": "none"}).graph)
     assert blind > given
 
 
@@ -474,7 +472,7 @@ def test_pool_round_keeps_the_easy_tail() -> None:
         [
             _DEFAULT_MANIFEST,
             _COMPANY_MANIFEST,
-            {**_COMPANY_MANIFEST, "lateral_movement": True},
+            {**_COMPANY_MANIFEST, "topology": "chain"},
         ],
         difficulty_fn=lambda s: float(world_difficulty(s.graph)),
         family="webapp.pentest",
@@ -537,8 +535,8 @@ def test_grown_child_survives_a_full_pool(tmp_path: Path) -> None:
         pack,
         [
             {**_COMPANY_MANIFEST, "seed": 0},
-            {**_COMPANY_MANIFEST, "lateral_movement": True, "seed": 1},
-            {**_COMPANY_MANIFEST, "lateral_movement": True, "seed": 2},
+            {**_COMPANY_MANIFEST, "topology": "chain", "seed": 1},
+            {**_COMPANY_MANIFEST, "topology": "chain", "seed": 2},
         ],
         difficulty_fn=lambda s: float(world_difficulty(s.graph)),
         family="webapp.pentest",
@@ -833,7 +831,7 @@ def test_unique_vuln_invariant_flags_a_duplicate() -> None:
 
 def test_no_duplicate_same_kind_vuln_on_one_endpoint() -> None:
     for seed in range(30):
-        for extra in ({}, {"company": True}):
+        for extra in ({}, {"topology": "company"}):
             graph = _admit({**_DEFAULT_MANIFEST, "seed": seed, **extra}).graph
             seen: set[tuple[str, str]] = set()
             for v in graph.by_kind("vulnerability"):
@@ -1108,10 +1106,11 @@ def test_company_world_is_deterministic() -> None:
 
 def test_company_world_admits_across_seeds() -> None:
     # The preset is robust across the seed space, not just the pinned seed: every seed
-    # yields a solvable networked company world with the recon disclosure wired. A
-    # stray vuln_kinds override cannot strip the SSRF either.
+    # yields a solvable networked company world with the recon disclosure wired. The
+    # company topology forces its own SSRF vuln shape, so a vuln override can't even be
+    # passed (it is rejected before it could strip the SSRF).
     for seed in range(12):
-        snap = _admit({**_COMPANY_MANIFEST, "seed": seed, "vuln_kinds": {"idor": 9}})
+        snap = _admit({**_COMPANY_MANIFEST, "seed": seed})
         kinds = {n.attrs.get("kind") for n in snap.graph.by_kind("vulnerability")}
         assert len(list(snap.graph.by_kind("service"))) >= 6
         assert _is_networked(snap.graph)

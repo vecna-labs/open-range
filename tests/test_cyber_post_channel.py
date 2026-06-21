@@ -72,8 +72,8 @@ def _admit(loot: str, kind: str) -> Snapshot:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 7,
-            "loot_shapes": {loot: 1, "db" if loot == "file" else "file": 0},
-            "vuln_kinds": {kind: 1},
+            "loot": {loot: 1, "db" if loot == "file" else "file": 0},
+            "vuln": {"pin": [{"kind": kind}]},
         },
         max_repairs=3,
     )
@@ -153,7 +153,7 @@ def test_the_ssrf_pivot_stays_a_get_url_param() -> None:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 3,
-            "company": True,
+            "topology": "company",
         },
         max_repairs=3,
     )

@@ -49,8 +49,8 @@ def _admit(loot: str, kind: str, seed: int = 7) -> Snapshot:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": seed,
-            "loot_shapes": {loot: 1, "db" if loot == "file" else "file": 0},
-            "vuln_kinds": {kind: 1},
+            "loot": {loot: 1, "db" if loot == "file" else "file": 0},
+            "vuln": {"pin": [{"kind": kind}]},
         },
         max_repairs=3,
     )
@@ -118,7 +118,7 @@ def _admit_lateral(seed: int) -> Snapshot:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": seed,
-            "lateral_movement": True,
+            "topology": "chain",
         },
         max_repairs=3,
     )
@@ -170,7 +170,7 @@ def test_reference_solver_walks_company_pivots(tmp_path: Path) -> None:
                 "runtime": {"tick": {"mode": "off"}},
                 "npc": [],
                 "seed": seed,
-                "company": True,
+                "topology": "company",
             },
             max_repairs=3,
         )

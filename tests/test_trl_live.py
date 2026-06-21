@@ -313,8 +313,8 @@ def test_live_grpo_one_step_cyber_container(tmp_path: Path) -> None:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 3,
-            "vuln_kinds": {"ssrf": 1},
-            "difficulty": "easy",
+            "vuln": {"pin": [{"kind": "ssrf"}]},
+            "instruction_tier": "easy",
         },
     )
     assert not isinstance(snapshot, AdmissionFailure)
@@ -417,8 +417,8 @@ def test_live_grpo_one_step_cyber_container_file_loot(tmp_path: Path) -> None:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 7,
-            "loot_shapes": {"file": 1, "db": 0},
-            "vuln_kinds": {"command_injection": 1},
+            "loot": {"file": 1, "db": 0},
+            "vuln": {"pin": [{"kind": "command_injection"}]},
         },
         max_repairs=3,
     )
@@ -529,8 +529,8 @@ def test_live_grpo_curriculum_evolves_between_rounds(tmp_path: Path) -> None:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 0,
-            "loot_shapes": {"db": 1, "file": 0},
-            "vuln_kinds": {"sql_injection": 1},
+            "loot": {"db": 1, "file": 0},
+            "vuln": {"pin": [{"kind": "sql_injection"}]},
         },
     )
     assert not isinstance(snapshot, AdmissionFailure)
@@ -629,8 +629,8 @@ def test_live_grpo_pool_curriculum(tmp_path: Path) -> None:
         "runtime": {"tick": {"mode": "off"}},
         "npc": [],
         "seed": 0,
-        "loot_shapes": {"db": 1, "file": 0},
-        "vuln_kinds": {"sql_injection": 1},
+        "loot": {"db": 1, "file": 0},
+        "vuln": {"pin": [{"kind": "sql_injection"}]},
     }
     pool = WorldPool.seed(
         pack,
@@ -718,8 +718,8 @@ def test_live_grpo_held_out_eval(tmp_path: Path) -> None:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": seed,
-            "loot_shapes": {"db": 1, "file": 0},
-            "vuln_kinds": {"sql_injection": 1},
+            "loot": {"db": 1, "file": 0},
+            "vuln": {"pin": [{"kind": "sql_injection"}]},
         }
 
     train = WorldPool.seed(

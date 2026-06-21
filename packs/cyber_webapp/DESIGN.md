@@ -367,6 +367,16 @@ the flag leaks via `consequence.detect_leak`, confirm a benign request does *not
 structural admission is a graph-path check; an LLM realization needs *dynamic* admission,
 because the code might be wrong.)
 
+**The manifest's entry to this ladder is the `generate` knob** (`docs/manifest.md`):
+`false` keeps a world purely procedural; `"vuln"` / `"service"` / `"world"` route the
+frozen procedural snapshot through *generate → verify → freeze* at the rung above. Its
+terminus is a *novel class* — the LLM proposes a vulnerability the catalog does not have
+and emits its exploit recipe (#317's recipe-on-graph), and the **same kind-agnostic**
+consequence gate (it keys only on "a HIDDEN value leaked," §8.3) admits it
+([#261](https://github.com/vecna-labs/open-range/issues/261)). That is the open end of the
+auto↔specific control surface: every other knob constrains *within* the catalog;
+`generate` is the only one that leaves "what kind" to the LLM, still behind the verifier.
+
 ### The container backing
 
 The `CONTAINER` backing runs the one generated app (not a bespoke app per class). It sets

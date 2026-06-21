@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from openrange_pack_sdk import (
     BuildResult,
     Manifest,
+    PackError,
     PackPrior,
     ProceduralBuilder,
     TaskSpec,
@@ -17,7 +18,59 @@ from openrange_pack_sdk import (
 from cyber_webapp.difficulty import world_difficulty
 from cyber_webapp.families import WebappBuild, WebappPentest
 from cyber_webapp.priors import default_prior
-from cyber_webapp.sampling import sample_graph
+from cyber_webapp.sampling import (
+    _DEFAULT_LOOT_WEIGHTS,
+    _DEFAULT_VULN_KIND_WEIGHTS,
+    _INTERNAL_ONLY_KINDS,
+    sample_graph,
+)
+from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
+
+# Manifest keys retired by the auto<->specific control surface (docs/manifest.md):
+# rejected with a migration hint rather than silently honored, so the contract is one
+# uniform thing -- each maps to a new knob obeying absent=auto / present=merged.
+_RENAMED_KEYS: Mapping[str, str] = {
+    "company": 'use topology: "company"',
+    "lateral_movement": 'use topology: "chain"',
+    "vuln_kinds": "use vuln: {weights: {...}} (bias) or vuln: {pin: [{kind: ...}]}",
+    "loot_shapes": "use loot: {db: n, file: n}",
+    "recon_disclosure": 'use recon: "full" | "none"',
+    "difficulty": "use instruction_tier: ...",
+}
+_GENERATE_MODES = (False, "vuln", "service", "world")
+
+
+def _validate_vuln_kinds(kinds: object) -> None:
+    for kind in kinds:
+        if kind not in VULN_CATALOG:
+            raise PackError(f"unknown vuln kind {kind!r}; not in the catalog")
+        if kind in _INTERNAL_ONLY_KINDS:
+            raise PackError(
+                f"vuln kind {kind!r} is internal-only -- it is composed by topology "
+                "'company'/'chain', not directly pinnable"
+            )
+
+
+def _apply_vuln_knob(
+    vuln: object,
+    topology: dict,
+    kind_weights: dict,
+    count_ranges: dict,
+) -> None:
+    if not isinstance(vuln, Mapping):
+        raise PackError("vuln must be a mapping with 'weights' or 'pin'")
+    weights, pin = vuln.get("weights"), vuln.get("pin")
+    if (weights is None) == (pin is None):
+        raise PackError("vuln takes exactly one of 'weights' or 'pin'")
+    if weights is not None:
+        biased = {str(k): int(v) for k, v in weights.items()}
+        _validate_vuln_kinds(biased)
+        kind_weights["vuln_kinds"] = {**_DEFAULT_VULN_KIND_WEIGHTS, **biased}
+    else:
+        pinned = [str(entry["kind"]) for entry in pin]
+        _validate_vuln_kinds(pinned)
+        topology["vuln_pin"] = pinned
+        count_ranges["vuln_count"] = {"min": len(pinned), "max": len(pinned)}
 
 
 class WebappBuilder(ProceduralBuilder):
@@ -26,6 +79,15 @@ class WebappBuilder(ProceduralBuilder):
 
     def sample(self, rng: random.Random, manifest: Manifest) -> BuildResult:
         prior = self._effective_prior(manifest)
+        # `generate` is the open end of the dial: false (default) keeps the world
+        # purely procedural; "vuln"/"service"/"world" route the frozen procedural
+        # snapshot through host-side generate-verify-freeze. Validated + recorded here;
+        # with no LLM backend wired, admission returns the procedural world unchanged.
+        generate = manifest.get("generate", False)
+        if generate not in _GENERATE_MODES:
+            raise PackError(
+                f"generate must be one of {_GENERATE_MODES}, got {generate!r}"
+            )
         graph = sample_graph(rng, prior)
         tasks: list[TaskSpec] = []
         tasks.extend(WebappBuild().generate(graph, manifest, prior))
@@ -38,6 +100,7 @@ class WebappBuilder(ProceduralBuilder):
                 "seed": self.current_seed,
                 "prior_source": prior.source,
                 "manifest_keys": sorted(manifest.keys()),
+                "generate": generate,
                 # The #322 solve-path-cost metric, recorded so the pool / dashboard /
                 # lineage can read a world's difficulty without re-deriving it.
                 "world_difficulty": float(world_difficulty(graph)),
@@ -45,49 +108,71 @@ class WebappBuilder(ProceduralBuilder):
         )
 
     def _effective_prior(self, manifest: Manifest) -> PackPrior:
-        # Manifest knobs override the prior's topology so a world is
-        # configurable without a hand-built PackPrior, while staying
-        # deterministic: the seed still selects within the overridden ranges
-        # and weights. ``scale`` feeds count_ranges; ``loot_shapes`` /
-        # ``vuln_kinds`` feed kind_weights; ``company`` seeds a believable
-        # multi-service estate, itself still overridable.
+        # The manifest is the gym's control surface (docs/manifest.md), one uniform
+        # rule: a knob ABSENT means "auto" (the seeded RNG samples it); a knob PRESENT
+        # is a constraint merged onto the defaults. `topology` picks flat/company/chain;
+        # on a flat world `vuln`/`loot`/`scale` shape it; the company and chain presets
+        # force their networked shape, so `vuln`/`loot` are not tunable there.
         base = self.prior if self.prior is not None else default_prior()
-        lateral = bool(manifest.get("lateral_movement"))
-        company = bool(manifest.get("company")) or lateral
+        for old, hint in _RENAMED_KEYS.items():
+            if old in manifest:
+                raise PackError(f"manifest key {old!r} was renamed -- {hint}")
+
+        topo = manifest.get("topology", "flat")
+        if topo not in ("flat", "company", "chain"):
+            raise PackError(f"topology must be flat|company|chain, got {topo!r}")
+        company = topo in ("company", "chain")
+        lateral = topo == "chain"
         scale = manifest.get("scale")
-        weight_keys = [k for k in ("loot_shapes", "vuln_kinds") if k in manifest]
-        if not company and not isinstance(scale, Mapping) and not weight_keys:
-            return base
+        vuln = manifest.get("vuln")
+        loot = manifest.get("loot")
+        chain = manifest.get("chain")
+        recon = manifest.get("recon")
+
+        if company and (vuln is not None or loot is not None):
+            raise PackError(
+                f"topology {topo!r} forces its vuln/loot shape; "
+                "set vuln/loot only on topology 'flat'"
+            )
+        if not company and all(x is None for x in (scale, vuln, loot, chain, recon)):
+            return base  # fully-auto flat world: the base prior, untouched
+
         topology = dict(base.topology)
         count_ranges = dict(topology.get("count_ranges") or {})
         kind_weights = dict(topology.get("kind_weights") or {})
+
         if company:
-            # Company preset: a multi-service estate to recon and pivot through.
-            # Counts are setdefaults so a manifest ``scale`` still wins below;
-            # ``lateral_movement`` swaps the direct pivot for a credential-reuse chain.
             topology["preset"] = "company"
-            if manifest.get("recon_disclosure") == "none":
-                topology["recon_disclosure"] = "none"
             if lateral:
                 topology["lateral"] = True
             count_ranges.setdefault("service_count", {"min": 6, "max": 8})
             count_ranges.setdefault("vuln_count", {"min": 3, "max": 6})
+        if recon is not None:
+            if recon not in ("full", "none"):
+                raise PackError(f"recon must be 'full' or 'none', got {recon!r}")
+            topology["recon_disclosure"] = recon
         if isinstance(scale, Mapping):
             for key, spec in scale.items():
                 if isinstance(spec, Mapping):
                     count_ranges[str(key)] = dict(spec)
-        if weight_keys:
-            for key in weight_keys:
-                spec = manifest[key]
-                if isinstance(spec, Mapping):
-                    kind_weights[key] = {str(k): v for k, v in spec.items()}
+        if isinstance(chain, Mapping) and isinstance(chain.get("depth"), Mapping):
+            depth = chain["depth"]
+            topology["chain_depth"] = {
+                "min": int(depth["min"]),
+                "max": int(depth["max"]),
+            }
+        if vuln is not None:
+            _apply_vuln_knob(vuln, topology, kind_weights, count_ranges)
+        if isinstance(loot, Mapping):
+            kind_weights["loot_shapes"] = {
+                **_DEFAULT_LOOT_WEIGHTS,
+                **{str(k): int(v) for k, v in loot.items()},
+            }
         if company:
-            # The networked SSRF pivot to a db-backed internal flag IS the company
-            # world's shape, not a tunable weight: force it last so a stray
-            # ``vuln_kinds`` / ``loot_shapes`` override can't quietly yield a
-            # non-networked or unsolvable "company" world. ssrf wins the oracle slot
-            # (the only response-leak match for db loot, whatever its weight); the
-            # file-read decoys are noise.
+            # The networked SSRF pivot to a db-backed internal flag IS the preset's
+            # shape, not a tunable weight: force it last so nothing yields a
+            # non-networked or unsolvable company world. ssrf wins the oracle slot;
+            # the file-read decoys are noise.
             kind_weights["loot_shapes"] = {"db": 1, "file": 0}
             kind_weights["vuln_kinds"] = {"ssrf": 1, "path_traversal": 3, "xxe": 2}
         if count_ranges:

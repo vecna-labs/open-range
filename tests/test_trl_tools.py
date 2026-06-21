@@ -70,8 +70,8 @@ _MANIFEST = {
     "runtime": {"tick": {"mode": "off"}},
     "npc": [],
     "seed": 0,
-    "loot_shapes": {"db": 1, "file": 0},
-    "vuln_kinds": {"sql_injection": 1},
+    "loot": {"db": 1, "file": 0},
+    "vuln": {"pin": [{"kind": "sql_injection"}]},
 }
 
 

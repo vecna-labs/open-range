@@ -38,7 +38,7 @@ def _sample_graph(seed: int = 0) -> WorldGraph:
     build_result = (
         WebappPack()
         .make_builder(None)
-        .build({"seed": seed, "loot_shapes": {"db": 1, "file": 0}})
+        .build({"seed": seed, "loot": {"db": 1, "file": 0}})
     )
     return build_result.graph
 
