@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import posixpath
 import random
 from collections.abc import Callable, Mapping, Sequence
@@ -579,7 +580,30 @@ def sample_graph(
     if company and _recon_disclosure(prior) != "none":
         _add_recon_disclosure(graph, rng)
 
+    _annotate_exploit_recipes(graph)
     return graph
+
+
+def _annotate_exploit_recipes(graph: WorldGraph) -> None:
+    # Stamp each supported vuln with its exploit recipe in meta -- non-hashed, so the id
+    # is unchanged; the world carries the hint an LLM author reads (#317). Best-effort:
+    # the author derives it if absent. Lazy import dodges a builder->solver cycle.
+    from cyber_webapp.reference_solver import (
+        SUPPORTED_KINDS,
+        _vuln_of_kind,
+        exploit_recipe,
+    )
+
+    present = {v.attrs["kind"] for v in graph.by_kind("vulnerability")}
+    for kind in present & set(SUPPORTED_KINDS):
+        try:
+            vuln = _vuln_of_kind(graph, kind)
+            recipe = exploit_recipe(graph, kind)
+        except Exception:  # noqa: BLE001 -- best-effort; the author derives it instead
+            continue
+        graph.nodes[vuln.id] = dataclasses.replace(
+            vuln, meta={**vuln.meta, "exploit_recipe": recipe}
+        )
 
 
 def _is_company(prior: PackPrior | None) -> bool:
