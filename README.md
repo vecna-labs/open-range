@@ -98,7 +98,7 @@ for task in snapshot.tasks:
     print(task.id, task.instruction)
 ```
 
-The built-in `webapp` pack procedurally samples a multi-service webapp world (graph topology, vulnerabilities, accounts, secrets), AST-splices vulnerability templates into the realized service code, and ships with NPCs that generate background traffic alongside the agent. The pack exposes two `TaskFamily` classes against that same world — `webapp.build` (implement / repair a feature endpoint) and `webapp.pentest` (recover a hidden flag through a vulnerability chain). Task instructions are pure templating over the graph; the pentest family's `available_mutations` is the only path that consults an optional LLM, and only to enrich the parameters of candidate curriculum mutations.
+The built-in `webapp` pack procedurally samples a multi-service webapp world (graph topology, vulnerabilities, secrets), AST-splices vulnerability templates into the realized service code, and ships with NPCs that generate background traffic alongside the agent. The pack exposes two `TaskFamily` classes against that same world — `webapp.build` (implement / repair a feature endpoint) and `webapp.pentest` (recover a hidden flag through a vulnerability chain — its flagship is a multi-hop credential-reuse pivot across a believable company estate). Task instructions are pure templating over the graph; the pentest family's `available_mutations` is the only path that consults an optional LLM, and only to enrich the parameters of candidate curriculum mutations.
 
 ## Run an eval
 

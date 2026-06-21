@@ -2,7 +2,7 @@
 
 A procedural multi-service web target with HTTP-shaped vulnerabilities (SQL
 injection, SSRF, broken-authz, …). The builder samples a small webapp —
-services, endpoints, accounts, and a hidden flag tucked behind a vuln chain —
+services, endpoints, and a hidden flag tucked behind a vuln chain —
 and realizes it as a real Flask app the solver hits over HTTP. **One world,
 two roles:** the same app is something to break into (`webapp.pentest`) *and*
 code to write (`webapp.build`).
@@ -13,7 +13,7 @@ entry point.
 ## What the builder built (one world)
 
 - services: `web`, `api`, `auth`, `db`, `db1` + a backing data store
-- 8 HTTP endpoints, 1 account
+- 8 HTTP endpoints
 - vulns: `sql_injection`, `ssrf`
 - a **hidden** admin flag (`secret_flag`, a UUID) stored in the data, reachable
   only by exploiting the vuln chain
