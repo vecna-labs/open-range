@@ -669,28 +669,31 @@ def novel_class_request(graph: WorldGraph) -> LLMRequest:
     if not isinstance(params, Mapping):
         raise PackError("skeleton vuln has no params mapping")
     param = str(params.get("target_param", ""))
-    endpoint = graph.nodes[next(e.dst for e in graph.out_edges(vuln.id, "affects"))]
-    where = f"{endpoint.attrs.get('method', 'GET')} {endpoint.attrs['public_url']}"
+    flag_key = _flag_record_key(graph)
     prompt = (
         "Propose a NOVEL web vulnerability class for a lookup endpoint -- a class "
         f"NOT in this catalog: {_CATALOG_KINDS}. It can be ANY flaw (a logic bug, a "
         "wildcard match, a type or parser quirk) -- it need not be injection.\n"
-        f"- The endpoint is {where}; the attacker sends one value under "
-        f"query[{param!r}].\n"
-        "- Write `def handle(query, state):` (query is dict[str, list[str]]). Read the "
-        "records from state['db'] (a sqlite3 connection, rows read as dicts) using "
-        "state['schema'] = {'table', 'key_column', 'value_column'} -- use those, do "
-        "NOT invent table or column names. One record, keyed "
-        f"{_flag_record_key(graph)!r}, has the flag in its value_column.\n"
+        "Write the handler against this EXACT runtime contract:\n"
+        "- `def handle(query, state):` where `query` is dict[str, list[str]]; read the "
+        f"input as `(query.get({param!r}, ['']) or [''])[0]`.\n"
+        "- `state['db']` is a sqlite3 connection with `row_factory = sqlite3.Row` (a "
+        "row is NOT a dict: index `row['col']` or wrap `dict(row)`, there is no "
+        "row.get). `state['schema']` is a dict -- read the REAL identifiers from it: "
+        "`tbl = state['schema']['table']`, `kc = state['schema']['key_column']`, "
+        "`vc = state['schema']['value_column']`, then build SQL by substituting those "
+        "(e.g. f'SELECT {kc}, {vc} FROM {tbl} WHERE ...'). Never write the literal "
+        "words 'table'/'key_column'/'value_column' into SQL. The table has exactly "
+        f"those two columns; the one row whose key_column value == {flag_key!r} holds "
+        "the flag in its value_column.\n"
+        "- The handler MUST `return (status: int, headers: dict, body: bytes)` -- "
+        "exactly three values. Standard library only.\n"
         "- `exploit` is the value to send that makes YOUR handler return the flag row; "
-        "`benign` returns only its own (non-flag) row. Both must be consistent with "
-        "the handler you write -- the exploit has to actually trigger your flaw. The "
-        "handler must return `(status:int, headers:dict, body:bytes)`; trace your "
-        "exploit through it and confirm it reaches the flag row before returning.\n"
+        "`benign` returns only its own (non-flag) row. Trace the exploit through your "
+        "own handler and confirm the flag row is in the response before returning.\n"
         "Return JSON: kind (a short snake_case name), recipe (the technique plus where "
-        "the flag is, never its value), handler (the full def handle source, standard "
-        "library only), exploit (the value that leaks the flag), benign (one that does "
-        "not)."
+        "the flag is, never its value), handler (the full def handle source), exploit "
+        "(the value that leaks the flag), benign (one that does not)."
     )
     return LLMRequest(prompt=prompt, system=_SYSTEM, json_schema=_NOVEL_SCHEMA)
 
