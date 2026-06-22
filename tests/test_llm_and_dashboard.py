@@ -495,6 +495,22 @@ def test_openai_backend_rejects_a_non_mapping_choice(
         OpenAIBackend(base_url=base).complete(LLMRequest("hi"))
 
 
+def test_openai_backend_bounds_and_json_modes_a_structured_request(
+    chat_server: ChatServer,
+    chat_completion: Callable[[str], str],
+) -> None:
+    # max_tokens + json mode (response_format) + a vendor extra_body ride on a
+    # structured request; the live wire behaviour is exercised on Spark in #261.
+    reply = chat_completion('{"handler": "ok"}')
+    with chat_server(lambda path, method: (200, reply)) as base:
+        result = OpenAIBackend(
+            base_url=base,
+            max_tokens=64,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        ).complete(LLMRequest("hi", json_schema={"type": "object"}))
+    assert result.parsed_json == {"handler": "ok"}
+
+
 def test_run_codex_reports_os_errors_and_timeouts(tmp_path: Path) -> None:
     sleeper = executable(
         tmp_path,

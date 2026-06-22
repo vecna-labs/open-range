@@ -237,13 +237,22 @@ class OpenAIBackend:
     A structured request asks for a JSON object in the prompt and parses it out of the
     reply, so the backend works against servers without a structured-output flag (the
     same approach as ``ClaudeBackend``). ``api_key`` is sent as a bearer token when set
-    and omitted otherwise, which local servers ignore.
+    and omitted otherwise, which local servers ignore. ``json_mode`` additionally asks
+    the server for ``response_format=json_object`` on structured requests, which keeps a
+    reasoning model's chain-of-thought out of ``content`` (servers expose it separately)
+    so the reply parses cleanly; ``max_tokens`` bounds the reply, which a reasoning
+    model needs to not run away. ``extra_body`` merges vendor extensions into the
+    request — e.g. ``{"chat_template_kwargs": {"enable_thinking": False}}`` to turn a
+    reasoning model's thinking off (some ignore the ``/no_think`` prompt token).
     """
 
     base_url: str = "http://localhost:8080/v1"
     model: str = "local"
     api_key: str | None = None
     temperature: float = 0.2
+    max_tokens: int | None = None
+    json_mode: bool = True
+    extra_body: Mapping[str, object] | None = None
     timeout: float = 180.0
 
     def preflight(self) -> None:
@@ -269,16 +278,18 @@ class OpenAIBackend:
         if request.system is not None:
             messages.append({"role": "system", "content": request.system})
         messages.append({"role": "user", "content": prompt})
-        text = _chat_content(
-            self._post(
-                "chat/completions",
-                {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": self.temperature,
-                },
-            )
-        )
+        payload: dict[str, object] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+        }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        if request.json_schema is not None and self.json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        if self.extra_body:
+            payload.update(self.extra_body)
+        text = _chat_content(self._post("chat/completions", payload))
         if request.json_schema is None:
             return LLMResult(text)
         return LLMResult(text, parse_json_object(_first_json_object(text)))

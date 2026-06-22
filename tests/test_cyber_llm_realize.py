@@ -638,6 +638,19 @@ def test_realize_world_skips_an_empty_proposal(tmp_path: Path) -> None:
     assert out.snapshot_id == before
 
 
+def test_realize_world_skips_an_unparseable_handler(tmp_path: Path) -> None:
+    # a real LLM emits invalid Python sometimes; it must fall back, not crash the boot
+    snap = _admit("db", "sql_injection", context="single")
+    before = snap.graph.content_hash()
+    out = realize_world(
+        snap,
+        lambda _g, _k: "def handle(query, state):\n    return )(",
+        _episode_runner(snap, tmp_path),
+    )
+    assert out.lineage["realized_handlers"] == ()
+    assert out.snapshot_id == before
+
+
 def test_realize_generated_passes_through_when_off(tmp_path: Path) -> None:
     snap = _admit("db", "sql_injection", context="single")
     # generate absent -> default False -> the procedural world is returned untouched;
@@ -802,6 +815,23 @@ def test_realize_novel_skips_an_incomplete_proposal(
     snap = _admit("db", "sql_injection", generate="novel", context="single")
     partial = {"kind": "x", "recipe": "y", "handler": "z", "exploit": "e"}  # no benign
     out = _realize_novel(snap, partial, tmp_path, chat_server, chat_completion)
+    assert "generated_class" not in out.lineage
+    assert out.graph.by_kind("vulnerability")[0].attrs["kind"] == "sql_injection"
+
+
+def test_realize_novel_skips_an_unparseable_handler(
+    tmp_path: Path, chat_server: _ChatServer, chat_completion: Callable[[str], str]
+) -> None:
+    # an LLM-authored handler that is not valid Python falls back, not crashes the boot
+    snap = _admit("db", "sql_injection", generate="novel", context="single")
+    broken = {
+        "kind": "k",
+        "recipe": "r",
+        "handler": "def handle(:",
+        "exploit": "%",
+        "benign": "y",
+    }
+    out = _realize_novel(snap, broken, tmp_path, chat_server, chat_completion)
     assert "generated_class" not in out.lineage
     assert out.graph.by_kind("vulnerability")[0].attrs["kind"] == "sql_injection"
 

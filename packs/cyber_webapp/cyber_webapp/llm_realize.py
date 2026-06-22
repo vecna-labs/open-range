@@ -450,6 +450,16 @@ def handler_from_result(parsed_json: Mapping[str, object] | None) -> str:
     return handler if isinstance(handler, str) else ""
 
 
+def _is_valid_handler(src: str) -> bool:
+    # A real LLM sometimes emits unparseable Python; codegen renders the handler by
+    # AST-parsing it, so an invalid one crashes the episode boot. Reject it up front.
+    try:
+        _extract_handle_body(src)
+    except PackError:
+        return False
+    return True
+
+
 _EXPLOIT_SCHEMA: dict[str, object] = {
     "type": "object",
     "additionalProperties": False,
@@ -523,7 +533,7 @@ def realize_world(
         if vuln is None:
             continue
         handler = propose(graph, kind)
-        if not handler.strip():
+        if not handler.strip() or not _is_valid_handler(handler):
             continue
         vuln.attrs["realized_handler"] = handler
         exploit_body, benign_body, control_body = run_probes(kind)
@@ -663,18 +673,24 @@ def novel_class_request(graph: WorldGraph) -> LLMRequest:
     where = f"{endpoint.attrs.get('method', 'GET')} {endpoint.attrs['public_url']}"
     prompt = (
         "Propose a NOVEL web vulnerability class for a lookup endpoint -- a class "
-        f"NOT in this catalog: {_CATALOG_KINDS}.\n"
-        f"- The endpoint is {where}; send one value under query[{param!r}].\n"
-        "- The handler is `def handle(query, state):`; query is dict[str, list[str]]; "
-        "state['db'] is a sqlite3 connection (rows read as dicts) and state['schema'] "
-        "gives {'table', 'key_column', 'value_column'}. One record's value_column "
-        f"holds the flag, the record keyed {_flag_record_key(graph)!r}.\n"
-        "- A benign value must return only its own (non-flag) row; your exploit value "
-        "must make the handler leak the flag row.\n"
-        "Return JSON: kind (a short snake_case name), recipe (the exploit technique "
-        "plus where the flag is, never its value), handler (the full def handle "
-        "source, standard library only, vulnerable exactly as described), exploit (the "
-        "value that leaks the flag), benign (a value that does not)."
+        f"NOT in this catalog: {_CATALOG_KINDS}. It can be ANY flaw (a logic bug, a "
+        "wildcard match, a type or parser quirk) -- it need not be injection.\n"
+        f"- The endpoint is {where}; the attacker sends one value under "
+        f"query[{param!r}].\n"
+        "- Write `def handle(query, state):` (query is dict[str, list[str]]). Read the "
+        "records from state['db'] (a sqlite3 connection, rows read as dicts) using "
+        "state['schema'] = {'table', 'key_column', 'value_column'} -- use those, do "
+        "NOT invent table or column names. One record, keyed "
+        f"{_flag_record_key(graph)!r}, has the flag in its value_column.\n"
+        "- `exploit` is the value to send that makes YOUR handler return the flag row; "
+        "`benign` returns only its own (non-flag) row. Both must be consistent with "
+        "the handler you write -- the exploit has to actually trigger your flaw. The "
+        "handler must return `(status:int, headers:dict, body:bytes)`; trace your "
+        "exploit through it and confirm it reaches the flag row before returning.\n"
+        "Return JSON: kind (a short snake_case name), recipe (the technique plus where "
+        "the flag is, never its value), handler (the full def handle source, standard "
+        "library only), exploit (the value that leaks the flag), benign (one that does "
+        "not)."
     )
     return LLMRequest(prompt=prompt, system=_SYSTEM, json_schema=_NOVEL_SCHEMA)
 
@@ -711,7 +727,7 @@ def realize_novel(
     task = next(t for t in snapshot.tasks if t.meta.get("family") == "webapp.pentest")
     original = _novel_target(graph)
     proposal = propose(graph)
-    if proposal is None:
+    if proposal is None or not _is_valid_handler(proposal.handler):
         return snapshot
     graph.nodes[original.id] = dataclasses.replace(
         original,
