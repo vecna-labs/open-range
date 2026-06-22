@@ -368,9 +368,12 @@ structural admission is a graph-path check; an LLM realization needs *dynamic* a
 because the code might be wrong.)
 
 **The manifest's entry to this ladder is the `generate` knob** (`MANIFEST.md`):
-`false` keeps a world purely procedural; `"vuln"` / `"service"` / `"world"` route the
-frozen procedural snapshot through *generate → verify → freeze* at the rung above. Its
-terminus is a *novel class* — the LLM proposes a vulnerability the catalog does not have
+`false` keeps a world purely procedural; `"vuln"` routes the frozen procedural snapshot
+through *generate → verify → freeze*, realizing each vuln's handler behind the verifier
+(`llm_realize.realize_generated`, the host injecting the LLM and the episode boot).
+`"service"` / `"world"` extend that to whole services and whole worlds and are the next
+stages (#212). Its terminus is a *novel class* — the LLM proposes a vulnerability the
+catalog does not have
 and emits its exploit recipe (#317's recipe-on-graph), and the **same kind-agnostic**
 consequence gate (it keys only on "a HIDDEN value leaked," §8.3) admits it
 ([#261](https://github.com/vecna-labs/open-range/issues/261)). That is the open end of the

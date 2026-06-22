@@ -9,18 +9,23 @@ families via the reference solver.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.llm_realize import (
+    BootEpisode,
     benign_endpoints_of,
     handler_from_result,
+    pentest_probes,
     realization_request,
+    realize_generated,
     realize_service_surface,
     realize_with_backend,
     realize_world,
@@ -46,22 +51,23 @@ from openrange_pack_sdk import PackError, Snapshot
 
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
-from openrange.llm import ClaudeBackend
+from openrange.llm import ClaudeBackend, OpenAIBackend
 
 
-def _admit(loot: str, kind: str, **pin: object) -> Snapshot:
-    snap = admit(
-        WebappPack(),
-        manifest={
-            "pack": {"id": "webapp"},
-            "runtime": {"tick": {"mode": "off"}},
-            "npc": [],
-            "seed": 7,
-            "loot": {loot: 1, "db" if loot == "file" else "file": 0},
-            "vuln": {"pin": [{"kind": kind}]},
-        },
-        max_repairs=3,
-    )
+def _admit(
+    loot: str, kind: str, *, generate: object = False, **pin: object
+) -> Snapshot:
+    manifest: dict[str, object] = {
+        "pack": {"id": "webapp"},
+        "runtime": {"tick": {"mode": "off"}},
+        "npc": [],
+        "seed": 7,
+        "loot": {loot: 1, "db" if loot == "file" else "file": 0},
+        "vuln": {"pin": [{"kind": kind}]},
+    }
+    if generate:
+        manifest["generate"] = generate
+    snap = admit(WebappPack(), manifest=manifest, max_repairs=3)
     assert isinstance(snap, Snapshot), snap
     if pin:
         params = _vuln_of_kind(snap.graph, kind).attrs["params"]
@@ -577,31 +583,28 @@ def test_gate_admits_faithful_rejects_trivial(
         assert not bad.accepted and bad.trivial, f"{kind}: trivial not rejected"
 
 
-def _episode_runner(
-    snap: Snapshot, base_dir: Path
-) -> Callable[[str], tuple[str, str, str | None]]:
-    # The host side realize_world injects: boot the (mutated) world and return the
-    # exploit, benign and faithfulness-control response bodies.
+def _boot(base_dir: Path) -> BootEpisode:
+    # The host side of realization: boot an episode for (snapshot, task) and yield its
+    # base_url, owning the episode lifecycle. A fresh service per call rebuilds the
+    # runtime, so a handler injected onto the graph between probes is exercised.
     counter = iter(range(1000))
-    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
-    def run_probes(kind: str) -> tuple[str, str, str | None]:
+    @contextlib.contextmanager
+    def boot(snap: Snapshot, task_id: str) -> Iterator[str]:
         svc = EpisodeService(WebappPack(), base_dir / f"e{next(counter)}")
         try:
-            handle = svc.start_episode(snap, task.id)
-            base = str(svc.surface(handle)["base_url"])
-            exploit_req, benign_req = exploit_and_benign(snap.graph, kind)
-            control = control_request(snap.graph, kind)
-            control_body = perform(base, control.request) if control else None
-            return (
-                perform(base, exploit_req),
-                perform(base, benign_req),
-                control_body,
-            )
+            handle = svc.start_episode(snap, task_id)
+            yield str(svc.surface(handle)["base_url"])
         finally:
             svc.close()
 
-    return run_probes
+    return boot
+
+
+def _episode_runner(
+    snap: Snapshot, base_dir: Path
+) -> Callable[[str], tuple[str, str, str | None]]:
+    return pentest_probes(snap, _boot(base_dir))
 
 
 def test_realize_world_bakes_in_a_faithful_handler(tmp_path: Path) -> None:
@@ -631,6 +634,40 @@ def test_realize_world_skips_an_empty_proposal(tmp_path: Path) -> None:
     out = realize_world(snap, lambda _g, _k: "", _episode_runner(snap, tmp_path))
     assert out.lineage["realized_handlers"] == ()
     assert out.snapshot_id == before
+
+
+def test_realize_generated_passes_through_when_off(tmp_path: Path) -> None:
+    snap = _admit("db", "sql_injection", context="single")
+    # generate absent -> default False -> the procedural world is returned untouched;
+    # the backend (here pointed nowhere) and boot are never invoked.
+    backend = OpenAIBackend(base_url="http://127.0.0.1:1/v1")
+    out = realize_generated(snap, backend, _boot(tmp_path))
+    assert out is snap
+
+
+def test_realize_generated_rejects_an_unwired_mode(tmp_path: Path) -> None:
+    snap = _admit("db", "sql_injection", generate="service", context="single")
+    with pytest.raises(PackError, match="not wired yet"):
+        realize_generated(
+            snap, OpenAIBackend(base_url="http://127.0.0.1:1/v1"), _boot(tmp_path)
+        )
+
+
+def test_realize_generated_vuln_bakes_a_realized_handler(
+    tmp_path: Path,
+    chat_server: Callable[..., contextlib.AbstractContextManager[str]],
+    chat_completion: Callable[[str], str],
+) -> None:
+    # The whole dial end to end: a generate:"vuln" world routes through a real backend
+    # over HTTP, the gate admits the (graph-matching) handler, and the world re-freezes.
+    snap = _admit("db", "sql_injection", generate="vuln", context="single")
+    before = snap.graph.content_hash()
+    reply = chat_completion(json.dumps({"handler": _faithful_sqli(snap.graph)}))
+    with chat_server(lambda path, method: (200, reply)) as base:
+        out = realize_generated(snap, OpenAIBackend(base_url=base), _boot(tmp_path))
+    assert "sql_injection" in out.lineage["realized_handlers"]
+    assert out.snapshot_id == out.graph.content_hash()
+    assert out.snapshot_id != before
 
 
 @pytest.mark.skipif(

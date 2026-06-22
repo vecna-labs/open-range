@@ -11,6 +11,7 @@ with `reference_solver.exploit_and_benign`), since running an episode is a host 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import LLMBackend, LLMRequest, PackError, Snapshot
@@ -24,8 +25,15 @@ from cyber_webapp.reference_solver import (
     _flag_record_key,
     _vuln_of_kind,
     control_request,
+    exploit_and_benign,
     exploit_recipe,
 )
+from cyber_webapp.verify import perform
+
+# A host callback that boots an episode for ``(snapshot, task_id)`` and yields its
+# base_url for the duration of the context, owning the episode lifecycle. Booting an
+# episode needs the runtime (a host concern), so realization takes it injected.
+BootEpisode = Callable[[Snapshot, str], AbstractContextManager[str]]
 
 # The classes a prompt exists for. command_injection is the first realized class (#266);
 # sql_injection and path_traversal extend it across the response-leak and file-read
@@ -555,6 +563,50 @@ def realize_with_backend(
         return handler_from_result(result.parsed_json)
 
     return realize_world(snapshot, propose, run_probes)
+
+
+def pentest_probes(
+    snapshot: Snapshot,
+    boot: BootEpisode,
+) -> Callable[[str], tuple[str, str, str | None]]:
+    """Build ``realize_world``'s ``run_probes`` for a pentest world: boot the (mutated)
+    world via ``boot`` and return the reference exploit, benign and faithfulness-control
+    response bodies for ``kind``. The graph is read live each call so an injected
+    handler is exercised; the host supplies ``boot`` so the pack stays transport-free.
+    """
+    task = next(t for t in snapshot.tasks if t.meta.get("family") == "webapp.pentest")
+
+    def run_probes(kind: str) -> tuple[str, str, str | None]:
+        with boot(snapshot, task.id) as base_url:
+            exploit_req, benign_req = exploit_and_benign(snapshot.graph, kind)
+            control = control_request(snapshot.graph, kind)
+            return (
+                perform(base_url, exploit_req),
+                perform(base_url, benign_req),
+                perform(base_url, control.request) if control else None,
+            )
+
+    return run_probes
+
+
+def realize_generated(
+    snapshot: Snapshot,
+    backend: LLMBackend,
+    boot: BootEpisode,
+) -> Snapshot:
+    """Consume the manifest's ``generate`` knob: route an admitted procedural snapshot
+    through generate -> verify -> freeze when it asked for generation, else return it
+    unchanged. ``generate: "vuln"`` realizes each vuln's handler behind the verifier
+    (#260); ``"service"`` / ``"world"`` are later stages (#212) and raise until wired.
+    The host injects ``backend`` (the LLM) and ``boot`` (an episode for a snapshot +
+    task); booting an episode stays a host concern, so the pack stays transport-free.
+    """
+    mode = snapshot.lineage.get("generate", False)
+    if not mode:
+        return snapshot
+    if mode == "vuln":
+        return realize_with_backend(snapshot, backend, pentest_probes(snapshot, boot))
+    raise PackError(f"generate mode {mode!r} is not wired yet (see #212)")
 
 
 _SERVICE_SCHEMA: dict[str, object] = {

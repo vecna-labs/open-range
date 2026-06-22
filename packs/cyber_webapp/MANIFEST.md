@@ -54,15 +54,17 @@ surface's `generate` knob (see below), always behind the consequence verifier.
   spells out). Distinct from `world_difficulty` (#322), the solve-path-cost metric the
   builder records on the snapshot's lineage.
 - `generate` (`false` | `"vuln"` | `"service"` | `"world"`, default `false`) — **the open
-  end of the dial.** `false` keeps the world purely procedural. The other modes route the
-  frozen procedural snapshot through host-side *generate → verify → freeze*, where an LLM
-  realizes nodes (a novel vuln, a richer service, a whole world) and the **consequence
-  verifier** keeps it only if the exploit leaks and a benign request does not — the only
-  mode where "what kind" is left to the LLM rather than the catalog. It is validated and
-  recorded on the lineage; with no LLM backend wired it returns the procedural world
-  unchanged. See [DESIGN.md](DESIGN.md) §8 (the verifier is the ceiling) and §9 (the
-  generation ladder). Worlds built this way are reproducible by **frozen-snapshot replay**,
-  not by re-running the manifest (an LLM sits in the build path).
+  end of the dial.** `false` keeps the world purely procedural. `"vuln"` routes the frozen
+  procedural snapshot through host-side *generate → verify → freeze* (`llm_realize.
+  realize_generated`, the host injecting the LLM and the episode boot): an LLM realizes each
+  vuln's handler and the **consequence verifier** keeps it only if the exploit leaks and a
+  benign request does not — the only mode where "what kind" is left to the LLM rather than
+  the catalog. `"service"` / `"world"` extend that to whole services and worlds and are the
+  next stages (#212). The knob is validated and recorded on the lineage at build time;
+  realization is the separate host step, so `admit` alone returns the procedural world. See
+  [DESIGN.md](DESIGN.md) §8 (the verifier is the ceiling) and §9 (the generation ladder).
+  Worlds built this way are reproducible by **frozen-snapshot replay**, not by re-running
+  the manifest (an LLM sits in the build path).
 
 The seed is extracted by `ProceduralBuilder.build`; every other knob folds into the prior
 in `WebappBuilder._effective_prior`. The retired keys `company`, `lateral_movement`,

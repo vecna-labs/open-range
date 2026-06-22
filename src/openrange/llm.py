@@ -1,8 +1,9 @@
-"""CLI LLM backends.
+"""LLM backends.
 
 The ``LLMBackend`` Protocol and ``LLMRequest`` / ``LLMResult`` value types live in
-``openrange_pack_sdk``. This module ships the concrete CLI backends — ``CodexBackend``
-and ``ClaudeBackend`` — plus the impl-specific exceptions they raise.
+``openrange_pack_sdk``. This module ships the concrete backends — the CLI ones
+(``CodexBackend``, ``ClaudeBackend``) and an HTTP one (``OpenAIBackend``, for any
+OpenAI-compatible endpoint) — plus the impl-specific exceptions they raise.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ import json
 import re
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -224,3 +227,98 @@ def _first_json_object(text: str) -> str:
     if start != -1 and end > start:
         return text[start : end + 1]
     return text
+
+
+@dataclass(frozen=True, slots=True)
+class OpenAIBackend:
+    """An ``LLMBackend`` for any OpenAI-compatible ``/chat/completions`` endpoint — a
+    local ``llama-server`` or vLLM, or the OpenAI API itself.
+
+    A structured request asks for a JSON object in the prompt and parses it out of the
+    reply, so the backend works against servers without a structured-output flag (the
+    same approach as ``ClaudeBackend``). ``api_key`` is sent as a bearer token when set
+    and omitted otherwise, which local servers ignore.
+    """
+
+    base_url: str = "http://localhost:8080/v1"
+    model: str = "local"
+    api_key: str | None = None
+    temperature: float = 0.2
+    timeout: float = 180.0
+
+    def preflight(self) -> None:
+        """Verify the endpoint is reachable (a ``GET /models`` round-trip)."""
+        try:
+            with urllib.request.urlopen(
+                self._request("models", None), timeout=self.timeout
+            ):
+                return
+        except OSError as exc:
+            raise LLMBackendError(
+                f"OpenAI-compatible endpoint not reachable at {self.base_url!r}: {exc}",
+            ) from exc
+
+    def complete(self, request: LLMRequest) -> LLMResult:
+        prompt = request.prompt
+        if request.json_schema is not None:
+            prompt += (
+                "\n\nReturn ONLY a JSON object matching this schema — no prose, no "
+                "code fences:\n" + json.dumps(request.json_schema)
+            )
+        messages: list[dict[str, str]] = []
+        if request.system is not None:
+            messages.append({"role": "system", "content": request.system})
+        messages.append({"role": "user", "content": prompt})
+        text = _chat_content(
+            self._post(
+                "chat/completions",
+                {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": self.temperature,
+                },
+            )
+        )
+        if request.json_schema is None:
+            return LLMResult(text)
+        return LLMResult(text, parse_json_object(_first_json_object(text)))
+
+    def _request(
+        self, path: str, payload: Mapping[str, object] | None
+    ) -> urllib.request.Request:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return urllib.request.Request(
+            f"{self.base_url.rstrip('/')}/{path}",
+            data=None if payload is None else json.dumps(payload).encode("utf-8"),
+            headers=headers,
+        )
+
+    def _post(self, path: str, payload: Mapping[str, object]) -> Mapping[str, object]:
+        try:
+            with urllib.request.urlopen(
+                self._request(path, payload), timeout=self.timeout
+            ) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace").strip()
+            raise LLMBackendError(
+                f"OpenAI endpoint HTTP {exc.code}: {detail or exc.reason}",
+                returncode=exc.code,
+            ) from exc
+        except OSError as exc:
+            raise LLMBackendError(f"OpenAI endpoint request failed: {exc}") from exc
+        return parse_json_object(raw)
+
+
+def _chat_content(envelope: Mapping[str, object]) -> str:
+    choices = envelope.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise LLMBackendError("OpenAI endpoint returned no choices")
+    choice = choices[0]
+    message = choice.get("message") if isinstance(choice, Mapping) else None
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if not isinstance(content, str):
+        raise LLMBackendError("OpenAI endpoint choice has no string content")
+    return content
