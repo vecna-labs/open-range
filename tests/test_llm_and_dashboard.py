@@ -6,7 +6,7 @@ import json
 import textwrap
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Protocol, cast
 from urllib.error import HTTPError
@@ -45,7 +45,6 @@ from openrange.dashboard import (
 from openrange.llm import (
     ClaudeBackend,
     CodexBackend,
-    OpenAIBackend,
     parse_json_object,
     run_codex,
 )
@@ -418,97 +417,6 @@ def test_claude_result_helpers_handle_non_envelope_replies() -> None:
     assert _claude_result_text("not json at all") == "not json at all"
     assert _claude_result_text('{"type": "x"}') == '{"type": "x"}'
     assert _first_json_object("no braces here") == "no braces here"
-
-
-ChatServer = Callable[..., contextlib.AbstractContextManager[str]]
-
-
-def test_openai_backend_returns_text(
-    chat_server: ChatServer,
-    chat_completion: Callable[[str], str],
-) -> None:
-    reply = chat_completion("hello there")
-    with chat_server(lambda path, method: (200, reply)) as base:
-        result = OpenAIBackend(base_url=base, model="x").complete(LLMRequest("hi"))
-    assert result == LLMResult("hello there")
-
-
-def test_openai_backend_parses_structured_reply(
-    chat_server: ChatServer,
-    chat_completion: Callable[[str], str],
-) -> None:
-    handler = '{"handler": "def handle(): ..."}'
-    body = chat_completion(f"the handler:\n```json\n{handler}\n```")
-    with chat_server(lambda path, method: (200, body)) as base:
-        result = OpenAIBackend(base_url=base).complete(
-            LLMRequest("hi", system="be terse", json_schema={"type": "object"}),
-        )
-    assert result.parsed_json == {"handler": "def handle(): ..."}
-
-
-def test_openai_backend_preflight_round_trips_models(
-    chat_server: ChatServer,
-) -> None:
-    with chat_server(lambda path, method: (200, '{"data": []}')) as base:
-        OpenAIBackend(base_url=base, api_key="sk-test").preflight()
-
-
-def test_openai_backend_preflight_reports_unreachable() -> None:
-    with pytest.raises(LLMBackendError, match="not reachable"):
-        OpenAIBackend(base_url="http://127.0.0.1:1/v1", timeout=1.0).preflight()
-
-
-def test_openai_backend_reports_http_error(
-    chat_server: ChatServer,
-) -> None:
-    with (
-        chat_server(lambda path, method: (500, '{"error": "boom"}')) as base,
-        pytest.raises(LLMBackendError, match="HTTP 500"),
-    ):
-        OpenAIBackend(base_url=base).complete(LLMRequest("hi"))
-
-
-def test_openai_backend_reports_unreachable_on_complete() -> None:
-    with pytest.raises(LLMBackendError, match="request failed"):
-        OpenAIBackend(base_url="http://127.0.0.1:1/v1", timeout=1.0).complete(
-            LLMRequest("hi"),
-        )
-
-
-def test_openai_backend_rejects_empty_choices(
-    chat_server: ChatServer,
-) -> None:
-    with (
-        chat_server(lambda path, method: (200, '{"choices": []}')) as base,
-        pytest.raises(LLMBackendError, match="no choices"),
-    ):
-        OpenAIBackend(base_url=base).complete(LLMRequest("hi"))
-
-
-def test_openai_backend_rejects_a_non_mapping_choice(
-    chat_server: ChatServer,
-) -> None:
-    with (
-        chat_server(lambda path, method: (200, '{"choices": [5]}')) as base,
-        pytest.raises(LLMBackendError, match="no string content"),
-    ):
-        OpenAIBackend(base_url=base).complete(LLMRequest("hi"))
-
-
-def test_openai_backend_bounds_and_json_modes_a_structured_request(
-    chat_server: ChatServer,
-    chat_completion: Callable[[str], str],
-) -> None:
-    # max_tokens + json mode (response_format) + a vendor extra_body ride on a
-    # structured request; the live wire behaviour is exercised on Spark in #261.
-    reply = chat_completion('{"handler": "ok"}')
-    with chat_server(lambda path, method: (200, reply)) as base:
-        result = OpenAIBackend(
-            base_url=base,
-            max_tokens=64,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        ).complete(LLMRequest("hi", json_schema={"type": "object"}))
-    assert result.parsed_json == {"handler": "ok"}
 
 
 def test_run_codex_reports_os_errors_and_timeouts(tmp_path: Path) -> None:

@@ -83,6 +83,14 @@ Optional Strands Agents support:
 uv sync --extra strands
 ```
 
+LLM backends live in `openrange.llm`: the CLI `CodexBackend` / `ClaudeBackend`, the
+zero-dep stdlib `OpenAICompatibleBackend` (OpenAI, vLLM, Ollama, llama.cpp, …), and
+`LiteLLMBackend` for any provider LiteLLM reaches. The last needs an extra:
+
+```bash
+uv sync --extra litellm
+```
+
 ## Build a world
 
 ```python

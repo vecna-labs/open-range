@@ -51,7 +51,12 @@ from openrange.core.episode import (
     TickRequest,
     TickResult,
 )
-from openrange.llm import CodexBackend
+from openrange.llm import (
+    OPENAI_COMPATIBLE_DEFAULT_MODEL,
+    CodexBackend,
+    LiteLLMBackend,
+    OpenAICompatibleBackend,
+)
 from openrange.npc import (
     NPCS,
     NPCRegistry,
@@ -108,12 +113,15 @@ __all__ = [
     "EvalPool",
     "GraphPatch",
     "Issue",
+    "LiteLLMBackend",
     "NPCS",
     "NPCRegistry",
     "Node",
     "NodeKind",
+    "OPENAI_COMPATIBLE_DEFAULT_MODEL",
     "Observation",
     "Ontology",
+    "OpenAICompatibleBackend",
     "OpenRangeRun",
     "PACKS",
     "PackRegistry",

@@ -53,7 +53,7 @@ from openrange_pack_sdk import PackError, Snapshot
 
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
-from openrange.llm import ClaudeBackend, OpenAIBackend
+from openrange.llm import ClaudeBackend, OpenAICompatibleBackend
 
 
 def _admit(
@@ -655,7 +655,7 @@ def test_realize_generated_passes_through_when_off(tmp_path: Path) -> None:
     snap = _admit("db", "sql_injection", context="single")
     # generate absent -> default False -> the procedural world is returned untouched;
     # the backend (here pointed nowhere) and boot are never invoked.
-    backend = OpenAIBackend(base_url="http://127.0.0.1:1/v1")
+    backend = OpenAICompatibleBackend(base_url="http://127.0.0.1:1/v1")
     out = realize_generated(snap, backend, _boot(tmp_path))
     assert out is snap
 
@@ -664,7 +664,9 @@ def test_realize_generated_rejects_an_unwired_mode(tmp_path: Path) -> None:
     snap = _admit("db", "sql_injection", generate="service", context="single")
     with pytest.raises(PackError, match="not wired yet"):
         realize_generated(
-            snap, OpenAIBackend(base_url="http://127.0.0.1:1/v1"), _boot(tmp_path)
+            snap,
+            OpenAICompatibleBackend(base_url="http://127.0.0.1:1/v1"),
+            _boot(tmp_path),
         )
 
 
@@ -679,7 +681,9 @@ def test_realize_generated_vuln_bakes_a_realized_handler(
     before = snap.graph.content_hash()
     reply = chat_completion(json.dumps({"handler": _faithful_sqli(snap.graph)}))
     with chat_server(lambda path, method: (200, reply)) as base:
-        out = realize_generated(snap, OpenAIBackend(base_url=base), _boot(tmp_path))
+        out = realize_generated(
+            snap, OpenAICompatibleBackend(base_url=base), _boot(tmp_path)
+        )
     assert "sql_injection" in out.lineage["realized_handlers"]
     assert out.snapshot_id == out.graph.content_hash()
     assert out.snapshot_id != before
@@ -767,7 +771,9 @@ def _realize_novel(
 ) -> Snapshot:
     reply = chat_completion(json.dumps(proposal))
     with chat_server(lambda path, method: (200, reply)) as base:
-        return realize_generated(snap, OpenAIBackend(base_url=base), _boot(tmp_path))
+        return realize_generated(
+            snap, OpenAICompatibleBackend(base_url=base), _boot(tmp_path)
+        )
 
 
 def test_realize_novel_admits_an_authored_novel_class(
@@ -873,7 +879,7 @@ def test_realize_novel_requires_a_single_vuln_skeleton(tmp_path: Path) -> None:
         max_repairs=3,
     )
     assert isinstance(snap, Snapshot), snap
-    backend = OpenAIBackend(base_url="http://127.0.0.1:1/v1")
+    backend = OpenAICompatibleBackend(base_url="http://127.0.0.1:1/v1")
     with pytest.raises(PackError, match="single-vuln"):
         realize_generated(snap, backend, _boot(tmp_path))
 
