@@ -367,7 +367,7 @@ the flag leaks via `consequence.detect_leak`, confirm a benign request does *not
 structural admission is a graph-path check; an LLM realization needs *dynamic* admission,
 because the code might be wrong.)
 
-**The manifest's entry to this ladder is the `generate` knob** (`docs/manifest.md`):
+**The manifest's entry to this ladder is the `generate` knob** (`MANIFEST.md`):
 `false` keeps a world purely procedural; `"vuln"` / `"service"` / `"world"` route the
 frozen procedural snapshot through *generate → verify → freeze* at the rung above. Its
 terminus is a *novel class* — the LLM proposes a vulnerability the catalog does not have

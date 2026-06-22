@@ -10,7 +10,7 @@ code to write (`webapp.build`).
 The world is dialed entirely from the **manifest** — one auto↔specific control surface,
 from fully-auto (`{"seed": 7}`) through partial (bias a vuln kind, or pick a `company`
 shape) to fully-specific (pin exact vulns) — with `generate` as the open, LLM-driven end. See
-[docs/manifest.md](../../docs/manifest.md).
+[MANIFEST.md](MANIFEST.md) for the full key reference.
 
 Published as `openrange-cyber-webapp`; discovered via the `openrange.packs`
 entry point.

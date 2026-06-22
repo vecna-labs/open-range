@@ -26,9 +26,6 @@ from cyber_webapp.sampling import (
 )
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 
-# Manifest keys retired by the auto<->specific control surface (docs/manifest.md):
-# rejected with a migration hint rather than silently honored, so the contract is one
-# uniform thing -- each maps to a new knob obeying absent=auto / present=merged.
 _RENAMED_KEYS: Mapping[str, str] = {
     "company": 'use topology: "company"',
     "lateral_movement": 'use topology: "chain"',
@@ -127,11 +124,7 @@ class WebappBuilder(ProceduralBuilder):
         )
 
     def _effective_prior(self, manifest: Manifest) -> PackPrior:
-        # The manifest is the gym's control surface (docs/manifest.md), one uniform
-        # rule: a knob ABSENT means "auto" (the seeded RNG samples it); a knob PRESENT
-        # is a constraint merged onto the defaults. `topology` picks flat/company/chain;
-        # on a flat world `vuln`/`loot`/`scale` shape it; the company and chain presets
-        # force their networked shape, so `vuln`/`loot` are not tunable there.
+        # A knob absent = auto (the RNG samples it); present = merged onto the prior.
         base = self.prior if self.prior is not None else default_prior()
         for old, hint in _RENAMED_KEYS.items():
             if old in manifest:
