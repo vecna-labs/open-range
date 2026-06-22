@@ -6,6 +6,8 @@ and place what they ask for, malformed or misapplied knobs are rejected up front
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from cyber_webapp import WebappBuilder, WebappPack
 from graphschema import WorldGraph
@@ -38,6 +40,12 @@ _REJECTED = {
     "pin-unknown-kind": {"vuln": {"pin": [{"kind": "no_such_vuln"}]}},
     "weights-not-mapping": {"vuln": {"weights": [1]}},
     "weights-non-int": {"vuln": {"weights": {"idor": "five"}}},
+    # malformed scale
+    "scale-not-mapping": {"scale": "x"},
+    "scale-value-not-mapping": {"scale": {"service_count": "string"}},
+    "scale-value-int": {"scale": {"service_count": 5}},
+    "scale-missing-max": {"scale": {"vuln_count": {"min": 2}}},
+    "scale-inverted": {"scale": {"vuln_count": {"min": 5, "max": 2}}},
     # malformed loot / chain
     "loot-not-mapping": {"loot": [1]},
     "loot-non-int": {"loot": {"db": "lots"}},
@@ -92,3 +100,29 @@ def test_pin_places_exactly_those_kinds() -> None:
     snap = _admit({"topology": "flat", "vuln": {"pin": pin}})
     kinds = _vuln_kinds(snap.graph)
     assert sorted(kinds) == ["idor", "sql_injection"]  # exactly the pinned set
+
+
+def _prior(extra: dict[str, object]) -> dict[str, Any]:
+    prior = WebappBuilder(None)._effective_prior(
+        {"pack": {"id": "webapp"}, "npc": [], **extra}
+    )
+    return dict(prior.topology)
+
+
+def test_each_knob_folds_into_the_prior() -> None:
+    # The contract is "present = a constraint merged onto the defaults": every knob has
+    # to actually land in the prior the sampler reads, not merely let the world admit.
+    weights = _prior({"vuln": {"weights": {"xxe": 5}}})["kind_weights"]
+    assert weights["vuln_kinds"]["xxe"] == 5  # bias merged over the defaults
+
+    scaled = _prior({"scale": {"vuln_count": {"min": 4, "max": 4}}})
+    assert scaled["count_ranges"]["vuln_count"] == {"min": 4, "max": 4}  # per-key merge
+
+    company = _prior({"topology": "company"})
+    assert company["preset"] == "company" and company["count_ranges"]["service_count"]
+
+    chained = _prior({"topology": "chain", "chain": {"depth": {"min": 2, "max": 3}}})
+    assert chained["lateral"] and chained["chain_depth"] == {"min": 2, "max": 3}
+
+    blind = _prior({"topology": "company", "recon": "none"})
+    assert blind["recon_disclosure"] == "none"

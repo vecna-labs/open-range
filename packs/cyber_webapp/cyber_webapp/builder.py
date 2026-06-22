@@ -174,10 +174,19 @@ class WebappBuilder(ProceduralBuilder):
             if recon not in ("full", "none"):
                 raise PackError(f"recon must be 'full' or 'none', got {recon!r}")
             topology["recon_disclosure"] = recon
-        if isinstance(scale, Mapping):
+        if scale is not None:
+            if not isinstance(scale, Mapping):
+                raise PackError("scale must be a mapping of count-key -> {min, max}")
             for key, spec in scale.items():
-                if isinstance(spec, Mapping):
-                    count_ranges[str(key)] = dict(spec)
+                if not isinstance(spec, Mapping):
+                    raise PackError(f"scale[{key!r}] must be a {{min, max}} mapping")
+                lo = _as_int(spec.get("min"), f"scale[{key!r}].min")
+                hi = _as_int(spec.get("max"), f"scale[{key!r}].max")
+                if not 0 <= lo <= hi:
+                    raise PackError(
+                        f"scale[{key!r}] needs 0 <= min <= max, got {lo}..{hi}"
+                    )
+                count_ranges[str(key)] = {"min": lo, "max": hi}
         if chain is not None:
             depth = chain.get("depth") if isinstance(chain, Mapping) else None
             if not isinstance(depth, Mapping):
