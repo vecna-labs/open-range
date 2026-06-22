@@ -10,10 +10,9 @@ shorthand `{"pack": "<id>"}` is accepted as equivalent to
 branches on a manifest field. See [CONTRACTS.md](../CONTRACTS.md) for the full
 shape declaration.
 
-## Pack-specific keys
+## Keys handled above the pack
 
-Each pack documents the keys it expects in its own source. A few are handled
-generically, above any single pack:
+A few keys are read generically, by the SDK base class or core, for any pack:
 
 - `seed` (int) — deterministic sampling seed, extracted by the SDK base class
   `ProceduralBuilder.build`. Same seed + same prior → the same world graph.
@@ -23,6 +22,9 @@ generically, above any single pack:
 - `world` (mapping) — optional pre-baked topology hints honored by the dashboard;
   not read during sampling.
 
-Everything else is the pack's own contract. For the built-in `webapp` pack — its
-auto↔specific control surface — see
-[packs/cyber_webapp/MANIFEST.md](../packs/cyber_webapp/MANIFEST.md).
+## Pack-specific keys
+
+Every other key is the pack's own contract. A pack defines the keys it accepts and
+documents them alongside its own source — packs are independently packaged and may
+live in their own repositories, so core neither defines nor branches on these keys.
+See the pack you are admitting against for its key reference.
