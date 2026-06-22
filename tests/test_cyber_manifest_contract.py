@@ -16,22 +16,18 @@ from openrange_pack_sdk import PackError, Snapshot
 from openrange.core.admit import admit
 
 _REJECTED = {
-    # old keys renamed in the control-surface migration -- each rejects with a hint
     "renamed-company": {"company": True},
     "renamed-lateral_movement": {"lateral_movement": True},
     "renamed-vuln_kinds": {"vuln_kinds": {"idor": 1}},
     "renamed-loot_shapes": {"loot_shapes": {"db": 1}},
     "renamed-recon_disclosure": {"recon_disclosure": "none"},
     "renamed-difficulty": {"difficulty": "hard"},
-    # bad enum values
     "bad-topology": {"topology": "mesh"},
     "bad-recon": {"topology": "company", "recon": "loud"},
-    # knobs the chosen topology does not own
     "vuln-under-company": {"topology": "company", "vuln": {"pin": [{"kind": "idor"}]}},
     "loot-under-chain": {"topology": "chain", "loot": {"db": 1}},
     "recon-on-flat": {"recon": "none"},
     "chain-on-flat": {"chain": {"depth": {"min": 2, "max": 3}}},
-    # malformed vuln knob
     "vuln-not-mapping": {"vuln": [1, 2]},
     "vuln-empty": {"vuln": {}},
     "pin-empty": {"vuln": {"pin": []}},
@@ -40,13 +36,11 @@ _REJECTED = {
     "pin-unknown-kind": {"vuln": {"pin": [{"kind": "no_such_vuln"}]}},
     "weights-not-mapping": {"vuln": {"weights": [1]}},
     "weights-non-int": {"vuln": {"weights": {"idor": "five"}}},
-    # malformed scale
     "scale-not-mapping": {"scale": "x"},
     "scale-value-not-mapping": {"scale": {"service_count": "string"}},
     "scale-value-int": {"scale": {"service_count": 5}},
     "scale-missing-max": {"scale": {"vuln_count": {"min": 2}}},
     "scale-inverted": {"scale": {"vuln_count": {"min": 5, "max": 2}}},
-    # malformed loot / chain
     "loot-not-mapping": {"loot": [1]},
     "loot-non-int": {"loot": {"db": "lots"}},
     "loot-bool": {"loot": {"db": True}},
@@ -83,8 +77,8 @@ def _vuln_kinds(graph: WorldGraph) -> list[str]:
 @pytest.mark.parametrize(
     "extra",
     [
-        {},  # fully-auto: just the seed
-        {"topology": "flat", "vuln": {"weights": {"xxe": 5}}},  # partial: bias one kind
+        {},
+        {"topology": "flat", "vuln": {"weights": {"xxe": 5}}},
         {"topology": "company"},
         {"topology": "chain"},
         {"topology": "company", "recon": "none"},
@@ -99,7 +93,7 @@ def test_pin_places_exactly_those_kinds() -> None:
     pin = [{"kind": "sql_injection"}, {"kind": "idor"}]
     snap = _admit({"topology": "flat", "vuln": {"pin": pin}})
     kinds = _vuln_kinds(snap.graph)
-    assert sorted(kinds) == ["idor", "sql_injection"]  # exactly the pinned set
+    assert sorted(kinds) == ["idor", "sql_injection"]
 
 
 def _prior(extra: dict[str, object]) -> dict[str, Any]:
@@ -110,13 +104,11 @@ def _prior(extra: dict[str, object]) -> dict[str, Any]:
 
 
 def test_each_knob_folds_into_the_prior() -> None:
-    # The contract is "present = a constraint merged onto the defaults": every knob has
-    # to actually land in the prior the sampler reads, not merely let the world admit.
     weights = _prior({"vuln": {"weights": {"xxe": 5}}})["kind_weights"]
-    assert weights["vuln_kinds"]["xxe"] == 5  # bias merged over the defaults
+    assert weights["vuln_kinds"]["xxe"] == 5
 
     scaled = _prior({"scale": {"vuln_count": {"min": 4, "max": 4}}})
-    assert scaled["count_ranges"]["vuln_count"] == {"min": 4, "max": 4}  # per-key merge
+    assert scaled["count_ranges"]["vuln_count"] == {"min": 4, "max": 4}
 
     company = _prior({"topology": "company"})
     assert company["preset"] == "company" and company["count_ranges"]["service_count"]

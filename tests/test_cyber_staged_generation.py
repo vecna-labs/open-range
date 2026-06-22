@@ -106,8 +106,6 @@ def test_file_loot_keeps_flag_out_of_db_and_secrets() -> None:
 
 
 def test_a_malformed_loot_knob_is_rejected() -> None:
-    # The control surface fails loud: a non-mapping loot is a manifest error, not a
-    # value silently dropped back to auto.
     with pytest.raises(PackError):
         WebappBuilder(None)._effective_prior(
             {"pack": {"id": "webapp"}, "npc": [], "loot": "not-a-mapping"}
