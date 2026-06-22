@@ -21,6 +21,9 @@ strands = [
     "strands-agents>=1.38.0",
     "strands-agents-tools>=0.4.1",
 ]
+litellm = [
+    "litellm>=1.55",
+]
 # The HuggingFace TRL GRPO integration is a *separate* optional package,
 # ``packages/openrange-trl`` — OpenRange itself owns no trainer code or deps.
 
@@ -107,6 +110,11 @@ ignore_missing_imports = true
 module = ["trl", "trl.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
+
+# litellm is an optional (``openrange[litellm]``) lazy import in LiteLLMBackend.
+[[tool.mypy.overrides]]
+module = ["litellm", "litellm.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 # Repo root on the path so tests can import the example eval scripts (the
