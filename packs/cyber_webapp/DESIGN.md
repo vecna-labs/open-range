@@ -372,13 +372,20 @@ because the code might be wrong.)
 through *generate → verify → freeze*, realizing each vuln's handler behind the verifier
 (`llm_realize.realize_generated`, the host injecting the LLM and the episode boot).
 `"service"` / `"world"` extend that to whole services and whole worlds and are the next
-stages (#212). Its terminus is a *novel class* — the LLM proposes a vulnerability the
-catalog does not have
-and emits its exploit recipe (#317's recipe-on-graph), and the **same kind-agnostic**
-consequence gate (it keys only on "a HIDDEN value leaked," §8.3) admits it
-([#261](https://github.com/vecna-labs/open-range/issues/261)). That is the open end of the
-auto↔specific control surface: every other knob constrains *within* the catalog;
-`generate` is the only one that leaves "what kind" to the LLM, still behind the verifier.
+stages (#212).
+
+Its terminus is `"novel"`: the LLM proposes a vulnerability **class the catalog does not
+have** — a new `kind`, a vulnerable handler, and its exploit recipe — for a procedural
+skeleton, and the **same kind-agnostic** consequence gate (it keys only on "a HIDDEN value
+leaked," §8.3) admits it ([#261](https://github.com/vecna-labs/open-range/issues/261)).
+The pure procedural sampler stays the architect (it plants the flag and the skeleton, never
+an LLM); `llm_realize.realize_novel` re-homes that skeleton's vuln to the proposed class,
+runs the LLM's own exploit through the gate (`verify.verdict_authored`), and -- the
+integrity check -- **re-seeds the flag and re-runs**: a genuine exploit recovers the fresh
+value, so a memorized flag or a handler that hard-codes it is rejected. Accepted worlds
+freeze with the novel kind on their lineage. This is the open end of the auto↔specific
+control surface: every other knob constrains *within* the catalog; `generate` is the only
+one that leaves "what kind" to the LLM, still behind the verifier.
 
 ### The container backing
 

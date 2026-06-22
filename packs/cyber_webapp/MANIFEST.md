@@ -53,14 +53,17 @@ surface's `generate` knob (see below), always behind the consequence verifier.
 - `instruction_tier` (string) — shapes the task **text** (e.g. how much the prompt
   spells out). Distinct from `world_difficulty` (#322), the solve-path-cost metric the
   builder records on the snapshot's lineage.
-- `generate` (`false` | `"vuln"` | `"service"` | `"world"`, default `false`) — **the open
-  end of the dial.** `false` keeps the world purely procedural. `"vuln"` routes the frozen
-  procedural snapshot through host-side *generate → verify → freeze* (`llm_realize.
+- `generate` (`false` | `"vuln"` | `"novel"` | `"service"` | `"world"`, default `false`) —
+  **the open end of the dial.** `false` keeps the world purely procedural. `"vuln"` routes
+  the frozen procedural snapshot through host-side *generate → verify → freeze* (`llm_realize.
   realize_generated`, the host injecting the LLM and the episode boot): an LLM realizes each
   vuln's handler and the **consequence verifier** keeps it only if the exploit leaks and a
-  benign request does not — the only mode where "what kind" is left to the LLM rather than
-  the catalog. `"service"` / `"world"` extend that to whole services and worlds and are the
-  next stages (#212). The knob is validated and recorded on the lineage at build time;
+  benign request does not. `"novel"` goes further — the LLM proposes a vulnerability **class
+  the catalog does not have** (a new kind + handler + exploit recipe) for the skeleton, and
+  the same gate admits it, re-seeding the flag and re-running to prove the exploit genuine;
+  this is the only mode where "what kind" is left to the LLM rather than the catalog.
+  `"service"` / `"world"` extend realization to whole services and worlds and are the next
+  stages (#212). The knob is validated and recorded on the lineage at build time;
   realization is the separate host step, so `admit` alone returns the procedural world. See
   [DESIGN.md](DESIGN.md) §8 (the verifier is the ceiling) and §9 (the generation ladder).
   Worlds built this way are reproducible by **frozen-snapshot replay**, not by re-running

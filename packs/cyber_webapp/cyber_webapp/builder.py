@@ -34,7 +34,7 @@ _RENAMED_KEYS: Mapping[str, str] = {
     "recon_disclosure": 'use recon: "full" | "none"',
     "difficulty": "use instruction_tier: ...",
 }
-_GENERATE_MODES = (False, "vuln", "service", "world")
+_GENERATE_MODES = (False, "vuln", "novel", "service", "world")
 
 
 def _as_int(value: object, ctx: str) -> int:

@@ -249,12 +249,11 @@ _RAW_QUERY_KINDS = frozenset({"broken_authz", "weak_credentials"})
 
 
 def wrap_payload(graph: WorldGraph, kind: str, value: str) -> Request:
-    """Wrap an authored payload string into the same Request shape the reference solver
-    uses for `kind`, so an LLM-authored exploit runs through the identical perform/gate.
-    Most kinds carry `value` under the vuln's `target_param`; broken_authz and
-    weak_credentials carry their own multi-field query as `value`."""
-    if kind not in SUPPORTED_KINDS:
-        raise PackError(f"no exploit wrap for kind {kind!r}")
+    """Wrap an authored payload string into the Request shape the vuln's endpoint takes,
+    so an LLM-authored exploit runs the identical perform/gate. Delivery is keyed on the
+    vuln, not a kind whitelist, so a *novel* class works too (#261). `value`
+    rides under the vuln's `target_param`, unless the vuln delivers a raw multi-field
+    query (broken_authz / weak_credentials, or `delivery: raw` in params)."""
     vuln = _vuln_of_kind(graph, kind)
     params = vuln.attrs["params"]
     if not isinstance(params, Mapping):
@@ -263,9 +262,12 @@ def wrap_payload(graph: WorldGraph, kind: str, value: str) -> Request:
     endpoint = graph.nodes[endpoint_id]
     ep = str(endpoint.attrs["public_url"])
     method = str(endpoint.attrs.get("method", "GET"))
-    if kind in _RAW_QUERY_KINDS:
+    if kind in _RAW_QUERY_KINDS or params.get("delivery") == "raw":
         return _request_raw(ep, method, value)
-    return _request(ep, method, str(params["target_param"]), value)
+    target = params.get("target_param")
+    if not isinstance(target, str):
+        raise PackError(f"{kind} vuln has no target_param for payload delivery")
+    return _request(ep, method, target, value)
 
 
 def exploit_recipe(graph: WorldGraph, kind: str) -> str:

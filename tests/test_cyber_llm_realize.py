@@ -23,6 +23,7 @@ from cyber_webapp.llm_realize import (
     BootEpisode,
     benign_endpoints_of,
     handler_from_result,
+    novel_class_request,
     pentest_probes,
     realization_request,
     realize_generated,
@@ -44,6 +45,7 @@ from cyber_webapp.reference_solver import (
     _vuln_of_kind,
     control_request,
     exploit_and_benign,
+    wrap_payload,
 )
 from cyber_webapp.verify import perform
 from graphschema import Edge, Node, WorldGraph
@@ -668,6 +670,189 @@ def test_realize_generated_vuln_bakes_a_realized_handler(
     assert "sql_injection" in out.lineage["realized_handlers"]
     assert out.snapshot_id == out.graph.content_hash()
     assert out.snapshot_id != before
+
+
+def _novel_lookup_handler(param: str, body_lines: list[str]) -> str:
+    # Build a `def handle(query, state):` from raw body statements (the line-list
+    # pattern the faithful-handler helpers use) so the indentation stays valid Python.
+    head = [
+        "def handle(query, state):",
+        "    import json",
+        f"    value = (query.get({param!r}, ['']) or [''])[0]",
+        "    schema = state['schema']",
+        "    table = schema['table']",
+        "    key_col = schema['key_column']",
+        "    val_col = schema['value_column']",
+        "    cur = state['db'].cursor()",
+    ]
+    return "\n".join(head + ["    " + line for line in body_lines])
+
+
+_JSON_HEADERS = "{'Content-Type': 'application/json'}"
+
+
+def _novel_like_wildcard(graph: WorldGraph) -> dict[str, str]:
+    # A genuine NEW class: a LIKE match on the input, where '%' returns every row -- not
+    # one of the 9 catalog kinds (no UNION break-out), the LLM's invented technique.
+    param = str(_vuln_of_kind(graph, "sql_injection").attrs["params"]["target_param"])
+    body = [
+        'sql = f"SELECT {key_col}, {val_col} FROM {table} WHERE {key_col} LIKE ?"',
+        "rows = [dict(r) for r in cur.execute(sql, (value,)).fetchall()]",
+        f"return 200, {_JSON_HEADERS}, json.dumps({{'rows': rows}}).encode()",
+    ]
+    return {
+        "kind": "like_wildcard",
+        "recipe": "the lookup matches input with SQL LIKE; send '%' to match every row "
+        "and leak the flag value.",
+        "handler": _novel_lookup_handler(param, body),
+        "exploit": "%",
+        "benign": "no-such-key",
+    }
+
+
+def _novel_hardcoded(graph: WorldGraph, flag: str) -> dict[str, str]:
+    # A faked handler that hard-codes the flag for the exploit input: it passes the
+    # first gate (exploit leaks, benign does not) but FAILS re-seed (the flag moved).
+    param = str(_vuln_of_kind(graph, "sql_injection").attrs["params"]["target_param"])
+    body = [
+        "if value == 'leak':",
+        f"    out = json.dumps({{'secret': {flag!r}}}).encode()",
+        f"    return 200, {_JSON_HEADERS}, out",
+        f"return 200, {_JSON_HEADERS}, b'{{}}'",
+    ]
+    return {
+        "kind": "backdoor_param",
+        "recipe": "send the value 'leak' to dump the secret.",
+        "handler": _novel_lookup_handler(param, body),
+        "exploit": "leak",
+        "benign": "ok",
+    }
+
+
+def _novel_inert(graph: WorldGraph) -> dict[str, str]:
+    # A handler that never leaks -> the first gate rejects it (exploit does not leak).
+    param = str(_vuln_of_kind(graph, "sql_injection").attrs["params"]["target_param"])
+    body = [f"return 200, {_JSON_HEADERS}, b'{{}}'"]
+    return {
+        "kind": "no_op",
+        "recipe": "nothing leaks.",
+        "handler": _novel_lookup_handler(param, body),
+        "exploit": "x",
+        "benign": "y",
+    }
+
+
+_ChatServer = Callable[..., contextlib.AbstractContextManager[str]]
+
+
+def _realize_novel(
+    snap: Snapshot,
+    proposal: object,
+    tmp_path: Path,
+    chat_server: _ChatServer,
+    chat_completion: Callable[[str], str],
+) -> Snapshot:
+    reply = chat_completion(json.dumps(proposal))
+    with chat_server(lambda path, method: (200, reply)) as base:
+        return realize_generated(snap, OpenAIBackend(base_url=base), _boot(tmp_path))
+
+
+def test_realize_novel_admits_an_authored_novel_class(
+    tmp_path: Path, chat_server: _ChatServer, chat_completion: Callable[[str], str]
+) -> None:
+    snap = _admit("db", "sql_injection", generate="novel", context="single")
+    out = _realize_novel(
+        snap, _novel_like_wildcard(snap.graph), tmp_path, chat_server, chat_completion
+    )
+    assert out.lineage["generated_class"] == "like_wildcard"
+    vuln = out.graph.by_kind("vulnerability")[0]
+    assert vuln.attrs["kind"] == "like_wildcard"
+    assert vuln.attrs.get("realized_handler")
+    assert out.snapshot_id == out.graph.content_hash()
+
+
+def test_realize_novel_rejects_a_flag_hardcoding_handler(
+    tmp_path: Path, chat_server: _ChatServer, chat_completion: Callable[[str], str]
+) -> None:
+    snap = _admit("db", "sql_injection", generate="novel", context="single")
+    flag = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    out = _realize_novel(
+        snap, _novel_hardcoded(snap.graph, flag), tmp_path, chat_server, chat_completion
+    )
+    assert "generated_class" not in out.lineage  # caught by re-seed integrity
+    assert out.graph.by_kind("vulnerability")[0].attrs["kind"] == "sql_injection"
+
+
+def test_realize_novel_rejects_a_non_leaking_handler(
+    tmp_path: Path, chat_server: _ChatServer, chat_completion: Callable[[str], str]
+) -> None:
+    snap = _admit("db", "sql_injection", generate="novel", context="single")
+    out = _realize_novel(
+        snap, _novel_inert(snap.graph), tmp_path, chat_server, chat_completion
+    )
+    assert (
+        "generated_class" not in out.lineage
+    )  # exploit never leaks -> first gate fails
+    assert out.graph.by_kind("vulnerability")[0].attrs["kind"] == "sql_injection"
+
+
+def test_realize_novel_skips_an_incomplete_proposal(
+    tmp_path: Path, chat_server: _ChatServer, chat_completion: Callable[[str], str]
+) -> None:
+    snap = _admit("db", "sql_injection", generate="novel", context="single")
+    partial = {"kind": "x", "recipe": "y", "handler": "z", "exploit": "e"}  # no benign
+    out = _realize_novel(snap, partial, tmp_path, chat_server, chat_completion)
+    assert "generated_class" not in out.lineage
+    assert out.graph.by_kind("vulnerability")[0].attrs["kind"] == "sql_injection"
+
+
+def test_wrap_payload_requires_a_target_param(tmp_path: Path) -> None:
+    snap = _admit("db", "sql_injection", context="single")
+    del _vuln_of_kind(snap.graph, "sql_injection").attrs["params"]["target_param"]
+    with pytest.raises(PackError, match="no target_param"):
+        wrap_payload(snap.graph, "sql_injection", "x")
+
+
+def test_wrap_payload_delivers_raw_when_marked(tmp_path: Path) -> None:
+    snap = _admit("db", "sql_injection", context="single")
+    _vuln_of_kind(snap.graph, "sql_injection").attrs["params"]["delivery"] = "raw"
+    # raw delivery sends the value as the query verbatim, not url-encoded under a param
+    req = wrap_payload(snap.graph, "sql_injection", "a=1&b=2")
+    assert "a=1&b=2" in req.path + (req.body or "")
+
+
+def test_wrap_payload_requires_params_mapping(tmp_path: Path) -> None:
+    snap = _admit("db", "sql_injection", context="single")
+    _vuln_of_kind(snap.graph, "sql_injection").attrs["params"] = []
+    with pytest.raises(PackError, match="no params mapping"):
+        wrap_payload(snap.graph, "sql_injection", "x")
+
+
+def test_realize_novel_requires_a_single_vuln_skeleton(tmp_path: Path) -> None:
+    snap = admit(
+        WebappPack(),
+        manifest={
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "seed": 7,
+            "loot": {"db": 1, "file": 0},
+            "vuln": {"pin": [{"kind": "sql_injection"}, {"kind": "idor"}]},
+            "generate": "novel",
+        },
+        max_repairs=3,
+    )
+    assert isinstance(snap, Snapshot), snap
+    backend = OpenAIBackend(base_url="http://127.0.0.1:1/v1")
+    with pytest.raises(PackError, match="single-vuln"):
+        realize_generated(snap, backend, _boot(tmp_path))
+
+
+def test_novel_class_request_requires_params_mapping() -> None:
+    snap = _admit("db", "sql_injection", generate="novel", context="single")
+    _vuln_of_kind(snap.graph, "sql_injection").attrs["params"] = []
+    with pytest.raises(PackError, match="no params mapping"):
+        novel_class_request(snap.graph)
 
 
 @pytest.mark.skipif(
