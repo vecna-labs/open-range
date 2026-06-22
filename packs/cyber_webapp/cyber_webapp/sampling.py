@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import posixpath
 import random
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any
 
 from graphschema import Edge, Node, Role, Visibility, WorldGraph
@@ -277,9 +277,6 @@ _RECON_PATHS: tuple[str, ...] = (
 
 
 def _is_networked(graph: WorldGraph) -> bool:
-    # Networked = the flag is reachable only by pivoting: an SSRF on a PUBLIC service
-    # reaches an internal service that holds the flag. A vuln co-located with the flag
-    # on one service is not networked -- it stays single-container.
     public_services = {
         n.id for n in graph.by_kind("service") if n.attrs.get("exposure") == "public"
     }
@@ -734,6 +731,14 @@ def _sample_endpoints(
     return endpoints
 
 
+def _burn_retired_account_rng(rng: random.Random) -> None:
+    # Load-bearing despite the discarded draws: it replays the rng the retired NPC
+    # accounts once consumed, so dropping them left every world's id unchanged.
+    # Deleting this reshuffles the whole stream -- a deliberate reset, not a cleanup.
+    for _ in range(rng.randint(1, 3)):
+        _b62(rng, 16)
+
+
 def _public_url(service: Mapping[str, str], path: str) -> str:
     # Public-exposure services serve their endpoints at the root path;
     # anything else is reachable only at ``/svc/<name><path>``. The
@@ -741,16 +746,6 @@ def _public_url(service: Mapping[str, str], path: str) -> str:
     if service.get("exposure") == "public":
         return path
     return f"/svc/{service['name']}{path}"
-
-
-def _burn_retired_account_rng(rng: random.Random) -> None:
-    # These NPC account/credential nodes were dead -- no handler, solver, verifier,
-    # or template ever read them (#298). The cleanup is behaviorally inert, so the rng
-    # draws they consumed (a 1-3 account count, then a 16-char secret each) stay here
-    # as a no-op: every world keeps the same vulns, chain, and flag -- only its
-    # content-hash id moves, since the removed nodes were hashed.
-    for _ in range(rng.randint(1, 3)):
-        _b62(rng, 16)
 
 
 def _sample_vulnerabilities(
@@ -766,15 +761,8 @@ def _sample_vulnerabilities(
     # ``oracle_service_id``, so the flag is reachable by construction. The
     # rest are decoys drawn from the weighted pool.
     count = _sample_int(rng, prior, "vuln_count")
-    # ``vuln.pin`` (manifest) requests an EXACT kind list (one each); absent, the kinds
-    # are drawn from the weighted pool. Internal-only kinds (a metadata leak that serves
-    # the flag on a plain GET) are never placed by general sampling — on a reachable
-    # endpoint they leak the flag with no exploit. They enter a world only via
-    # ``_networkize_ssrf``, on an unreachable internal endpoint an SSRF must pivot to.
     vuln_pin = [str(k) for k in (prior.topology.get("vuln_pin") or [])]
-    pool = vuln_pin or [
-        k for k in _weighted_pool(prior, "vuln_kinds") if k not in _INTERNAL_ONLY_KINDS
-    ]
+    pool = vuln_pin or _weighted_pool(prior, "vuln_kinds", exclude=_INTERNAL_ONLY_KINDS)
     if not pool:
         return
 
@@ -807,8 +795,6 @@ def _sample_vulnerabilities(
         rng, oracle_shapes, pool, oracle_endpoints, graph, db_backed_services
     )
 
-    # With a pin, place EXACTLY the listed kinds: the flag-reaching oracle first (if one
-    # of the pinned kinds qualifies), then the rest in order. count == len(pin).
     pin_seq: list[str] | None = None
     if vuln_pin:
         rest = list(vuln_pin)
@@ -1338,7 +1324,6 @@ def _lateralize(
     # (web -> api -> auth -> db) rather than hopping random hosts.
     tier = {"web": 1, "api": 2, "auth": 3, "db": 4}
     others.sort(key=lambda n: (tier.get(str(n.attrs.get("kind")), 2), n.id))
-    # `chain.depth` (manifest) pins the range; absent, sample 1..min(MAX, hosts).
     pinned_depth = prior.topology.get("chain_depth") if prior is not None else None
     ceiling = min(_MAX_CHAIN_DEPTH, len(others))
     if isinstance(pinned_depth, Mapping):
@@ -1540,7 +1525,7 @@ def _weighted_pool(
     prior: PackPrior | None,
     key: str,
     *,
-    exclude: tuple[str, ...] = (),
+    exclude: Collection[str] = (),
 ) -> list[str]:
     weights = _prior_weights(prior, key)
     if weights is None:

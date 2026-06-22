@@ -81,8 +81,6 @@ def reseed_chain(snapshot: Snapshot, rng: random.Random) -> Snapshot:
             subst[str(node.attrs["value_ref"])] = _b62(rng, 24)
 
     def _sub(value: object) -> object:
-        # Flag/token values only ever live as flat string params/fields, never nested
-        # in a list or dict, so a shallow substitution rewrites every copy.
         return subst.get(value, value) if isinstance(value, str) else value
 
     clone = WorldGraph(ontology=graph.ontology, meta=dict(graph.meta))

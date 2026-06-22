@@ -33,14 +33,13 @@ _APPEND_HOP_RELEVANCE = 0.9
 
 _GATE_PATH = "/internal/vault"
 _TOKEN_PARAMS: tuple[str, ...] = ("token", "api_key", "auth", "session", "key")
-# Internal-only kinds are graph-synthesized (the credential-reuse chain) or owned
-# by the recon_disclosure knob: a soften/diversify/harden move on one is always
-# rejected by admission, so exclude them up front instead of wasting the budget.
-
-# In a networked world the SSRF is the one public foothold; softening or swapping it
-# away strips the only entry, so the result is unsolvable (rejected at admission). It
-# stays softenable in a single-service world, where it is an ordinary co-located vuln.
 _FOOTHOLD_KIND = "ssrf"
+
+
+def _protected_kinds(graph: WorldGraph) -> frozenset[str]:
+    if _is_networked(graph):
+        return _INTERNAL_ONLY_KINDS | {_FOOTHOLD_KIND}
+    return _INTERNAL_ONLY_KINDS
 
 
 def coerce_string_list(value: object) -> list[str]:
@@ -71,9 +70,7 @@ def available_mutations(
         _harden_add_absent_mutations(graph, family_id, vulns_by_kind),
     )
 
-    protected = _INTERNAL_ONLY_KINDS | (
-        {_FOOTHOLD_KIND} if _is_networked(graph) else frozenset()
-    )
+    protected = _protected_kinds(graph)
     for kind, node_ids in vulns_by_kind.items():
         if kind in protected:
             continue
@@ -217,7 +214,7 @@ def _diversify_swap_kind_mutations(
     if not vulns_by_kind:
         return []
     networked = _is_networked(graph)
-    protected = _INTERNAL_ONLY_KINDS | ({_FOOTHOLD_KIND} if networked else frozenset())
+    protected = _protected_kinds(graph)
     existing_kinds_by_target = _existing_kinds_by_target(graph)
     mutations: list[Mutation] = []
     for kind in sorted(vulns_by_kind):

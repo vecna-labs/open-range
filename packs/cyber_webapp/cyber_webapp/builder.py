@@ -38,8 +38,7 @@ _GENERATE_MODES = (False, "vuln", "service", "world")
 
 
 def _as_int(value: object, ctx: str) -> int:
-    # bool is an int subclass; reject it so loot:{db: True} is a clear error.
-    if isinstance(value, bool) or not isinstance(value, int):
+    if type(value) is not int:
         raise PackError(f"{ctx} must be an integer, got {value!r}")
     return value
 
@@ -95,10 +94,6 @@ class WebappBuilder(ProceduralBuilder):
 
     def sample(self, rng: random.Random, manifest: Manifest) -> BuildResult:
         prior = self._effective_prior(manifest)
-        # `generate` is the open end of the dial: false (default) keeps the world
-        # purely procedural; "vuln"/"service"/"world" route the frozen procedural
-        # snapshot through host-side generate-verify-freeze. Validated + recorded here;
-        # with no LLM backend wired, admission returns the procedural world unchanged.
         generate = manifest.get("generate", False)
         if generate not in _GENERATE_MODES:
             raise PackError(
@@ -117,14 +112,11 @@ class WebappBuilder(ProceduralBuilder):
                 "prior_source": prior.source,
                 "manifest_keys": sorted(manifest.keys()),
                 "generate": generate,
-                # The #322 solve-path-cost metric, recorded so the pool / dashboard /
-                # lineage can read a world's difficulty without re-deriving it.
                 "world_difficulty": float(world_difficulty(graph)),
             },
         )
 
     def _effective_prior(self, manifest: Manifest) -> PackPrior:
-        # A knob absent = auto (the RNG samples it); present = merged onto the prior.
         base = self.prior if self.prior is not None else default_prior()
         for old, hint in _RENAMED_KEYS.items():
             if old in manifest:
@@ -150,8 +142,9 @@ class WebappBuilder(ProceduralBuilder):
             raise PackError("recon applies only to topology 'company' or 'chain'")
         if chain is not None and not lateral:
             raise PackError("chain applies only to topology 'chain'")
-        if not company and all(x is None for x in (scale, vuln, loot, chain, recon)):
-            return base  # fully-auto flat world: the base prior, untouched
+        no_knobs = all(x is None for x in (scale, vuln, loot, chain, recon))
+        if not company and no_knobs:
+            return base
 
         topology = dict(base.topology)
         count_ranges = dict(topology.get("count_ranges") or {})
@@ -163,6 +156,8 @@ class WebappBuilder(ProceduralBuilder):
                 topology["lateral"] = True
             count_ranges.setdefault("service_count", {"min": 6, "max": 8})
             count_ranges.setdefault("vuln_count", {"min": 3, "max": 6})
+            kind_weights["loot_shapes"] = {"db": 1, "file": 0}
+            kind_weights["vuln_kinds"] = {"ssrf": 1, "path_traversal": 3, "xxe": 2}
         if recon is not None:
             if recon not in ("full", "none"):
                 raise PackError(f"recon must be 'full' or 'none', got {recon!r}")
@@ -198,13 +193,6 @@ class WebappBuilder(ProceduralBuilder):
                 **_DEFAULT_LOOT_WEIGHTS,
                 **{str(k): _as_int(v, f"loot[{k!r}]") for k, v in loot.items()},
             }
-        if company:
-            # The networked SSRF pivot to a db-backed internal flag IS the preset's
-            # shape, not a tunable weight: force it last so nothing yields a
-            # non-networked or unsolvable company world. ssrf wins the oracle slot;
-            # the file-read decoys are noise.
-            kind_weights["loot_shapes"] = {"db": 1, "file": 0}
-            kind_weights["vuln_kinds"] = {"ssrf": 1, "path_traversal": 3, "xxe": 2}
         if count_ranges:
             topology["count_ranges"] = count_ranges
         if kind_weights:
