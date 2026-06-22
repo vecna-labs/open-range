@@ -26,8 +26,8 @@ _SQLI = {
     "runtime": {"tick": {"mode": "off"}},
     "npc": [],
     "seed": 7,
-    "vuln_kinds": {"sql_injection": 1},
-    "loot_shapes": {"db": 1, "file": 0},
+    "vuln": {"pin": [{"kind": "sql_injection"}]},
+    "loot": {"db": 1, "file": 0},
 }
 
 _LATERAL = {
@@ -35,7 +35,7 @@ _LATERAL = {
     "runtime": {"tick": {"mode": "off"}},
     "npc": [],
     "seed": 3,
-    "lateral_movement": True,
+    "topology": "chain",
 }
 
 

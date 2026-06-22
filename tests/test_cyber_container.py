@@ -51,8 +51,8 @@ def _admit_cmdi() -> Snapshot:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 7,
-            "loot_shapes": {"file": 1, "db": 0},
-            "vuln_kinds": {"command_injection": 1},
+            "loot": {"file": 1, "db": 0},
+            "vuln": {"pin": [{"kind": "command_injection"}]},
         },
         max_repairs=3,
     )
@@ -134,8 +134,8 @@ def _admit_sqli() -> Snapshot:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 7,
-            "loot_shapes": {"db": 1, "file": 0},
-            "vuln_kinds": {"sql_injection": 1},
+            "loot": {"db": 1, "file": 0},
+            "vuln": {"pin": [{"kind": "sql_injection"}]},
         },
         max_repairs=3,
     )
@@ -457,8 +457,8 @@ def _admit_path_traversal() -> Snapshot:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 7,
-            "loot_shapes": {"file": 1, "db": 0},
-            "vuln_kinds": {"path_traversal": 1},
+            "loot": {"file": 1, "db": 0},
+            "vuln": {"pin": [{"kind": "path_traversal"}]},
         },
         max_repairs=3,
     )

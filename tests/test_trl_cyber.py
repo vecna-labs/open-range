@@ -78,8 +78,8 @@ _MANIFEST = {
     # These tests exploit SQL injection specifically, so pin the response-leak
     # (db) loot shape and the sql_injection oracle rather than depend on the
     # default shape/class mix.
-    "loot_shapes": {"db": 1, "file": 0},
-    "vuln_kinds": {"sql_injection": 1},
+    "loot": {"db": 1, "file": 0},
+    "vuln": {"pin": [{"kind": "sql_injection"}]},
 }
 
 EnvMaker = Callable[[], EpisodeEnv]

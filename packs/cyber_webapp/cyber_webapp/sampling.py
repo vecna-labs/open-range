@@ -577,7 +577,7 @@ def sample_graph(
         oracle_shapes=_ORACLE_SHAPES_FOR_LOOT[loot_shape],
     )
     if _is_lateral(prior):
-        _lateralize(graph, rng)
+        _lateralize(graph, rng, prior)
     else:
         _networkize_ssrf(graph)
     if company and _recon_disclosure(prior) != "none":
@@ -766,11 +766,13 @@ def _sample_vulnerabilities(
     # ``oracle_service_id``, so the flag is reachable by construction. The
     # rest are decoys drawn from the weighted pool.
     count = _sample_int(rng, prior, "vuln_count")
-    # Internal-only kinds (a metadata leak that serves the flag on a plain GET) are
-    # never placed by general sampling — on a reachable endpoint they leak the flag
-    # with no exploit. They enter a world only via ``_networkize_ssrf``, on an
-    # unreachable internal endpoint that an SSRF must pivot to.
-    pool = [
+    # ``vuln.pin`` (manifest) requests an EXACT kind list (one each); absent, the kinds
+    # are drawn from the weighted pool. Internal-only kinds (a metadata leak that serves
+    # the flag on a plain GET) are never placed by general sampling — on a reachable
+    # endpoint they leak the flag with no exploit. They enter a world only via
+    # ``_networkize_ssrf``, on an unreachable internal endpoint an SSRF must pivot to.
+    vuln_pin = [str(k) for k in (prior.topology.get("vuln_pin") or [])]
+    pool = vuln_pin or [
         k for k in _weighted_pool(prior, "vuln_kinds") if k not in _INTERNAL_ONLY_KINDS
     ]
     if not pool:
@@ -805,6 +807,17 @@ def _sample_vulnerabilities(
         rng, oracle_shapes, pool, oracle_endpoints, graph, db_backed_services
     )
 
+    # With a pin, place EXACTLY the listed kinds: the flag-reaching oracle first (if one
+    # of the pinned kinds qualifies), then the rest in order. count == len(pin).
+    pin_seq: list[str] | None = None
+    if vuln_pin:
+        rest = list(vuln_pin)
+        if oracle is not None and oracle[0] in rest:
+            rest.remove(oracle[0])
+            pin_seq = [oracle[0], *rest]
+        else:
+            pin_seq = list(vuln_pin)
+
     placed_pairs: set[tuple[str, str]] = set()
     placed_vulns: list[Node] = []
     bound_endpoints: set[str] = set()
@@ -813,7 +826,7 @@ def _sample_vulnerabilities(
         if i == 0 and oracle is not None:
             kind, target_node = oracle
         else:
-            kind = rng.choice(pool)
+            kind = pin_seq[i] if pin_seq is not None else rng.choice(pool)
             if kind not in VULN_CATALOG:
                 continue
             target_kinds = VULN_CATALOG[kind].target_kinds
@@ -1259,7 +1272,9 @@ def _flag_record_id(graph: WorldGraph) -> str | None:
     )
 
 
-def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
+def _lateralize(
+    graph: WorldGraph, rng: random.Random, prior: PackPrior | None = None
+) -> None:
     # Compose a credential-reuse chain of sampled depth — the lateral-movement
     # primitive. Re-home the SSRF into PROXY mode (the agent drives the pivot), then
     # chain internal hosts: an entry host leaks a db credential, each next host is gated
@@ -1323,7 +1338,15 @@ def _lateralize(graph: WorldGraph, rng: random.Random) -> None:
     # (web -> api -> auth -> db) rather than hopping random hosts.
     tier = {"web": 1, "api": 2, "auth": 3, "db": 4}
     others.sort(key=lambda n: (tier.get(str(n.attrs.get("kind")), 2), n.id))
-    depth = rng.randint(1, min(_MAX_CHAIN_DEPTH, len(others)))
+    # `chain.depth` (manifest) pins the range; absent, sample 1..min(MAX, hosts).
+    pinned_depth = prior.topology.get("chain_depth") if prior is not None else None
+    ceiling = min(_MAX_CHAIN_DEPTH, len(others))
+    if isinstance(pinned_depth, Mapping):
+        lo = max(1, min(int(pinned_depth["min"]), ceiling))
+        hi = max(lo, min(int(pinned_depth["max"]), ceiling))
+        depth = rng.randint(lo, hi)
+    else:
+        depth = rng.randint(1, ceiling)
     entry = others[0]
     gated_hosts = [*others[1:depth], graph.nodes[flag_service_id]]
     creds = [_b62(rng, 24) for _ in range(depth)]

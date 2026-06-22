@@ -31,7 +31,7 @@ def _manifest(seed: int = 3) -> dict[str, object]:
         "runtime": {"tick": {"mode": "off"}},
         "npc": [],
         "seed": seed,
-        "lateral_movement": True,
+        "topology": "chain",
     }
 
 

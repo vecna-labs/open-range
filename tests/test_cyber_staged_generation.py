@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from cyber_webapp import WebappPack
+from cyber_webapp import WebappBuilder, WebappPack
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.consequence import LeakVerdict, detect_leak, guarded_values
 from cyber_webapp.reference_solver import (
@@ -38,7 +38,7 @@ from cyber_webapp.reference_solver import (
 from cyber_webapp.verify import perform
 from cyber_webapp.vulnerabilities import CATALOG
 from graphschema import Node, WorldGraph
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import PackError, Snapshot
 
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
@@ -50,7 +50,7 @@ def _manifest(loot: str, seed: int = 7, **extra: object) -> dict[str, object]:
         "runtime": {"tick": {"mode": "off"}},
         "npc": [],
         "seed": seed,
-        "loot_shapes": {loot: 1, "db" if loot == "file" else "file": 0},
+        "loot": {loot: 1, "db" if loot == "file" else "file": 0},
         **extra,
     }
 
@@ -105,8 +105,15 @@ def test_file_loot_keeps_flag_out_of_db_and_secrets() -> None:
     assert flag not in seed["secrets"].values()
 
 
-def test_manifest_knobs_ignore_non_mapping_values() -> None:
-    # A bad loot_shapes / vuln_kinds value is dropped, not crashed on.
+def test_a_malformed_loot_knob_is_rejected() -> None:
+    with pytest.raises(PackError):
+        WebappBuilder(None)._effective_prior(
+            {"pack": {"id": "webapp"}, "npc": [], "loot": "not-a-mapping"}
+        )
+
+
+def test_degenerate_loot_weights_fall_back_to_db() -> None:
+    # All-zero weights leave an empty pool, which resolves to db.
     snap = admit(
         WebappPack(),
         manifest={
@@ -114,30 +121,12 @@ def test_manifest_knobs_ignore_non_mapping_values() -> None:
             "seed": 7,
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
-            "loot_shapes": "not-a-mapping",
-            "vuln_kinds": 5,
+            "loot": {"db": 0, "file": 0},
         },
         max_repairs=3,
     )
     assert isinstance(snap, Snapshot), snap
-
-
-def test_degenerate_loot_weights_fall_back_to_db() -> None:
-    # All-zero and non-int weights leave an empty pool, which resolves to db.
-    for weights in ({"db": 0, "file": 0}, {"db": "lots", "file": True}):
-        snap = admit(
-            WebappPack(),
-            manifest={
-                "pack": {"id": "webapp"},
-                "seed": 7,
-                "runtime": {"tick": {"mode": "off"}},
-                "npc": [],
-                "loot_shapes": weights,
-            },
-            max_repairs=3,
-        )
-        assert isinstance(snap, Snapshot), snap
-        assert _store_kinds(snap.graph) == {"kv"}
+    assert _store_kinds(snap.graph) == {"kv"}
 
 
 def test_file_loot_is_deterministic() -> None:
@@ -198,7 +187,7 @@ def test_fanout_class_episode_recovers_flag(
 ) -> None:
     # Each class is forced as the oracle and solved by its own
     # context-appropriate exploit; the recovered body must contain the flag.
-    snap = _admit(loot, vuln_kinds={kind: 1})
+    snap = _admit(loot, vuln={"pin": [{"kind": kind}]})
     expected = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
@@ -235,7 +224,7 @@ def test_consequence_verifier_detects_real_flag_leak(
 ) -> None:
     # The independent leak oracle must fire on every faithful exploit and name the
     # flag as the leaked node — agreeing with the planted-flag verdict it generalizes.
-    snap = _admit(loot, vuln_kinds={kind: 1})
+    snap = _admit(loot, vuln={"pin": [{"kind": kind}]})
     body = _exploit_response_body(snap, kind, tmp_path)
     verdict = detect_leak(snap.graph, [body])
     assert verdict.occurred
@@ -244,7 +233,7 @@ def test_consequence_verifier_detects_real_flag_leak(
 
 def test_consequence_verifier_silent_on_benign_response(tmp_path: Path) -> None:
     # A benign request leaks nothing, so the oracle stays silent: no false positive.
-    snap = _admit("file", vuln_kinds={"command_injection": 1})
+    snap = _admit("file", vuln={"pin": [{"kind": "command_injection"}]})
     vuln = next(
         n
         for n in snap.graph.by_kind("vulnerability")
@@ -265,7 +254,7 @@ def test_consequence_verifier_silent_on_benign_response(tmp_path: Path) -> None:
 def test_consequence_verifier_silent_on_neutralized_attack(tmp_path: Path) -> None:
     # An attack-shaped attempt the sampled context neutralizes recovers no flag,
     # so the oracle must stay silent on it too — not only on benign traffic.
-    snap = _admit("file", vuln_kinds={"command_injection": 1})
+    snap = _admit("file", vuln={"pin": [{"kind": "command_injection"}]})
     vuln = next(
         n
         for n in snap.graph.by_kind("vulnerability")
@@ -423,7 +412,7 @@ def test_rendered_app_scanner_agrees_with_consequence() -> None:
     import base64
     import urllib.parse as _url
 
-    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    snap = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})
     graph = snap.graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
     namespace: dict[str, Any] = {}
@@ -447,7 +436,7 @@ def test_rendered_app_scanner_agrees_with_consequence() -> None:
 def test_seed_carries_guarded_map_from_graph() -> None:
     # Convergence: the values the runtime watches for are exactly what the offline
     # verifier reads — both come from consequence.guarded_values(graph).
-    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    snap = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})
     seed = json.loads(_realize_graph(snap.graph)["seed.json"])
     assert seed["guarded"] == dict(guarded_values(snap.graph))
     assert seed["guarded"]["secret_flag"] == str(
@@ -458,7 +447,7 @@ def test_seed_carries_guarded_map_from_graph() -> None:
 def test_rendered_app_scans_leaks_to_node_ids_not_values() -> None:
     # Integrity: the app records WHICH guarded node leaked (its id), never the secret
     # value — so the request log can't be grepped for the flag.
-    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    snap = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})
     namespace: dict[str, Any] = {}
     exec(compile(_realize_graph(snap.graph)["app.py"], "<app>", "exec"), namespace)
     scan = namespace["_scan_leaks"]
@@ -472,7 +461,7 @@ def test_rendered_app_scans_leaks_to_node_ids_not_values() -> None:
 def test_live_episode_records_the_flag_leak_as_a_node_id(tmp_path: Path) -> None:
     # End to end: a real exploit makes the flag cross the response boundary, and the
     # runtime records that leak on final_state by node id.
-    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    snap = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     svc = EpisodeService(WebappPack(), tmp_path)
     try:
@@ -489,7 +478,7 @@ def test_live_episode_records_the_flag_leak_as_a_node_id(tmp_path: Path) -> None
 def test_check_success_surfaces_leak_without_changing_the_reward_rungs() -> None:
     from cyber_webapp.families.pentest import WebappPentest
 
-    snap = _admit("db", vuln_kinds={"sql_injection": 1})
+    snap = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     fam = WebappPentest()
     base = {"requests_made": ["/svc"], "flag_from_response": "wrong"}
@@ -513,7 +502,7 @@ def test_flag_path_is_discoverable_via_config(tmp_path: Path) -> None:
     # path discloses the flag path, which the same vuln then reads.
     import re
 
-    snap = _admit("file", vuln_kinds={"path_traversal": 1})
+    snap = _admit("file", vuln={"pin": [{"kind": "path_traversal"}]})
     url_path, param, flag_path = _path_traversal_target(snap.graph)
     pt_vuln = next(
         n
@@ -564,7 +553,7 @@ def test_path_traversal_feedback_distinguishes_attempt_from_benign(
 ) -> None:
     # A neutralized traversal attempt returns 403 (right vuln class, wrong
     # technique); a benign filename miss returns 404. Neither recovers the flag.
-    snap = _admit("file", vuln_kinds={"path_traversal": 1})
+    snap = _admit("file", vuln={"pin": [{"kind": "path_traversal"}]})
     url_path, param, _ = _path_traversal_target(snap.graph)
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
 
@@ -593,7 +582,7 @@ def test_command_injection_feedback_distinguishes_attempt_from_benign(
 ) -> None:
     # A neutralized injection attempt (metacharacters the sampled context strips)
     # returns a response distinct from the benign diagnostic echo, no flag leak.
-    snap = _admit("file", vuln_kinds={"command_injection": 1})
+    snap = _admit("file", vuln={"pin": [{"kind": "command_injection"}]})
     vuln = next(
         n
         for n in snap.graph.by_kind("vulnerability")
@@ -727,7 +716,7 @@ def test_easy_tier_instruction_names_class_and_gives_recipe() -> None:
     db = {"sql_injection", "ssrf", "broken_authz", "idor", "weak_credentials"}
     for kind, label in expect.items():
         loot = "db" if kind in db else "file"
-        snap = _admit(loot, vuln_kinds={kind: 1}, difficulty="easy")
+        snap = _admit(loot, vuln={"pin": [{"kind": kind}]}, instruction_tier="easy")
         task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
         assert task.meta.get("tier") == "easy"
         assert label in task.instruction.lower(), (kind, task.instruction)
@@ -735,12 +724,14 @@ def test_easy_tier_instruction_names_class_and_gives_recipe() -> None:
 
 
 def test_standard_tier_stays_thin_and_aliases_map_to_easy() -> None:
-    std = _admit("db", vuln_kinds={"sql_injection": 1})  # default = standard
+    std = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})  # default = standard
     task = next(t for t in std.tasks if t.meta.get("family") == "webapp.pentest")
     assert task.meta.get("tier") == "standard"
     assert "guided" not in task.instruction.lower()
     for alias in ("guided", "bootstrap", "tutorial"):
-        snap = _admit("db", vuln_kinds={"sql_injection": 1}, difficulty=alias)
+        snap = _admit(
+            "db", vuln={"pin": [{"kind": "sql_injection"}]}, instruction_tier=alias
+        )
         t = next(x for x in snap.tasks if x.meta.get("family") == "webapp.pentest")
         assert t.meta.get("tier") == "easy"
 

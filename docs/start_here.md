@@ -36,7 +36,7 @@ The manifest describes what the user wants built.
 
 It is a free-form `Mapping[str, Any]`. The only key core ever reads is `pack.id` (the registered pack to admit against). Every other key is the pack's contract; core never branches on a manifest field.
 
-See [manifest.md](manifest.md) for the cross-pack invariant and a pointer to the `webapp` pack's keys.
+See [manifest.md](manifest.md) for the cross-pack invariant and how pack-specific keys work.
 
 ### Pack
 

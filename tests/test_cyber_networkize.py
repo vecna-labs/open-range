@@ -8,9 +8,11 @@ pivot to make, and is a no-op otherwise.
 
 from __future__ import annotations
 
+import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.sampling import _flag_service_id, _networkize_ssrf
 from graphschema import Edge, Node, Visibility, WorldGraph
+from openrange_pack_sdk import PackError
 
 
 def _graph() -> WorldGraph:
@@ -49,17 +51,22 @@ def test_flag_service_id_none_without_flag() -> None:
 
 
 def test_metadata_kind_is_filtered_from_general_sampling() -> None:
-    # Requested as a decoy, the internal-only metadata leak is dropped from the pool:
-    # on a reachable endpoint it would hand over the flag with no exploit. In a non-SSRF
-    # world (no networkize) that means zero metadata vulns, despite the request.
+    # The internal-only metadata leak is never planted by general sampling: on a
+    # reachable endpoint it would hand over the flag with no exploit. The new contract
+    # rejects it at the manifest boundary -- you can't even request it as a decoy -- and
+    # a flat world built without it carries zero metadata vulns.
+    with pytest.raises(PackError):
+        WebappPack().make_builder(None).build(
+            {"seed": 1, "vuln": {"weights": {"metadata_credential_leak": 3}}}
+        )
     graph = (
         WebappPack()
         .make_builder(None)
         .build(
             {
                 "seed": 1,
-                "vuln_kinds": {"sql_injection": 3, "metadata_credential_leak": 3},
-                "vuln_count": 4,
+                "vuln": {"weights": {"sql_injection": 3}},
+                "scale": {"vuln_count": {"min": 4, "max": 4}},
             }
         )
         .graph

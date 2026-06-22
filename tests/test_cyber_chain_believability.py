@@ -30,7 +30,7 @@ def _admit(seed: int) -> Snapshot:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": seed,
-            "lateral_movement": True,
+            "topology": "chain",
         },
         max_repairs=3,
     )

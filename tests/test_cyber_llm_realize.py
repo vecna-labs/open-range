@@ -57,8 +57,8 @@ def _admit(loot: str, kind: str, **pin: object) -> Snapshot:
             "runtime": {"tick": {"mode": "off"}},
             "npc": [],
             "seed": 7,
-            "loot_shapes": {loot: 1, "db" if loot == "file" else "file": 0},
-            "vuln_kinds": {kind: 1},
+            "loot": {loot: 1, "db" if loot == "file" else "file": 0},
+            "vuln": {"pin": [{"kind": kind}]},
         },
         max_repairs=3,
     )

@@ -35,8 +35,8 @@ _CMDI_MANIFEST = {
     "runtime": {"tick": {"mode": "off"}},
     "npc": [],
     "seed": 7,
-    "loot_shapes": {"file": 1, "db": 0},
-    "vuln_kinds": {"command_injection": 1},
+    "loot": {"file": 1, "db": 0},
+    "vuln": {"pin": [{"kind": "command_injection"}]},
 }
 
 # An SSRF on a public endpoint pivoting to an internal service -> _is_networked is True,
@@ -48,7 +48,7 @@ _SSRF_MANIFEST = {
     "runtime": {"tick": {"mode": "off"}},
     "npc": [],
     "seed": 3,
-    "vuln_kinds": {"ssrf": 1},
+    "vuln": {"pin": [{"kind": "ssrf"}]},
 }
 
 

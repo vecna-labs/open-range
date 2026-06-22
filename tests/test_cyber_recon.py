@@ -29,11 +29,11 @@ _COMPANY = {
     "runtime": {"tick": {"mode": "off"}},
     "npc": [],
     "seed": 3,
-    "company": True,
+    "topology": "company",
 }
-_NONE = {**_COMPANY, "recon_disclosure": "none"}
-_LATERAL_NONE = {**_COMPANY, "lateral_movement": True, "recon_disclosure": "none"}
-_DEFAULT = {k: v for k, v in _COMPANY.items() if k != "company"}
+_NONE = {**_COMPANY, "recon": "none"}
+_LATERAL_NONE = {**_COMPANY, "topology": "chain", "recon": "none"}
+_DEFAULT = {k: v for k, v in _COMPANY.items() if k != "topology"}
 
 
 def _admit(manifest: dict[str, object]) -> Snapshot:
@@ -89,7 +89,7 @@ def _services(graph: WorldGraph) -> list[dict[str, object]]:
 @pytest.mark.parametrize("level", ["full", "none"])
 @pytest.mark.parametrize("seed", [1, 2, 3, 5, 7])
 def test_every_recon_level_admits(level: str, seed: int) -> None:
-    _admit({**_COMPANY, "seed": seed, "recon_disclosure": level})
+    _admit({**_COMPANY, "seed": seed, "recon": level})
 
 
 @pytest.mark.parametrize("manifest", [_NONE, _LATERAL_NONE])
@@ -194,7 +194,7 @@ def test_evolution_leaves_the_credential_chain_intact_but_still_deepens_it() -> 
         "credential_gated_flag",
     }
     chain_kinds = {"credential_leak", "credential_gated_relay", "credential_gated_flag"}
-    graph = _admit({**_COMPANY, "lateral_movement": True}).graph
+    graph = _admit({**_COMPANY, "topology": "chain"}).graph
     moves = available_mutations(graph, "webapp.pentest", [])
 
     for move in moves:
