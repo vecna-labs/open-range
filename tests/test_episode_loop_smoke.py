@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.families.build.reference import api_list_reference
 from openrange_pack_sdk import Snapshot, TaskSpec
@@ -82,3 +83,34 @@ def test_pentest_episode_then_evolve(tmp_path: Path) -> None:
     assert evolved is not None
     assert evolved.snapshot_id != snap.snapshot_id
     assert any(event.phase == "evolve" for event in evolved.history)
+
+
+def test_stop_episode_survives_a_grader_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A pack ``collect()``/``check_success`` that raises must not leak the runtime
+    or abort the batch: ``stop_episode`` records a failed grade and de-registers the
+    episode instead of propagating."""
+    snap = _admit()
+    task = _only_task(snap, "webapp.build")
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        handle = svc.start_episode(snap, task.id)
+        (svc.solver_root(handle) / "result.json").write_text(
+            json.dumps({"endpoint_impl": api_list_reference(1)}), encoding="utf-8"
+        )
+
+        def boom(self: object, running: object, final_state: object) -> None:
+            raise RuntimeError("grader boom")
+
+        monkeypatch.setattr(EpisodeService, "_check_success", boom)
+        report = svc.stop_episode(handle)  # must not raise
+        assert report.passed is False
+        assert "grader boom" in report.episode_result.reason
+        assert handle.id not in svc._episodes  # torn down, not wedged
+        # Idempotent: a second stop returns the cached failed report.
+        assert svc.stop_episode(handle).episode_result.reason == (
+            report.episode_result.reason
+        )
+    finally:
+        svc.close()
