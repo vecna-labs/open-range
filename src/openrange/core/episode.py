@@ -337,7 +337,7 @@ class EpisodeService:
         self._stop_auto_tick(running)
         self._stop_npcs(running)
         self._drain_events(running)
-        final_state: Mapping[str, Any]
+        final_state: Mapping[str, Any] = MappingProxyType({})
         try:
             final_state = MappingProxyType(dict(running.runtime.collect()))
             running.final_state = final_state
@@ -347,7 +347,8 @@ class EpisodeService:
             # (it is still torn down below) nor abort a whole reward batch: surface
             # it as a failed grade plus a system event, the same way a failed
             # runtime.stop() below is recorded rather than allowed to mask the run.
-            final_state = MappingProxyType({})
+            # Keep whatever collect() produced before the failure so the failed grade
+            # still carries diagnostics (stays empty only if collect() itself raised).
             running.final_state = final_state
             episode_result = EpisodeResult(
                 success=False,

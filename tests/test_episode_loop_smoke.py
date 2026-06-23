@@ -107,6 +107,9 @@ def test_stop_episode_survives_a_grader_crash(
         report = svc.stop_episode(handle)  # must not raise
         assert report.passed is False
         assert "grader boom" in report.episode_result.reason
+        # collect() succeeded (only the grader raised), so its state is preserved
+        # in the report for diagnostics rather than discarded.
+        assert report.final_state, "collected state should survive a grader crash"
         assert handle.id not in svc._episodes  # torn down, not wedged
         # Idempotent: a second stop returns the cached failed report.
         assert svc.stop_episode(handle).episode_result.reason == (
