@@ -34,9 +34,8 @@ from cyber_webapp.reference_solver import (
 )
 from cyber_webapp.verify import perform, verdict_authored
 
-# A host callback that boots an episode for ``(snapshot, task_id)`` and yields its
-# base_url for the duration of the context, owning the episode lifecycle. Booting an
-# episode needs the runtime (a host concern), so realization takes it injected.
+# Injected by the host: booting an episode needs the runtime, which the pack must not
+# import, so it takes the boot as a callback yielding the world's base_url.
 BootEpisode = Callable[[Snapshot, str], AbstractContextManager[str]]
 
 # The classes a prompt exists for. command_injection is the first realized class (#266);

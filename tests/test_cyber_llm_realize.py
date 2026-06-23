@@ -586,9 +586,8 @@ def test_gate_admits_faithful_rejects_trivial(
 
 
 def _boot(base_dir: Path) -> BootEpisode:
-    # The host side of realization: boot an episode for (snapshot, task) and yield its
-    # base_url, owning the episode lifecycle. A fresh service per call rebuilds the
-    # runtime, so a handler injected onto the graph between probes is exercised.
+    # A fresh service per call rebuilds the runtime, so a handler injected onto the
+    # graph between probes is exercised.
     counter = iter(range(1000))
 
     @contextlib.contextmanager
@@ -675,8 +674,6 @@ def test_realize_generated_vuln_bakes_a_realized_handler(
     chat_server: Callable[..., contextlib.AbstractContextManager[str]],
     chat_completion: Callable[[str], str],
 ) -> None:
-    # The whole dial end to end: a generate:"vuln" world routes through a real backend
-    # over HTTP, the gate admits the (graph-matching) handler, and the world re-freezes.
     snap = _admit("db", "sql_injection", generate="vuln", context="single")
     before = snap.graph.content_hash()
     reply = chat_completion(json.dumps({"handler": _faithful_sqli(snap.graph)}))
