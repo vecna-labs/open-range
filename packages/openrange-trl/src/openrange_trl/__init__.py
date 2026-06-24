@@ -85,6 +85,11 @@ def _tool_method(env: EpisodeEnv, fn: Tool) -> Any:
     ns: dict[str, Any] = {"_fn": fn}
     decl, forward = "", ""
     for p in params:
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD, p.POSITIONAL_ONLY):
+            raise ValueError(
+                f"tool {fn.__name__!r} parameter {p.name!r} must be "
+                f"positional-or-keyword or keyword-only, not {p.kind.name}"
+            )
         ns[f"_ann_{p.name}"] = p.annotation if p.annotation is not p.empty else str
         decl += f", {p.name}: _ann_{p.name}"
         if p.default is not p.empty:
@@ -140,6 +145,11 @@ class EpisodeEnv:
         for fn in tools:
             if fn.__name__ in self._tools:
                 raise ValueError(f"duplicate tool name: {fn.__name__!r}")
+            # setattr below would silently shadow a same-named method/attribute.
+            if hasattr(self, fn.__name__):
+                raise ValueError(
+                    f"tool name {fn.__name__!r} collides with an EpisodeEnv member"
+                )
             self._tools[fn.__name__] = fn
             setattr(self, fn.__name__, _tool_method(self, fn))
 
@@ -193,7 +203,8 @@ class EpisodeEnv:
         return "Environment ready. Use the available tools."
 
     def _invoke(self, fn: Tool, **kwargs: Any) -> str:
-        out = self._safe(lambda: fn(self._require_surface(), **kwargs))
+        # str(): a non-str return must not crash the slice/_record below.
+        out = self._safe(lambda: str(fn(self._require_surface(), **kwargs)))
         self._record(fn.__name__, kwargs, out)
         return out[-_OUTPUT_TAIL:]
 
