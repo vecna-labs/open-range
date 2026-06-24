@@ -14,7 +14,7 @@ from typing import Protocol, cast
 
 from openrange_pack_sdk import LLMResult, OpenRangeError, Snapshot, TaskSpec
 
-from examples._briefing import agent_briefing
+from openrange.agent import agent_briefing
 from openrange.core.episode import AgentTurn
 from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig
 

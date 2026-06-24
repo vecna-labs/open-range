@@ -52,20 +52,19 @@ from openrange.core.episode import (
     EpisodeReport,
     EpisodeService,
 )
+from openrange.core.sandbox import (
+    SANDBOX_LABEL,
+    AgentSandbox,
+    SandboxError,
+    track_resource,
+    untrack_resource,
+)
 from openrange.pool import PromptRow, RoundReports, RunRound
 from openrange.training import (
     Reward,
     Trajectory,
     episode_reward,
     episode_trajectory,
-)
-from openrange_trl.sandbox import (
-    SANDBOX_LABEL,
-    AgentSandbox,
-    CommandResult,
-    SandboxError,
-    track_resource,
-    untrack_resource,
 )
 
 Tool = Callable[..., str]
@@ -570,11 +569,7 @@ def _report_scalar(report: EpisodeReportLike) -> float:
 
 
 __all__ = [
-    "SANDBOX_LABEL",
-    "AgentSandbox",
-    "CommandResult",
     "EpisodeEnv",
-    "SandboxError",
     "Tool",
     "build_grpo_dataset",
     "env_trajectory",
