@@ -1047,3 +1047,49 @@ button { font: inherit; cursor: pointer; }
 .evo-dots { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .evo-dot { width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-1-solid); cursor: pointer; padding: 0; }
 .evo-dot.on { background: var(--accent); border-color: var(--accent); }
+
+.cast-rail {
+  position: absolute;
+  top: 72px;
+  right: 12px;
+  width: 244px;
+  max-height: calc(100% - 132px);
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1-solid);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+.cast-rail-head {
+  padding: 14px 16px 10px 16px;
+  border-bottom: 1px solid var(--line-s);
+}
+.cast-rail-head h2 {
+  margin: 0;
+  font: 700 16px var(--f-display);
+  letter-spacing: -0.012em;
+  color: var(--ink-0);
+}
+.cast-rail-sub {
+  display: block;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+.cast-rail-body {
+  padding: 6px 10px 12px 10px;
+  overflow-y: auto;
+}
+.persona-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 8px;
+}
+.persona-row + .persona-row { border-top: 1px solid var(--line-s); }
+.persona-row .name { font-weight: 600; font-size: 13px; color: var(--ink-0); }
+.persona-row .role { font-family: var(--f-mono); font-size: 11px; color: var(--ink-3); }

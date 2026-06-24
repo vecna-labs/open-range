@@ -161,6 +161,17 @@ class TestRunEpisode:
         with pytest.raises(SolverBoom, match="solver failed"):
             run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
 
+    def test_non_utf8_result_grades_as_empty_not_a_crash(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+
+        def solve(ctx: EpisodeContext) -> None:
+            (ctx.root / "result.json").write_bytes(b'{"endpoint_impl": "\xff\xfe"}')
+
+        ep = run.run_episode(snapshot, solve, task_id=_build_task_id(snapshot))
+        assert ep.success is False  # unreadable result -> empty grade, not an exception
+
     def test_base_url_exposed_on_realized_surface(
         self, snapshot: Snapshot, tmp_path: Path
     ) -> None:

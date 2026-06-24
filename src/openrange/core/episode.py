@@ -337,11 +337,24 @@ class EpisodeService:
         self._stop_auto_tick(running)
         self._stop_npcs(running)
         self._drain_events(running)
-        final_state: Mapping[str, Any] = MappingProxyType(
-            dict(running.runtime.collect()),
-        )
-        running.final_state = final_state
-        episode_result = self._check_success(running, final_state)
+        final_state: Mapping[str, Any] = MappingProxyType({})
+        try:
+            final_state = MappingProxyType(dict(running.runtime.collect()))
+            running.final_state = final_state
+            episode_result = self._check_success(running, final_state)
+        except Exception as exc:  # noqa: BLE001
+            # A grader/collect crash becomes a failed grade, not a propagated error.
+            running.final_state = final_state
+            episode_result = EpisodeResult(
+                success=False,
+                subgoals={},
+                reason=f"grading failed: {exc!r}",
+            )
+            self._record_system(
+                running,
+                {"grade_error": type(exc).__name__},
+                observation={"reason": str(exc)},
+            )
         running.episode_result = episode_result
         running.stopped_at = time.perf_counter()
         if not self._stash_warm(running):

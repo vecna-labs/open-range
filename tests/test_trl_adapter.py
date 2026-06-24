@@ -33,6 +33,7 @@ from swe.instances import load_instance
 from openrange.core.admit import AdmissionFailure, admit
 from openrange.core.curriculum import auto_evolve
 from openrange.core.episode import EpisodeReport, EpisodeService
+from openrange.training import Reward
 
 EnvMaker = Callable[[str], tuple[EpisodeEnv, Snapshot]]
 
@@ -500,6 +501,15 @@ class TestVariancePolicy:
 
     def test_empty_is_none(self) -> None:
         assert reward_variance_policy([]) is None
+
+    def test_keys_on_the_supplied_reward_fn(self) -> None:
+        losing = _report(False, {"a": False, "b": False})
+        winning = _report(True, {"a": True, "b": True})
+        assert reward_variance_policy([losing, winning]) is None
+        collapsed = reward_variance_policy(
+            [losing, winning], reward_fn=lambda _r: Reward(scalar=0.4)
+        )
+        assert collapsed == "soften"
 
     def test_plugs_into_auto_evolve_noop_for_swe(self) -> None:
         # The policy is a CurriculumPolicy; auto_evolve accepts it. SWE opts out

@@ -614,7 +614,7 @@ def test_realize_world_bakes_in_a_faithful_handler(tmp_path: Path) -> None:
     out = realize_world(
         snap, lambda g, _k: _faithful_sqli(g), _episode_runner(snap, tmp_path)
     )
-    assert "sql_injection" in out.lineage["realized_handlers"]
+    assert "sql_injection" in out.lineage["realized"]
     assert out.snapshot_id == out.graph.content_hash()  # re-frozen
     assert out.snapshot_id != before  # the realized handler changed the world
 
@@ -625,7 +625,7 @@ def test_realize_world_falls_back_on_a_trivial_handler(tmp_path: Path) -> None:
     out = realize_world(
         snap, lambda g, _k: _trivial_sqli(g), _episode_runner(snap, tmp_path)
     )
-    assert out.lineage["realized_handlers"] == ()  # rejected
+    assert out.lineage["realized"] == ()  # rejected
     assert out.snapshot_id == before  # template kept -> world unchanged
 
 
@@ -633,7 +633,7 @@ def test_realize_world_skips_an_empty_proposal(tmp_path: Path) -> None:
     snap = _admit("db", "sql_injection", context="single")
     before = snap.graph.content_hash()  # live hash (the pin mutated the graph)
     out = realize_world(snap, lambda _g, _k: "", _episode_runner(snap, tmp_path))
-    assert out.lineage["realized_handlers"] == ()
+    assert out.lineage["realized"] == ()
     assert out.snapshot_id == before
 
 
@@ -646,7 +646,7 @@ def test_realize_world_skips_an_unparseable_handler(tmp_path: Path) -> None:
         lambda _g, _k: "def handle(query, state):\n    return )(",
         _episode_runner(snap, tmp_path),
     )
-    assert out.lineage["realized_handlers"] == ()
+    assert out.lineage["realized"] == ()
     assert out.snapshot_id == before
 
 
@@ -681,7 +681,7 @@ def test_realize_generated_vuln_bakes_a_realized_handler(
         out = realize_generated(
             snap, OpenAICompatibleBackend(base_url=base), _boot(tmp_path)
         )
-    assert "sql_injection" in out.lineage["realized_handlers"]
+    assert "sql_injection" in out.lineage["realized"]
     assert out.snapshot_id == out.graph.content_hash()
     assert out.snapshot_id != before
 
@@ -897,7 +897,7 @@ def test_realize_with_backend_drives_a_live_llm(tmp_path: Path) -> None:
     backend.preflight()
     snap = _admit("db", "sql_injection", context="single")
     out = realize_with_backend(snap, backend, _episode_runner(snap, tmp_path))
-    assert "sql_injection" in out.lineage["realized_handlers"]
+    assert "sql_injection" in out.lineage["realized"]
     assert out.snapshot_id == out.graph.content_hash()
 
 

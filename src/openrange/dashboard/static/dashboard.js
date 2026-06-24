@@ -1885,7 +1885,14 @@ function renderWorldPanel() {
   if (rail.worldSubtab === "services") return renderWorldServices(root);
   if (rail.worldSubtab === "topology") return renderWorldTopology(root);
   if (rail.worldSubtab === "network") return renderWorldNetwork(root);
-  if (rail.worldSubtab === "cast") return renderWorldCast(root);
+  return renderWorldServices(root);
+}
+
+function renderCastRail() {
+  const root = document.getElementById("cast-content");
+  if (root) renderWorldCast(root);
+  const sub = document.getElementById("cast-rail-sub");
+  if (sub) sub.textContent = plural((model.topology.green_personas || []).length, "persona");
 }
 
 function renderWorldServices(root) {
@@ -2562,6 +2569,7 @@ function render() {
   }
   // Re-render the active rail panel so it reflects fresh data.
   if (rail.open) renderRailPanel(rail.active);
+  renderCastRail();
   renderEvoView();
   // Surface a build banner when a new lineage node lands.
   checkForNewLineage();
@@ -2772,6 +2780,7 @@ function wireUI() {
   wireUI();
   await safeRefreshRuns();
   await safeRefresh();
+  showRailTab("world");
   setInterval(safeRefreshRuns, 5000);
   setInterval(() => {
     if (runState.activeRun) safeRefresh();

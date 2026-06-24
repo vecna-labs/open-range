@@ -204,3 +204,52 @@ def test_duplicate_tool_names_are_rejected(make_env: Any) -> None:
 
     with pytest.raises(ValueError, match="duplicate tool"):
         make_env([probe, probe])
+
+
+def test_tool_name_colliding_with_a_member_is_rejected(make_env: Any) -> None:
+    def reset(surface: Mapping[str, Any]) -> str:
+        """Shadows the reset() method."""
+        return ""
+
+    def reward(surface: Mapping[str, Any]) -> str:
+        """Shadows the reward attribute."""
+        return ""
+
+    with pytest.raises(ValueError, match="collides"):
+        make_env([reset])
+    with pytest.raises(ValueError, match="collides"):
+        make_env([reward])
+
+
+def test_a_tool_with_an_unsupported_parameter_kind_is_rejected(make_env: Any) -> None:
+    def splat(surface: Mapping[str, Any], *args: str) -> str:
+        """*args has no place in a tool schema."""
+        return ""
+
+    with pytest.raises(ValueError, match="positional-or-keyword or keyword-only"):
+        make_env([splat])
+
+
+def test_a_non_str_tool_return_is_coerced(make_env: Any, snapshot: Snapshot) -> None:
+    def forgot(surface: Mapping[str, Any]) -> None:
+        """A tool that forgets to return."""
+
+    env = make_env([forgot, submit])
+    env.reset(snapshot_id=snapshot.snapshot_id, task_id=_pentest_task(snapshot).id)
+    assert env.forgot() == "None"  # coerced, not a crash
+
+
+def test_a_keyword_only_tool_param_is_allowed(
+    make_env: Any, snapshot: Snapshot
+) -> None:
+    def probe(surface: Mapping[str, Any], *, depth: int = 1) -> str:
+        """Recon to a depth.
+
+        Args:
+            depth: how deep.
+        """
+        return f"depth={depth}"
+
+    env = make_env([probe, submit])
+    env.reset(snapshot_id=snapshot.snapshot_id, task_id=_pentest_task(snapshot).id)
+    assert env.probe(depth=2) == "depth=2"
