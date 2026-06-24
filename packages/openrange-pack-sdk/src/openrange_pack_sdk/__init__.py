@@ -14,6 +14,10 @@ from openrange_pack_sdk._errors import (
     OpenRangeError,
     PackError,
 )
+from openrange_pack_sdk._generate import (
+    WorldAuthor,
+    realize_verified,
+)
 from openrange_pack_sdk._helpers import (
     add_edge,
     add_node,
@@ -99,6 +103,7 @@ __all__ = [
     "TaskFamily",
     "TaskSeed",
     "TaskSpec",
+    "WorldAuthor",
     "add_edge",
     "add_node",
     "edge_id",
@@ -107,6 +112,7 @@ __all__ = [
     "manifest_int",
     "manifest_list",
     "manifest_str",
+    "realize_verified",
     "run_submission",
     "write_tree",
 ]
