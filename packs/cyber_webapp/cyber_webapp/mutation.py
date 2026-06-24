@@ -9,7 +9,6 @@ from collections.abc import Callable, Mapping, Sequence
 from graphschema import Edge, GraphPatch, Node, Visibility, WorldGraph
 from openrange_pack_sdk import EpisodeReportLike, Mutation, Snapshot
 
-from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.sampling import (
     _DB_STORE_KINDS,
     _INTERNAL_ONLY_KINDS,
@@ -20,19 +19,14 @@ from cyber_webapp.sampling import (
 from cyber_webapp.vulnerabilities import BODY_SHAPED_KINDS
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 
-# Keep the import alive even though only the validator reads ONTOLOGY_ID.
-_ = ONTOLOGY_ID
-
-# Floor so a "soften by removing this kind" pick is always available
-# even when the path-hit heuristic detects nothing.
+# Guarantees a remove pick exists even when the path-hit heuristic is silent.
 _REMOVE_RELEVANCE_FLOOR = 0.05
 
 # Fixed mid-value: no agent-data signal exists for a kind that isn't in
 # the world yet.
 _ADD_ABSENT_RELEVANCE = 0.5
 
-# Less drastic than fully removing all instances; rotates which exploit
-# the agent has to learn while holding attack-surface count steady.
+# Below remove relevance: rotating the exploit is a softer step than dropping the kind.
 _SWAP_PRESENT_RELEVANCE = 0.2
 
 # Above the decoy harden (0.5) so deepening the chain is the preferred frontier
@@ -95,9 +89,9 @@ def available_mutations(
             ),
         )
 
-    # The only soften that can rescue an agent stuck ON the chain (decoy-removal can't).
-    # Its relevance is the agent's engagement with the whole chain, so it outranks
-    # decoy-removal only when the chain is where the agent is spending requests.
+    # Rescues an agent stuck ON the chain, which decoy-removal can't. Relevance is the
+    # agent's whole-chain engagement, so it outranks decoy-removal only when the chain
+    # is the focus.
     chain_vuln_ids = [
         v.id
         for v in graph.by_kind("vulnerability")
@@ -258,8 +252,6 @@ def _diversify_swap_kind_mutations(
         target = graph.nodes.get(target_id)
         if target is None:
             continue
-        # On the oracle path the swap is constrained to shapes that still read the flag;
-        # an off-path decoy can become any class.
         on_oracle_path = target_id in oracle_endpoints
         alt_kind = _pick_alt_kind(
             current_kind=kind,
@@ -283,9 +275,9 @@ def _diversify_swap_kind_mutations(
             visibility=Visibility.HIDDEN,
         )
         updated_nodes = [updated_node]
-        # Match the sampler: a body-shaped class is POST, others GET, so a diversified
-        # vuln looks sampled. Flip only when this is the endpoint's sole vuln, so a
-        # co-located decoy's delivery is left untouched.
+        # Mirror the sampler's POST-for-body/GET-else rule so a swapped vuln looks
+        # sampled — but only when it's the endpoint's sole vuln, so a co-located decoy's
+        # method is left alone.
         method = "POST" if alt_kind in BODY_SHAPED_KINDS else "GET"
         sole_vuln = sum(1 for _, t in existing_kinds_by_target if t == target.id) == 1
         if sole_vuln and str(target.attrs.get("method", "GET")) != method:
@@ -416,9 +408,8 @@ def _soften_remove_hop_mutation(
     family_id: str,
     relevance: float,
 ) -> Mutation | None:
-    # Inverse of ``_harden_append_hop``: collapse the last credential hop into the flag
-    # server. Re-homing the flag store onto the relay's host keeps the flag owned under
-    # the per-service scoped seed CONTAINER uses. Consumes no rng, so the result is
+    # Re-home the flag store onto the relay's host so the flag stays owned under the
+    # per-service scoped seed CONTAINER uses. Consumes no rng, so the result is
     # deterministic.
     terminal = _credential_gated_flag(graph)
     if terminal is None:
@@ -762,8 +753,8 @@ def _pick_alt_kind(
 
 
 def _oracle_allowed_shapes(graph: WorldGraph) -> frozenset[str] | None:
-    # Exploit shapes that can still read the flag from where it is stored (see
-    # ``_ORACLE_SHAPES_FOR_LOOT``). ``None`` when there is no flag to constrain.
+    # Shapes that can read the flag from its store; see ``_ORACLE_SHAPES_FOR_LOOT``.
+    # ``None`` when there is no flag to constrain.
     flag = next(
         (n for n in graph.by_kind("secret") if n.attrs.get("kind") == "flag"), None
     )
@@ -794,9 +785,8 @@ def _stable_index(seed: str, modulo: int) -> int:
 
 
 def _default_vuln_params(kind: str, target: Node) -> dict[str, object]:
-    # Reuse the sampler's per-kind builder, seeded deterministically from (kind, target)
-    # rather than a live rng, so ``available_mutations`` stays pure and a
-    # curriculum-introduced vuln draws from the same pools as a sampled one.
+    # Reuse the sampler's builder with a hash-seeded Random (not a live rng) so
+    # ``available_mutations`` stays pure.
     digest = hashlib.sha256(f"{kind}:{target.id}".encode()).digest()
     seed = int.from_bytes(digest[:8], "big")
     return default_vuln_params(kind, target, random.Random(seed))

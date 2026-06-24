@@ -20,11 +20,9 @@ from cyber_webapp.mutation import (
 )
 from cyber_webapp.vulnerabilities import CATALOG
 
-# Default weights for the difficulty model. The chain-hop weight dominates, so a
-# world is ordered first by how many credential hops its solve walks and the rest
-# only break ties; a curriculum re-weights by injecting its own difficulty_fn into
-# the pool rather than editing these. Per-class exploit hardness is not here: it is
-# a property of each vuln kind, on the catalog (Vulnerability.exploit_complexity).
+# A curriculum re-weights by injecting its own difficulty_fn into the pool, not by
+# editing these. Per-class exploit hardness lives on the catalog
+# (Vulnerability.exploit_complexity), not here.
 _W_HOP = 10
 _W_PIVOT = 4
 _W_BOUNDARY = 3
@@ -96,12 +94,11 @@ def world_difficulty(graph: WorldGraph) -> float:
         pivots = len({host for host, _ in walk}) if walk else 1
         boundaries = 1
         blind = 0 if any(v.attrs.get("kind") == _RECON_KIND for v in vulns) else 1
-        # Internal hosts to triage beyond the ones on the credential walk and the target
-        # itself — a wide estate earns difficulty a two-service SSRF does not.
         internal = sum(
             1 for s in graph.by_kind("service") if s.attrs.get("exposure") != "public"
         )
-        fanout = max(0, internal - chain_hops - 1)
+        walk_and_target_hosts = chain_hops + 1
+        fanout = max(0, internal - walk_and_target_hosts)
     else:
         chain_hops = pivots = boundaries = blind = fanout = 0
 

@@ -79,10 +79,8 @@ def build_handlers_and_routes(
         handlers.append(
             {"name": handler_name, "body": body, "docstring": docstring},
         )
-        # Single app: every service shares one server, so internal services are
-        # namespaced by ``/svc/<name>`` (public_url). Per-service: each service is its
-        # own container serving on its own port, so it routes on the bare ``path`` and a
-        # caller reaches it at ``http://<service-name><path>``.
+        # Single app: route on namespaced ``public_url`` (/svc/<name>). Per-service
+        # container: route on bare ``path`` (reached at http://<service-name><path>).
         route_path = path if only_services is not None else public_url
         method = str(endpoint.attrs.get("method", "GET"))
         route = {"path": route_path, "handler": handler_name, "method": method}
@@ -92,9 +90,8 @@ def build_handlers_and_routes(
 
 
 def _render_vuln_body(vuln_node: Node) -> str:
-    # An LLM-realized handler stands in for the template — it has passed the dynamic
-    # admission gate (cyber_webapp.realize_admit) before reaching codegen, so it is
-    # treated like any rendered handler from here on.
+    # A realized_handler was already admitted upstream (realize_admit), so use it
+    # verbatim like any rendered template.
     realized = vuln_node.attrs.get("realized_handler")
     if isinstance(realized, str) and realized.strip():
         return _extract_handle_body(realized)

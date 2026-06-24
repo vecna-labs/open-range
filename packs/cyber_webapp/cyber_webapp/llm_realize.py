@@ -444,7 +444,6 @@ def realization_request(graph: WorldGraph, kind: str) -> LLMRequest:
 
 
 def handler_from_result(parsed_json: Mapping[str, object] | None) -> str:
-    """The handler source out of an LLM result's parsed JSON, or '' if absent."""
     handler = (parsed_json or {}).get("handler")
     return handler if isinstance(handler, str) else ""
 
@@ -496,7 +495,6 @@ def exploit_request(graph: WorldGraph, kind: str) -> LLMRequest:
 
 
 def exploit_from_result(parsed_json: Mapping[str, object] | None) -> tuple[str, str]:
-    """The (exploit, benign) payloads from an LLM result's parsed JSON, or ('', '')."""
     data = parsed_json or {}
     exploit, benign = data.get("exploit"), data.get("benign")
     return (
@@ -547,7 +545,7 @@ def realize_world(
         if verdict.accepted:
             realized.append(kind)
         else:
-            del vuln.attrs["realized_handler"]  # rejected — keep the template
+            del vuln.attrs["realized_handler"]
     return Snapshot(
         snapshot_id=graph.content_hash(),
         ontology_id=snapshot.ontology_id,
@@ -698,7 +696,6 @@ def novel_class_request(graph: WorldGraph) -> LLMRequest:
 
 
 def novel_from_result(parsed_json: Mapping[str, object] | None) -> NovelClass | None:
-    """A `NovelClass` from a result's parsed JSON, or None if a field is missing."""
     data = parsed_json or {}
     fields = {
         k: data.get(k) for k in ("kind", "recipe", "handler", "exploit", "benign")
@@ -749,7 +746,7 @@ def realize_novel(
             lineage={**dict(snapshot.lineage), "generated_class": proposal.kind},
             history=snapshot.history,
         )
-    graph.nodes[original.id] = original  # rejected -> restore the procedural skeleton
+    graph.nodes[original.id] = original
     return snapshot
 
 
@@ -778,7 +775,7 @@ def _novel_target(graph: WorldGraph) -> Node:
 def _novel_admits(
     snapshot: Snapshot, task_id: str, proposal: NovelClass, boot: BootEpisode
 ) -> bool:
-    # Lazy import dodges a sampling import cycle (like _annotate_exploit_recipes).
+    # Function-local: importing reseed/sampling at module scope is a cycle.
     from cyber_webapp.reseed import replant_flag
     from cyber_webapp.sampling import generate_flag
 
@@ -865,7 +862,6 @@ def service_realization_request(graph: WorldGraph, service_id: str) -> LLMReques
 def service_handlers_from_result(
     parsed_json: Mapping[str, object] | None,
 ) -> dict[str, str]:
-    """The {path: handler source} map out of an LLM result, dropping non-str entries."""
     endpoints = (parsed_json or {}).get("endpoints")
     if not isinstance(endpoints, Mapping):
         return {}
@@ -902,7 +898,7 @@ def realize_service_surface(
         if ep is None or not src.strip():
             continue
         try:
-            _extract_handle_body(src)  # must be valid Python with a def handle
+            _extract_handle_body(src)
         except PackError:
             continue
         ep.attrs["realized_handler"] = src

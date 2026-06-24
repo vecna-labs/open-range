@@ -65,16 +65,14 @@ def _report_passed(report: EpisodeReportLike) -> bool:
         return False
 
 
-# Returns True iff the candidate genuinely matches its claimed ``direction``.
-# The caller supplies one (typically realizing the world and checking a
-# verifier) to drop a mutation whose static label is wrong — e.g. one tagged
-# "harden" that actually makes the task easier. Without a gate, the family's
-# label is trusted.
+# True iff the candidate genuinely matches its claimed ``direction``; the caller
+# realizes + verifies, dropping a mutation whose static label lies. Absent a gate,
+# the family's label is trusted.
 EvolutionGate = Callable[["Snapshot", Mutation], bool]
 
-# Returns True iff a candidate world is kept at pool-seeding time — the pack verdict an
-# :data:`EvolutionGate` runs, minus the mutation. Drops a structurally admitted but
-# live-unsolvable world before it can seed the pool as a permanent zero-reward task.
+# True iff a candidate world is kept at pool-seeding time: the :data:`EvolutionGate`
+# verdict minus the mutation. Drops a live-unsolvable world before it seeds a
+# permanent zero-reward task.
 SeedGate = Callable[["Snapshot"], bool]
 
 
@@ -242,8 +240,8 @@ def _grow_snapshot(
         return None
     grown = _with_grow_lineage(result, snapshot, direction, stepped)
     if grown.snapshot_id == snapshot.snapshot_id:
-        # Builder ignored the bump and rebuilt the same world; refuse it so the
-        # lineage stays a chain rather than looping back on itself.
+        # Same world back means the builder ignored the bump; refuse it so lineage
+        # stays a chain.
         return None
     return grown
 
@@ -323,9 +321,8 @@ def _evolve_snapshot(
         dict(manifest_in) if isinstance(manifest_in, dict) else {}
     )
 
-    # Regenerate tasks from the evolved graph — a mutation that changes a
-    # task's shape (e.g. build's difficulty level) has to reach the agent's
-    # instruction, not just the graph.
+    # Regenerate tasks so a shape-changing mutation reaches the agent's instruction,
+    # not just the graph.
     regenerated: list[TaskSpec] = []
     for family in pack.task_families():
         regenerated.extend(family.generate(evolved_graph, base_manifest, None))
@@ -347,8 +344,8 @@ def _evolve_snapshot(
         ),
         refs=(snapshot.snapshot_id,),
     )
-    # Carry accumulated grow difficulty across patch steps so a later grow
-    # resumes from it rather than from baseline.
+    # Carry grow difficulty across patch steps so a later grow resumes from it,
+    # not baseline.
     carried = snapshot.lineage.get("curriculum_difficulty")
     lineage = dict(result.lineage)
     if isinstance(carried, dict):

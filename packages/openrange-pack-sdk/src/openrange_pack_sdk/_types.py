@@ -34,10 +34,7 @@ class Backing(StrEnum):
     HYBRID = "hybrid"
 
 
-# Capability rank for escalation: CONTAINER (a real fs/shell/network) is the most
-# capable realized substrate, PROCESS the least. SIMULATOR/HYBRID are reserved values no
-# pack realizes yet, ranked below CONTAINER so a sandbox escalation still resolves to
-# CONTAINER, not an unrealized backing.
+# SIMULATOR/HYBRID are reserved (unimplemented); they rank below the real CONTAINER.
 _BACKING_RANK: dict[Backing, int] = {
     Backing.PROCESS: 0,
     Backing.SIMULATOR: 1,

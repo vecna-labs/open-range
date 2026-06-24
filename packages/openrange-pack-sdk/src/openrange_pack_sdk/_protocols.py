@@ -384,10 +384,9 @@ class AgentNPC(NPC):
         self._cooldown = 0
         self._agent: Any = None
         self._broken = False
-        # Preflight at construction (when we have a backend already) so a
-        # missing SDK / binary surfaces as soon as the manifest resolves,
-        # not on the first acting tick. Runtime-supplied backends preflight
-        # in ``start()`` instead.
+        # Preflight now (a backend is already supplied) so a missing SDK/binary surfaces
+        # at manifest-resolve, not on the first acting tick. Runtime-supplied backends
+        # preflight in ``start()``.
         if agent_backend is not None:
             try:
                 agent_backend.preflight()
@@ -446,9 +445,8 @@ class AgentNPC(NPC):
             return
         self._broken = True
         self.broken_reason = reason
-        # exc_info=exc (not =True) — for broken-by-config cases there is no
-        # in-flight exception, and ``=True`` would grab whatever
-        # ``sys.exc_info`` returns from an unrelated traceback.
+        # exc_info=exc, not =True: broken-by-config has no in-flight exception, and
+        # ``=True`` would log an unrelated traceback.
         _log.warning(
             "NPC %s is permanently broken (%s); the rest of the episode runs "
             "without it",

@@ -32,8 +32,7 @@ RunRound = Callable[[list[PromptRow], list[Snapshot]], RoundReports]
 GateFactory = Callable[[Snapshot], EvolutionGate]
 
 _STALENESS_STEP = 0.1
-# Idle members cap here and fresh children seat here, so a new frontier world is
-# sampled next round instead of evicted before it ever runs.
+# Fresh children seat at this cap so a frontier world survives a round before eviction.
 _MAX_PRIORITY = 2.0
 
 
@@ -128,8 +127,8 @@ def _member_priority(reports: Sequence[EpisodeReport]) -> float:
         if subgoals:
             achieved = sum(1 for hit in subgoals.values() if hit)
             gaps.append(1.0 - achieved / len(subgoals))
-    # Regret keeps a world the agent is stuck partway through at the frontier, where
-    # learnability alone (low reward spread) would retire it.
+    # Regret keeps a partly-solved world at the frontier that low reward-spread alone
+    # would retire.
     regret = sum(gaps) / len(gaps) if gaps else 0.0
     return learnability + regret
 
@@ -264,8 +263,6 @@ class WorldPool:
         max_repairs: int,
     ) -> tuple[set[tuple[str, str]], bool, float | None]:
         grown: set[tuple[str, str]] = set()
-        # Frontier cap: a member was due to advance but no admissible harder world
-        # passed the gate.
         capped = False
         gains: list[float] = []
         ran = sorted(
@@ -282,6 +279,7 @@ class WorldPool:
                 max_repairs=max_repairs,
             )
             if child is None:
+                # No admissible harder world passed the gate: the frontier is capped.
                 capped = True
                 continue
             difficulty = self._difficulty_fn(child)
@@ -317,10 +315,9 @@ class RoundMetrics:
     train_solve_rate: float
     held_out_solve_rate: float | None = None
     frontier_capped: bool = False
-    # The most any evolved child advanced the difficulty this round (signed; ``None`` if
-    # nothing evolved). Distinct from ``frontier_capped``: a curriculum can keep
-    # returning admissible children (capped False) while this hovers near zero — the
-    # worlds are creeping on cosmetic decoys, not advancing the real frontier.
+    # Most any child advanced difficulty this round (signed; None if nothing evolved).
+    # Unlike frontier_capped, near-zero here means children admit but only creep on
+    # cosmetic decoys.
     difficulty_gain: float | None = None
 
     @property

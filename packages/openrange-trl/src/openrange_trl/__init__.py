@@ -150,8 +150,7 @@ class EpisodeEnv:
             setattr(self, fn.__name__, _tool_method(self, fn))
 
     if TYPE_CHECKING:
-        # Tools are attached dynamically, so the type checker can't see them;
-        # declare any such access as a string-returning tool call.
+        # Tools are attached dynamically; type them as string-returning tool calls.
         def __getattr__(self, name: str) -> Callable[..., str]: ...
 
     def reset(
@@ -242,20 +241,18 @@ class EpisodeEnv:
             target_url = f"http://target:{surface.get('target_port', '8000')}"
             self._sandbox = AgentSandbox({"base_url": target_url}, network=network)
             self._sandbox.start()
-            # The agent reaches the target by its in-network alias, not the host URL.
             return {**surface, "base_url": target_url, "run": self._sandbox.run}
         self._sandbox = AgentSandbox({"solver_root": surface.get("solver_root")})
         self._sandbox.start()
         return {**surface, "run": self._sandbox.run}
 
     def _teardown_sandbox(self) -> None:
-        # Disposable: the sandbox dies with the episode so no state leaks to the next.
         if self._sandbox is not None:
             self._sandbox.close()
             self._sandbox = None
         if self._network is not None:
-            # Detach the world (best-effort: stop_episode usually removed it already),
-            # then drop the network so nothing dangles even on an un-finalized re-reset.
+            # Best-effort detach (stop_episode usually did it) so the network can be
+            # dropped even on an un-finalized re-reset.
             if self._target_container is not None:
                 _run_docker(
                     "network",
@@ -271,8 +268,7 @@ class EpisodeEnv:
             self._target_container = None
 
     def _finalize(self) -> None:
-        # Idempotent: the reward func may read env.reward more than once, and
-        # stop_episode caches, so a double read is safe.
+        # Idempotent: the reward func may read env.reward more than once.
         if self._finalized or self._handle is None:
             self._finalized = True
             return
@@ -338,9 +334,9 @@ def _resolve_round_backing(
         effective = resolve_backing(
             effective, pack.minimum_backing(snapshot.graph), sandbox=sandbox
         )
-    # An escalation INTO CONTAINER without Docker would train on an emulation the agent
-    # can't exploit, so fail loud. An explicitly-requested CONTAINER (``effective is
-    # backing``) is the caller's choice — leave that for the realizer to surface.
+    # Auto-escalation into CONTAINER without Docker would train on an emulation the
+    # agent can't exploit, so fail loud. An explicit CONTAINER (``effective is
+    # backing``) is the caller's own choice.
     if effective is Backing.CONTAINER and effective is not backing and not docker_ok:
         raise RuntimeError(
             "this round needs the CONTAINER backing (a file-read/code-exec world or a "
@@ -535,8 +531,8 @@ def make_grpo_rounds(
             if update:
                 holder["model"], holder["peft"] = trainer.model, None
         finally:
-            # TRL builds one env per batch slot and never closes them; without this
-            # each round's CONTAINER worlds (a per-service container stack) leak.
+            # TRL never closes the envs it built; without this each round's CONTAINER
+            # worlds leak.
             for env in getattr(trainer, "environments", None) or []:
                 env.close()
         return collector
@@ -610,8 +606,7 @@ def reward_variance_policy(
 def _report_scalar(report: EpisodeReportLike) -> float:
     if isinstance(report, EpisodeReport):
         return episode_reward(report).scalar
-    # CurriculumPolicy takes the EpisodeReportLike Protocol, but the trainer only
-    # emits concrete EpisodeReport; this contract fallback needs a fake to hit.
+    # Trainer emits only concrete EpisodeReport; this Protocol fallback needs a fake.
     return 1.0 if report.passed else 0.0  # pragma: no cover
 
 
