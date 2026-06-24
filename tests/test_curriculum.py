@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -57,6 +58,7 @@ from openrange.core.curriculum import (
     auto_evolve,
     direction_from_reports,
 )
+from openrange.core.episode import EpisodeService
 
 
 @dataclass(frozen=True)
@@ -743,6 +745,51 @@ def test_auto_evolve_hardens_a_build_episode() -> None:
     assert isinstance(out, Snapshot)
     build = [t for t in out.tasks if t.meta.get("family") == "webapp.build"]
     assert build and build[0].meta["build_level"] == 2
+
+
+def test_stop_episode_records_a_failed_grade_when_the_grader_raises(
+    tmp_path: Path,
+) -> None:
+    collected = {"diag": "value"}
+
+    class _CollectingHandle(_NoopHandle):
+        def collect(self) -> Mapping[str, Any]:
+            return collected
+
+    class _RaisingFamily(_StubFamily):
+        def check_success(
+            self, graph: WorldGraph, task: TaskSpec, final_state: Mapping[str, Any]
+        ) -> EpisodeResult:
+            del graph, task, final_state
+            raise RuntimeError("grader boom")
+
+    class _RaisingPack(_StubPack):
+        def realize(self, graph: WorldGraph, backing: Backing) -> RuntimeHandle:
+            del graph, backing
+            return _CollectingHandle()
+
+    pack = _RaisingPack(_RaisingFamily())
+    pack.attach_build_result(
+        BuildResult(graph=_build_stub_world(), tasks=[_stub_task()])
+    )
+    snap = admit(pack, manifest={"seed": 0, "runtime": {"tick": {"mode": "off"}}})
+    assert isinstance(snap, Snapshot), snap
+
+    svc = EpisodeService(pack, tmp_path)
+    try:
+        handle = svc.start_episode(snap, snap.tasks[0].id)
+        report = svc.stop_episode(handle)
+        assert report.passed is False
+        assert "grader boom" in report.episode_result.reason
+        # collect() ran before the grader raised, so its state survives in the report.
+        assert dict(report.final_state) == collected
+        assert handle.id not in svc._episodes
+        assert (
+            svc.stop_episode(handle).episode_result.reason
+            == report.episode_result.reason
+        )
+    finally:
+        svc.close()
 
 
 # Lint shim — keep imported types from being flagged as unused. They

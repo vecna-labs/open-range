@@ -343,12 +343,7 @@ class EpisodeService:
             running.final_state = final_state
             episode_result = self._check_success(running, final_state)
         except Exception as exc:  # noqa: BLE001
-            # A pack's collect()/check_success raising must not leak the runtime
-            # (it is still torn down below) nor abort a whole reward batch: surface
-            # it as a failed grade plus a system event, the same way a failed
-            # runtime.stop() below is recorded rather than allowed to mask the run.
-            # Keep whatever collect() produced before the failure so the failed grade
-            # still carries diagnostics (stays empty only if collect() itself raised).
+            # A grader/collect crash becomes a failed grade, not a propagated error.
             running.final_state = final_state
             episode_result = EpisodeResult(
                 success=False,

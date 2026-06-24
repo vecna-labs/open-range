@@ -503,16 +503,13 @@ class TestVariancePolicy:
         assert reward_variance_policy([]) is None
 
     def test_keys_on_the_supplied_reward_fn(self) -> None:
-        # episode_reward sees a live spread (0.0 vs 1.0) -> hold; a custom reward
-        # that flattens both to a constant collapses it -> the policy must act on
-        # the SAME reward the trainer optimizes, not the default episode_reward.
         losing = _report(False, {"a": False, "b": False})
         winning = _report(True, {"a": True, "b": True})
         assert reward_variance_policy([losing, winning]) is None
-        flat = reward_variance_policy(
+        collapsed = reward_variance_policy(
             [losing, winning], reward_fn=lambda _r: Reward(scalar=0.4)
         )
-        assert flat == "soften"
+        assert collapsed == "soften"
 
     def test_plugs_into_auto_evolve_noop_for_swe(self) -> None:
         # The policy is a CurriculumPolicy; auto_evolve accepts it. SWE opts out
