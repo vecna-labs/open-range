@@ -16,6 +16,7 @@ members = [
     "openrange",
     "openrange-cyber-webapp",
     "openrange-pack-sdk",
+    "openrange-rllm",
     "openrange-swe",
     "openrange-trading",
     "openrange-trl",
@@ -1310,6 +1311,7 @@ dev = [
     { name = "coverage" },
     { name = "mypy" },
     { name = "openrange-cyber-webapp" },
+    { name = "openrange-rllm" },
     { name = "openrange-swe" },
     { name = "openrange-trading" },
     { name = "openrange-trl" },
@@ -1334,6 +1336,7 @@ dev = [
     { name = "coverage", extras = ["toml"], specifier = ">=7.13" },
     { name = "mypy", specifier = ">=1.19" },
     { name = "openrange-cyber-webapp", editable = "packs/cyber_webapp" },
+    { name = "openrange-rllm", editable = "packages/openrange-rllm" },
     { name = "openrange-swe", editable = "packs/swe" },
     { name = "openrange-trading", editable = "packs/trading" },
     { name = "openrange-trl", editable = "packages/openrange-trl" },
@@ -1370,6 +1373,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "graphschema", editable = "packages/graphschema" }]
+
+[[package]]
+name = "openrange-rllm"
+version = "0.1.0"
+source = { editable = "packages/openrange-rllm" }
+dependencies = [
+    { name = "openrange" },
+    { name = "openrange-pack-sdk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "openrange", editable = "." },
+    { name = "openrange-pack-sdk", editable = "packages/openrange-pack-sdk" },
+]
 
 [[package]]
 name = "openrange-swe"
