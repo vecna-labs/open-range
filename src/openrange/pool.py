@@ -18,6 +18,7 @@ from openrange.core.admit import AdmissionFailure, admit
 from openrange.core.curriculum import (
     CurriculumPolicy,
     EvolutionGate,
+    SeedGate,
     auto_evolve,
     direction_from_reports,
 )
@@ -142,6 +143,7 @@ class WorldPool:
         self._difficulty_fn = difficulty_fn
         self._max_size = max_size
         self._mix_floor = mix_floor
+        self._last_difficulty_gain: float | None = None
 
     @classmethod
     def seed(
@@ -154,12 +156,15 @@ class WorldPool:
         family: str | None = None,
         mix_floor: float = 0.3,
         max_repairs: int = 2,
+        seed_gate: SeedGate | None = None,
     ) -> WorldPool:
         members: list[_Member] = []
         for manifest in manifests:
             result = admit(pack, dict(manifest), max_repairs=max_repairs)
             if isinstance(result, AdmissionFailure):
                 continue
+            if seed_gate is not None and not seed_gate(result):
+                continue  # structurally admitted but its reference breach won't leak
             _members_of(result, difficulty_fn(result), family, members)
         return cls(
             members, difficulty_fn=difficulty_fn, max_size=max_size, mix_floor=mix_floor
@@ -221,9 +226,10 @@ class WorldPool:
                 member.priority = _member_priority(ran)
             else:
                 member.priority = min(member.priority + _STALENESS_STEP, _MAX_PRIORITY)
-        grown, capped = self._grow(
+        grown, capped, gain = self._grow(
             reports, pack, policy, gate, gate_factory, evolve_top, max_repairs
         )
+        self._last_difficulty_gain = gain
         self._bound(grown)
         return capped
 
@@ -236,11 +242,17 @@ class WorldPool:
         gate_factory: GateFactory | None,
         evolve_top: int,
         max_repairs: int,
-    ) -> tuple[set[tuple[str, str]], bool]:
+    ) -> tuple[set[tuple[str, str]], bool, float | None]:
         grown: set[tuple[str, str]] = set()
         # Frontier cap: a member was due to advance but no admissible harder world
         # passed the gate.
         capped = False
+        # The most any evolved child advanced the difficulty this round (signed, so a
+        # soften reads negative; ``None`` when nothing evolved). With the default
+        # one-evolution-per-round this is just that child's delta. Near zero while
+        # ``capped`` is still False means the worlds are creeping on cosmetic decoys,
+        # advancing the real frontier — the honest "is the frontier still moving" read.
+        gains: list[float] = []
         ran = sorted(
             (m for m in self._members.values() if reports.get(m.key)),
             key=lambda m: (-m.priority, m.key),
@@ -258,6 +270,7 @@ class WorldPool:
                 capped = True
                 continue
             difficulty = self._difficulty_fn(child)
+            gains.append(difficulty - member.difficulty)
             for task in child.tasks:
                 if str(task.meta.get("family", "")) != member.family:
                     continue
@@ -272,7 +285,7 @@ class WorldPool:
                         priority=_MAX_PRIORITY,
                     )
                     grown.add(key)
-        return grown, capped
+        return grown, capped, (max(gains) if gains else None)
 
     def _bound(self, protected_extra: set[tuple[str, str]]) -> None:
         protected = self._easy_tier() | protected_extra
@@ -289,6 +302,11 @@ class RoundMetrics:
     train_solve_rate: float
     held_out_solve_rate: float | None = None
     frontier_capped: bool = False
+    # The most any evolved child advanced the difficulty this round (signed; ``None`` if
+    # nothing evolved). Distinct from ``frontier_capped``: a curriculum can keep
+    # returning admissible children (capped False) while this hovers near zero — the
+    # worlds are creeping on cosmetic decoys, not advancing the real frontier.
+    difficulty_gain: float | None = None
 
     @property
     def generalization_gap(self) -> float | None:
@@ -315,12 +333,15 @@ class EvalPool:
         difficulty_fn: DifficultyFn,
         family: str | None = None,
         max_repairs: int = 2,
+        seed_gate: SeedGate | None = None,
     ) -> EvalPool:
         members: list[_Member] = []
         for manifest in manifests:
             result = admit(pack, dict(manifest), max_repairs=max_repairs)
             if isinstance(result, AdmissionFailure):
                 continue
+            if seed_gate is not None and not seed_gate(result):
+                continue  # structurally admitted but its reference breach won't leak
             _members_of(result, difficulty_fn(result), family, members)
         return cls(members)
 
@@ -389,6 +410,7 @@ def run_pool_curriculum(
                 train_solve_rate=_mean_pass_rate(reports.values()),
                 held_out_solve_rate=held_out,
                 frontier_capped=capped,
+                difficulty_gain=pool._last_difficulty_gain,
             )
         )
     return metrics

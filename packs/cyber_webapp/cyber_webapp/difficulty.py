@@ -2,10 +2,11 @@
 
 Difficulty is the cost of executing the winning chain, not the size of the attack
 surface. The credential-reuse hop count dominates; the number of internal pivots, the
-dmz->internal crossing, blind recon, and the entry exploit's class are smaller
-corrections; and off-path decoys saturate at a cap so they can never out-rank a real
-hop. Every chain term is gated on a reachable public entry, so a world whose chain no
-longer has a way in scores like the flat world it has become.
+dmz->internal crossing, blind recon, the breadth of internal hosts to triage, and the
+entry exploit's class are smaller corrections; and off-path decoys saturate at a cap so
+they can never out-rank a real hop. Every chain term is gated on a reachable public
+entry, so a world whose chain no longer has a way in scores like the flat world it has
+become.
 """
 
 from __future__ import annotations
@@ -29,9 +30,10 @@ _W_PIVOT = 4
 _W_BOUNDARY = 3
 _W_BLIND = 5
 _W_CLASS = 4
+_W_FANOUT = 1.0
+_FANOUT_CAP = 6.0
 _DECOY_CAP = 3.0
 _DECOY_PER = 0.3
-_BODY_BUMP = 0.15
 
 _RECON_KIND = "config_disclosure"
 _CHAIN_KINDS = ("credential_leak", "credential_gated_relay", "credential_gated_flag")
@@ -75,15 +77,12 @@ def _oracle_vuln(graph: WorldGraph) -> Node | None:
     return min(on_oracle, key=_placement_index) if on_oracle else None
 
 
-def _class_weight(graph: WorldGraph, vuln: Node | None) -> float:
+def _class_weight(vuln: Node | None) -> float:
     if vuln is None:
         return 0.0
     kind = str(vuln.attrs.get("kind", ""))
     spec = CATALOG.get(kind)
-    complexity = spec.exploit_complexity if spec is not None else 0.5
-    endpoint = graph.nodes.get(_affects_target_id(graph, vuln.id) or "")
-    body = endpoint is not None and endpoint.attrs.get("method") == "POST"
-    return complexity + (_BODY_BUMP if body else 0.0)
+    return spec.exploit_complexity if spec is not None else 0.5
 
 
 def world_difficulty(graph: WorldGraph) -> float:
@@ -97,10 +96,19 @@ def world_difficulty(graph: WorldGraph) -> float:
         pivots = len({host for host, _ in walk}) if walk else 1
         boundaries = 1
         blind = 0 if any(v.attrs.get("kind") == _RECON_KIND for v in vulns) else 1
+        # Internal hosts the agent must triage to find the one that leaks, beyond the
+        # ones already on the credential walk and the single target itself. A wide
+        # estate (the company shape) earns it where a two-service SSRF does not, so size
+        # shows
+        # up — but capped below a hop, so it never out-ranks a real chain step.
+        internal = sum(
+            1 for s in graph.by_kind("service") if s.attrs.get("exposure") != "public"
+        )
+        fanout = max(0, internal - chain_hops - 1)
     else:
-        chain_hops = pivots = boundaries = blind = 0
+        chain_hops = pivots = boundaries = blind = fanout = 0
 
-    on_path_class = _class_weight(graph, entry) + _class_weight(graph, oracle)
+    on_path_class = _class_weight(entry) + _class_weight(oracle)
 
     oracle_id = oracle.id if oracle is not None else None
     off_path = sum(
@@ -114,6 +122,7 @@ def world_difficulty(graph: WorldGraph) -> float:
         + _W_PIVOT * pivots
         + _W_BOUNDARY * boundaries
         + _W_BLIND * blind
+        + min(_FANOUT_CAP, _W_FANOUT * fanout)
         + _W_CLASS * on_path_class
         + min(_DECOY_CAP, _DECOY_PER * off_path),
         2,

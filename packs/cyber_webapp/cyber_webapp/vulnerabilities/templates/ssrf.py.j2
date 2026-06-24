@@ -56,7 +56,7 @@ def handle(query, state):
                 return 200, {"Content-Type": "application/json"}, resp.read()
         except Exception as exc:  # the internal host was unreachable
             return 502, {}, ("ssrf fetch failed: " + str(exc)).encode()
-    inner = ROUTES.get("/svc/" + host + (parsed.path or ""))
+    inner = INTERNAL_ROUTES.get("/svc/" + host + (parsed.path or ""))
     if inner is None:
         return _confirm_host(host)
     return inner(parse_qs(parsed.query, keep_blank_values=True), state)

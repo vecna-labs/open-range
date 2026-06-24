@@ -85,7 +85,7 @@ def test_networkize_noop_without_public_service() -> None:
     _ssrf(g)
     _flag_on(g, "svc")
     before = set(g.nodes)
-    _networkize_ssrf(g)
+    _networkize_ssrf(g, "db")
     assert set(g.nodes) == before  # no metadata endpoint/vuln added
 
 
@@ -98,7 +98,7 @@ def test_networkize_noop_when_flag_lives_on_the_public_service() -> None:
     g.add_edge(Edge(id="a", kind="affects", src="ssrf", dst="ep"))
     _flag_on(g, "svc")  # the flag's own service IS the public one — nothing to pivot to
     before = set(g.nodes)
-    _networkize_ssrf(g)
+    _networkize_ssrf(g, "db")
     assert set(g.nodes) == before
 
 
@@ -111,8 +111,29 @@ def test_networkize_noop_when_public_has_no_endpoint() -> None:
     _ssrf(g)
     _flag_on(g, "int")
     before = set(g.nodes)
-    _networkize_ssrf(g)
+    _networkize_ssrf(g, "db")
     assert set(g.nodes) == before
+
+
+def test_networkize_noop_for_file_backed_flag() -> None:
+    # A file-backed flag lives in the file map, not secrets["flag"], which the metadata
+    # pivot serves — networkizing would strand it. The world stays flat (the file-read
+    # oracle solves it), so the pivot half is never built.
+    g = _graph()
+    g.add_node(
+        Node(id="pub", kind="service", attrs={"exposure": "public", "name": "web"})
+    )
+    g.add_node(Node(id="pub_ep", kind="endpoint", attrs={"path": "/search"}))
+    g.add_edge(Edge(id="e", kind="exposes", src="pub", dst="pub_ep"))
+    _ssrf(g)
+    g.add_edge(Edge(id="a", kind="affects", src="ssrf", dst="pub_ep"))
+    g.add_node(
+        Node(id="int", kind="service", attrs={"exposure": "internal", "name": "db"})
+    )
+    _flag_on(g, "int")
+    before = set(g.nodes)
+    _networkize_ssrf(g, "file")
+    assert set(g.nodes) == before  # no metadata endpoint/vuln added
 
 
 def test_networkize_builds_the_pivot_half() -> None:
@@ -129,7 +150,7 @@ def test_networkize_builds_the_pivot_half() -> None:
         Node(id="int", kind="service", attrs={"exposure": "internal", "name": "db"})
     )
     _flag_on(g, "int")
-    _networkize_ssrf(g)
+    _networkize_ssrf(g, "db")
 
     assert "ep_db_metadata" in g.nodes
     assert "vuln_metadata_credential_leak_0" in g.nodes
@@ -162,7 +183,7 @@ def test_networkize_switches_decimal_ip_filter_to_host_allowlist() -> None:
         Node(id="int", kind="service", attrs={"exposure": "internal", "name": "db"})
     )
     _flag_on(g, "int")
-    _networkize_ssrf(g)
+    _networkize_ssrf(g, "db")
 
     ssrf = g.nodes["ssrf"]
     assert ssrf.attrs["params"]["ssrf_filter"] == "host_allowlist"

@@ -77,6 +77,11 @@ class WebappPack(Pack):
             return WebappRuntime(graph)
         raise NotImplementedError(f"webapp pack does not support backing={backing!r}")
 
+    def minimum_backing(self, graph: WorldGraph) -> Backing:
+        from cyber_webapp.container import minimum_backing
+
+        return minimum_backing(graph)
+
     def task_families(self) -> list[TaskFamily]:
         return [WebappBuild(), WebappPentest()]
 

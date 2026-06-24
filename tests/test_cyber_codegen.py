@@ -57,8 +57,8 @@ def test_build_handlers_filters_to_one_service() -> None:
 
     graph = _multi_service_graph()
     services = [n.id for n in graph.nodes.values() if n.kind == "service"]
-    all_handlers, _ = build_handlers_and_routes(graph)
-    one_handlers, _ = build_handlers_and_routes(graph, frozenset({services[0]}))
+    all_handlers, _, _ = build_handlers_and_routes(graph)
+    one_handlers, _, _ = build_handlers_and_routes(graph, frozenset({services[0]}))
     name = str(graph.nodes[services[0]].attrs.get("name", services[0]))
     assert 0 < len(one_handlers) < len(all_handlers)
     assert all(h["name"].startswith(f"handle__{name}__") for h in one_handlers)

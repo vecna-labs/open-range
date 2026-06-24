@@ -289,6 +289,16 @@ class Pack(ABC):
         backing: Backing,
     ) -> RuntimeHandle: ...
 
+    def minimum_backing(self, graph: WorldGraph) -> Backing:
+        """The least-capable backing under which ``graph`` is solvable by a blackbox
+        agent — ``Backing.PROCESS`` (the cheapest) by default. A pack whose worlds
+        need a real filesystem/shell/network overrides this; the training/eval harness
+        escalates each rollout to at least this backing so reward is measured on a
+        substrate where the world is winnable, not silently zero on an emulation the
+        agent can't exploit."""
+        del graph
+        return Backing.PROCESS
+
     def task_families(self) -> list[TaskFamily]:
         return []
 

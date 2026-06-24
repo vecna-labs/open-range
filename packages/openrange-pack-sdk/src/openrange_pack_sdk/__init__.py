@@ -60,6 +60,7 @@ from openrange_pack_sdk._types import (
     Snapshot,
     TaskSeed,
     TaskSpec,
+    resolve_backing,
 )
 
 __all__ = [
@@ -102,6 +103,7 @@ __all__ = [
     "add_edge",
     "add_node",
     "edge_id",
+    "resolve_backing",
     "manifest_bool",
     "manifest_float",
     "manifest_int",

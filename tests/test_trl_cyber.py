@@ -33,9 +33,16 @@ from typing import Any
 import pytest
 from cyber_webapp import WebappPack
 from cyber_webapp.reference_solver import Request, exploit_and_benign
-from openrange_pack_sdk import Backing, EpisodeResult, Snapshot, TaskSpec
+from openrange_pack_sdk import (
+    Backing,
+    EpisodeResult,
+    Snapshot,
+    TaskSpec,
+    resolve_backing,
+)
 from openrange_trl import (
     EpisodeEnv,
+    _resolve_round_backing,
     build_grpo_dataset,
     env_trajectory,
     make_environment_factory,
@@ -100,6 +107,116 @@ def _docker_available() -> bool:
 gated = pytest.mark.skipif(
     not _docker_available(), reason="docker engine not reachable"
 )
+
+
+_PINNED_BASE = {
+    "pack": {"id": "webapp"},
+    "runtime": {"tick": {"mode": "off"}},
+    "npc": [],
+    "seed": 1,
+}
+
+
+def _pin(kind: str, loot: str) -> Snapshot:
+    other = "db" if loot == "file" else "file"
+    snap = admit(
+        WebappPack(),
+        manifest={
+            **_PINNED_BASE,
+            "loot": {loot: 1, other: 0},
+            "vuln": {"pin": [{"kind": kind}]},
+        },
+        max_repairs=3,
+    )
+    assert isinstance(snap, Snapshot), snap
+    return snap
+
+
+def test_minimum_backing_and_resolve_backing() -> None:
+    # An in-band world leaks over the HTTP response, so PROCESS suffices; a file-read
+    # world needs a real filesystem to enumerate, so CONTAINER. The resolver escalates
+    # to the higher of (requested, minimum, CONTAINER-when-sandboxing) — never a plain
+    # max() over the unordered enum.
+    assert (
+        WebappPack().minimum_backing(_pin("sql_injection", "db").graph)
+        is Backing.PROCESS
+    )
+    assert (
+        WebappPack().minimum_backing(_pin("path_traversal", "file").graph)
+        is Backing.CONTAINER
+    )
+    P, C = Backing.PROCESS, Backing.CONTAINER
+    assert resolve_backing(P, P) is P
+    assert resolve_backing(P, C) is C
+    assert resolve_backing(C, P) is C
+    assert resolve_backing(P, P, sandbox=True) is C
+
+
+def test_factory_keeps_in_band_world_on_process(tmp_path: Path) -> None:
+    # The cheap PROCESS substrate is kept for a world that is winnable on it — no Docker
+    # required, no escalation.
+    snap = _pin("sql_injection", "db")
+    factory = make_environment_factory(
+        WebappPack(), [snap], tmp_path, tools=[shell, submit], backing=Backing.PROCESS
+    )
+    env = factory()
+    try:
+        assert env.service.backing is Backing.PROCESS
+    finally:
+        env.service.close()
+
+
+@gated
+def test_factory_escalates_file_read_world_to_container(tmp_path: Path) -> None:
+    # A file-read world is 0-reward blackbox on PROCESS, so the factory escalates the
+    # requested PROCESS floor up to CONTAINER to measure real reward.
+    snap = _pin("path_traversal", "file")
+    factory = make_environment_factory(
+        WebappPack(), [snap], tmp_path, tools=[shell, submit], backing=Backing.PROCESS
+    )
+    env = factory()
+    try:
+        assert env.service.backing is Backing.CONTAINER
+    finally:
+        env.service.close()
+
+
+def test_resolve_round_backing_escalates_and_fails_loud() -> None:
+    # The factory's backing resolver (``docker_ok`` injected, so it is Docker-free): an
+    # in-band world keeps PROCESS; a file-read world escalates to CONTAINER; and if that
+    # escalation needs Docker that is absent it RAISES rather than silently 0-reward, on
+    # emulation the agent can't exploit — while an explicitly-requested CONTAINER is the
+    # caller's own choice and never raises here.
+    pack = WebappPack()
+    in_band = [_pin("sql_injection", "db")]
+    file_read = [_pin("path_traversal", "file")]
+
+    def resolve(
+        snaps: list[Snapshot],
+        *,
+        backing: Backing,
+        docker_ok: bool,
+        sandbox: bool = False,
+    ) -> Backing:
+        return _resolve_round_backing(
+            pack, snaps, backing=backing, sandbox=sandbox, docker_ok=docker_ok
+        )
+
+    assert resolve(in_band, backing=Backing.PROCESS, docker_ok=False) is Backing.PROCESS
+    assert (
+        resolve(file_read, backing=Backing.PROCESS, docker_ok=True) is Backing.CONTAINER
+    )
+    # the safety contract: must escalate to CONTAINER but no Docker -> loud failure
+    with pytest.raises(RuntimeError, match="CONTAINER backing"):
+        resolve(file_read, backing=Backing.PROCESS, docker_ok=False)
+    # an explicit CONTAINER request is the caller's choice; never raises here
+    assert (
+        resolve(in_band, backing=Backing.CONTAINER, docker_ok=False)
+        is Backing.CONTAINER
+    )
+    # sandbox forces CONTAINER even for an in-band world; absent Docker -> raises
+    with pytest.raises(RuntimeError, match="CONTAINER backing"):
+        resolve(in_band, backing=Backing.PROCESS, docker_ok=False, sandbox=True)
 
 
 @pytest.fixture(scope="module")

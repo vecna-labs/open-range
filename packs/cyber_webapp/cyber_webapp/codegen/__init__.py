@@ -23,13 +23,14 @@ def _realize_graph(
     # state) — the per-service app the networked CONTAINER backing runs per service.
     # Default (None) renders the whole world into one app (PROCESS / single-container).
     seed = project_seed(graph, only_services)
-    handlers, routes = build_handlers_and_routes(graph, only_services)
+    handlers, routes, internal_routes = build_handlers_and_routes(graph, only_services)
     discovery = build_discovery(graph, only_services)
 
     template = _jinja_env().get_template("app.py.j2")
     source = template.render(
         handlers=handlers,
         routes=routes,
+        internal_routes=internal_routes,
         discovery=discovery,
     )
 

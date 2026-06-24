@@ -123,7 +123,11 @@ def test_full_discloses_the_estate_none_withholds_it() -> None:
 
     recon = _vuln(full, "config_disclosure")
     assert recon is not None
-    assert set(recon.attrs["params"]["internal_services"]) == _internal_names(full)
+    disclosed = set(recon.attrs["params"]["internal_services"])
+    # Every real internal host is named, padded with decoy hostnames so the page is a
+    # candidate set to triage rather than a perfect oracle.
+    assert _internal_names(full) <= disclosed
+    assert disclosed - _internal_names(full)
     assert _vuln(blind, "config_disclosure") is None  # none has no recon vuln at all
 
 

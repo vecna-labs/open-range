@@ -21,6 +21,7 @@ import pytest
 from cyber_webapp import WebappBuilder, WebappPack
 from cyber_webapp.codegen import _realize_graph
 from cyber_webapp.consequence import LeakVerdict, detect_leak, guarded_values
+from cyber_webapp.difficulty import _oracle_vuln
 from cyber_webapp.reference_solver import (
     _broken_authz_query,
     _cmdi_payload,
@@ -74,19 +75,30 @@ def _oracle_shapes(graph: WorldGraph) -> set[str]:
     return shapes
 
 
+def _oracle_shape(graph: WorldGraph) -> str:
+    # The shape of the flag-READING exploit specifically — not every vuln in the world.
+    # A db-loot world may still carry an off-path file_read decoy (it reads the empty
+    # file map and leaks nothing); the loot shape only constrains the oracle.
+    oracle = _oracle_vuln(graph)
+    kind = str(oracle.attrs.get("kind", "")) if oracle is not None else ""
+    return CATALOG[kind].shape if kind in CATALOG else ""
+
+
 def test_file_loot_admits_and_forces_file_read_oracle() -> None:
     snap = _admit("file")
     assert "file" in _store_kinds(snap.graph)
     # File loot forces a file-store exploit (read or exec) as the oracle.
-    assert _oracle_shapes(snap.graph) & {"file_read", "code_exec"}
+    assert _oracle_shape(snap.graph) in {"file_read", "code_exec"}
 
 
 def test_db_loot_admits_and_forces_response_leak_oracle() -> None:
     snap = _admit("db")
     assert "kv" in _store_kinds(snap.graph)
     assert "file" not in _store_kinds(snap.graph)
-    # No db world has a file store, so no file-store exploit can be the oracle.
-    assert not (_oracle_shapes(snap.graph) & {"file_read", "code_exec"})
+    # No db world has a file store, so the flag-reading oracle can't be a file exploit
+    # (an off-path file_read decoy is allowed — it reads the empty file map and leaks
+    # nothing).
+    assert _oracle_shape(snap.graph) not in {"file_read", "code_exec"}
 
 
 def test_loot_shape_is_manifest_selectable() -> None:

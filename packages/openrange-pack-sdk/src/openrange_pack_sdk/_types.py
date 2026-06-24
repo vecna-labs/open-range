@@ -34,6 +34,36 @@ class Backing(StrEnum):
     HYBRID = "hybrid"
 
 
+# Realization-fidelity ladder for escalation. CONTAINER (a real fs/shell/network) is the
+# most capable realized substrate and PROCESS (in-process emulation) the least, so
+# escalating toward a higher rank always targets the real container. SIMULATOR/HYBRID
+# are reserved enum values no pack realizes yet; they rank BELOW CONTAINER so a sandbox
+# escalation still resolves to CONTAINER, not an unrealized backing. The enum values are
+# unordered strings, so this explicit rank is required — never ``max()`` over the enum
+# (``"container" < "process"`` lexically would pick the wrong one).
+_BACKING_RANK: dict[Backing, int] = {
+    Backing.PROCESS: 0,
+    Backing.SIMULATOR: 1,
+    Backing.HYBRID: 2,
+    Backing.CONTAINER: 3,
+}
+
+
+def resolve_backing(
+    requested: Backing, minimum: Backing, *, sandbox: bool = False
+) -> Backing:
+    """The backing a rollout should actually realize on: the highest-capability of what
+    the caller ``requested``, the world's ``minimum`` (e.g. a file-read/code-exec world
+    needs CONTAINER's real filesystem so a blackbox agent can enumerate the loot path),
+    and CONTAINER when ``sandbox`` is set (a sandboxed HTTP target needs a real
+    container network to join). Keeps the cheap PROCESS substrate for in-band worlds
+    while measuring file-read / sandboxed worlds where reward is real."""
+    candidates = [requested, minimum]
+    if sandbox:
+        candidates.append(Backing.CONTAINER)
+    return max(candidates, key=_BACKING_RANK.__getitem__)
+
+
 @dataclass(frozen=True)
 class TaskSpec:
     """Goal nodes may be HIDDEN; entrypoints may not."""

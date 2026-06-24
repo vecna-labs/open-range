@@ -49,6 +49,74 @@ def _chain_depth(graph: WorldGraph) -> int:
     )
 
 
+def test_soften_collapses_one_credential_hop(tmp_path: Path) -> None:
+    # Soften can rescue a chain-stuck agent by collapsing the last hop: the chain gets
+    # exactly one shorter, stays solvable (the promoted relay now serves the flag) on
+    # both backings, and is strictly easier — validated through the real re-admit path.
+    from cyber_webapp.difficulty import world_difficulty
+    from cyber_webapp.mutation import _soften_remove_hop_mutation
+    from cyber_webapp.verify import accepts
+
+    from openrange.core.curriculum import _evolve_snapshot
+
+    pack = WebappPack()
+    snap = admit(
+        pack,
+        manifest={**_manifest(1), "chain": {"depth": {"min": 2, "max": 2}}},
+        max_repairs=3,
+    )
+    assert isinstance(snap, Snapshot)
+    parent_depth = _chain_depth(snap.graph)
+    assert parent_depth >= 2
+
+    mut = _soften_remove_hop_mutation(snap.graph, "webapp.pentest", 0.95)
+    assert mut is not None and mut.direction == "soften"
+    evolved = _evolve_snapshot(snap, pack, mut, max_repairs=3)
+    assert evolved is not None and evolved.snapshot_id != snap.snapshot_id
+    eg = evolved.graph
+
+    assert _chain_depth(eg) == parent_depth - 1  # exactly one hop shorter
+    assert world_difficulty(eg) < world_difficulty(snap.graph)  # strictly easier
+    orphans = [
+        n
+        for n in eg.nodes
+        if not any(e.src == n or e.dst == n for e in eg.edges.values())
+    ]
+    assert not orphans
+
+    svc = EpisodeService(pack, tmp_path)
+    try:
+        task = next(
+            t for t in evolved.tasks if t.meta.get("family") == "webapp.pentest"
+        )
+        handle = svc.start_episode(evolved, task.id)
+        assert accepts(evolved, svc.base_url(handle))
+    finally:
+        svc.close()
+
+    again_mut = _soften_remove_hop_mutation(snap.graph, "webapp.pentest", 0.95)
+    assert again_mut is not None
+    again = _evolve_snapshot(snap, pack, again_mut, max_repairs=3)
+    assert (
+        again is not None and again.snapshot_id == evolved.snapshot_id
+    )  # deterministic
+
+
+def test_soften_hop_collapse_needs_a_relay() -> None:
+    # A depth-1 chain (leak -> flag, no relay) has no hop to collapse, so the move is
+    # offered and decoy-removal stays the only soften.
+    from cyber_webapp.mutation import _soften_remove_hop_mutation
+
+    snap = admit(
+        WebappPack(),
+        manifest={**_manifest(1), "chain": {"depth": {"min": 1, "max": 1}}},
+        max_repairs=3,
+    )
+    assert isinstance(snap, Snapshot)
+    assert _chain_depth(snap.graph) == 1
+    assert _soften_remove_hop_mutation(snap.graph, "webapp.pentest", 0.95) is None
+
+
 def test_chain_credentials_are_public_wired_graph_nodes() -> None:
     graph = _admit().graph
     # Scope to the chain's tokens — the NPC `password` credentials are a

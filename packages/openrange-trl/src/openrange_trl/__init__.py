@@ -43,7 +43,13 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from openrange_pack_sdk import Backing, EpisodeReportLike, Pack, Snapshot
+from openrange_pack_sdk import (
+    Backing,
+    EpisodeReportLike,
+    Pack,
+    Snapshot,
+    resolve_backing,
+)
 
 from openrange.core.curriculum import Direction
 from openrange.core.episode import (
@@ -309,6 +315,46 @@ def _run_docker(*args: str, check: bool = True) -> None:
     subprocess.run(["docker", *args], check=check, capture_output=True, timeout=60)
 
 
+def _docker_available() -> bool:
+    try:
+        probe = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=10, check=False
+        )
+    except Exception:  # noqa: BLE001 — any failure (missing binary, daemon down) means no
+        return False
+    return probe.returncode == 0
+
+
+def _resolve_round_backing(
+    pack: Pack,
+    snapshots: Sequence[Snapshot],
+    *,
+    backing: Backing,
+    sandbox: bool,
+    docker_ok: bool,
+) -> Backing:
+    """The backing a round's rollouts realize on. Escalate the requested ``backing``
+    FLOOR to at least the round's worlds' ``minimum_backing`` (a file-read world is
+    0-reward blackbox on PROCESS) and to CONTAINER when sandboxing; PROCESS stays the
+    default for in-band worlds. If the escalation reaches CONTAINER but ``docker_ok`` is
+    False, raise — never silently train on an emulation the agent can't exploit. An
+    explicitly-requested CONTAINER is the caller's own choice, left for the realizer to
+    surface. Pure (``docker_ok`` injected) so escalation + fail-loud are unit-testable
+    without Docker."""
+    effective = resolve_backing(backing, backing, sandbox=sandbox)
+    for snapshot in snapshots:
+        effective = resolve_backing(
+            effective, pack.minimum_backing(snapshot.graph), sandbox=sandbox
+        )
+    if effective is Backing.CONTAINER and effective is not backing and not docker_ok:
+        raise RuntimeError(
+            "this round needs the CONTAINER backing (a file-read/code-exec world or a "
+            "sandboxed HTTP target) to measure real reward, but Docker is unavailable "
+            "— start Docker, or pass backing=Backing.CONTAINER to see the realize error"
+        )
+    return effective
+
+
 def build_grpo_dataset(snapshot: Snapshot, *, repeat: int = 1) -> list[dict[str, Any]]:
     """Turn a snapshot's tasks into GRPO prompt rows.
 
@@ -386,20 +432,25 @@ def make_environment_factory(
     GRPO generation batch are fully isolated. The factory closes over one round's
     ``snapshots`` (often a single, current world); the curriculum re-roots the
     next round by re-building the dataset + factory against the evolved snapshot.
-    ``backing`` picks how each rollout realizes its world — PROCESS by default;
-    CONTAINER (incl. the networked multi-service runtime) trains against the real
-    containerized target. ``sandbox=True`` runs each episode's tools in their own
-    throwaway :class:`AgentSandbox` (HTTP worlds need the CONTAINER backing so the
-    sandbox can join the target's network).
+    ``backing`` is a *floor*, not a fixed choice — PROCESS by default, but each rollout
+    is escalated to at least the round's worlds' ``minimum_backing`` (a file-read /
+    code-exec world is unsolvable, so 0-reward, blackbox on PROCESS) and to CONTAINER
+    when ``sandbox=True`` (the tools run in a throwaway :class:`AgentSandbox` that joins
+    the target's container network). In-band worlds keep the cheap PROCESS substrate. If
+    the escalation reaches CONTAINER but Docker is down the factory raises, rather than
+    silently train on an emulation the agent can't exploit.
     """
     snap_map = {s.snapshot_id: s for s in snapshots}
     base = Path(run_root)
     base.mkdir(parents=True, exist_ok=True)
     tool_list = tuple(tools)
+    effective_backing = _resolve_round_backing(
+        pack, snapshots, backing=backing, sandbox=sandbox, docker_ok=_docker_available()
+    )
 
     def factory() -> EpisodeEnv:
         service = EpisodeService(
-            pack, base / f"env-{uuid.uuid4().hex[:8]}", backing=backing
+            pack, base / f"env-{uuid.uuid4().hex[:8]}", backing=effective_backing
         )
         return EpisodeEnv(
             service=service,

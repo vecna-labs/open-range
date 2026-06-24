@@ -23,7 +23,13 @@ from cyber_webapp import (
     monotone_chain_gate,
 )
 from cyber_webapp.codegen.seeding import project_seed
-from cyber_webapp.difficulty import _DECOY_CAP, _entry_ssrf, world_difficulty
+from cyber_webapp.difficulty import (
+    _DECOY_CAP,
+    _FANOUT_CAP,
+    _W_HOP,
+    _entry_ssrf,
+    world_difficulty,
+)
 from cyber_webapp.invariants import unique_vuln_per_endpoint
 from cyber_webapp.mutation import _oracle_path_targets, available_mutations
 from cyber_webapp.reference_solver import solve_chain
@@ -32,7 +38,12 @@ from graphschema import Edge, Node, Visibility, WorldGraph
 from openrange_pack_sdk import Backing, PoolableRuntime, Snapshot
 
 from openrange.core.admit import admit
-from openrange.core.curriculum import _clone_graph, auto_evolve, consequence_gate
+from openrange.core.curriculum import (
+    _clone_graph,
+    auto_evolve,
+    consequence_gate,
+    consequence_seed_gate,
+)
 from openrange.core.episode import EpisodeHandle, EpisodeReport, EpisodeService
 from openrange.pool import (
     _MAX_PRIORITY,
@@ -99,7 +110,13 @@ def _flag_from(body: str) -> str:
             value = obj.get(key)
             if isinstance(value, str):
                 return value
-    found = re.search(r"(?:ghp_|sk_live_|AKIA)[A-Za-z0-9_]+|[0-9a-f-]{32,36}", body)
+    found = re.search(
+        r"sk_live_[A-Za-z0-9]+|ghp_[A-Za-z0-9]+|AKIA[A-Z0-9]+"
+        r"|xoxb-[0-9]+-[0-9]+-[A-Za-z0-9]+"
+        r"|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+        r"|[0-9a-f]{40}",
+        body,
+    )
     return found.group(0) if found else ""
 
 
@@ -205,7 +222,13 @@ def test_company_plants_recon_that_names_internal_hosts() -> None:
         if n.attrs.get("exposure") != "public"
     }
     disclosed = set(recon.attrs["params"]["internal_services"])
-    assert disclosed == internal_names  # names every internal host, incl. the flag's
+    assert (
+        internal_names <= disclosed
+    )  # names every real internal host, incl. the flag's
+    chaff = disclosed - internal_names
+    assert chaff  # ...padded with decoy hosts, so the page isn't a perfect oracle
+    service_names = {str(n.attrs.get("name")) for n in graph.by_kind("service")}
+    assert not (chaff & service_names)  # the decoys are not real services
 
     ssrf = next(
         n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"
@@ -350,6 +373,165 @@ def test_write_exec_world_is_not_poolable() -> None:
     assert isinstance(sqli, PoolableRuntime) and sqli.poolable()
 
 
+def test_consecutive_seeds_never_collide() -> None:
+    # Distinct seeds must produce distinct worlds AND distinct flags — no two seeds
+    # (least of all the consecutive N, N+1 pairs an earlier audit flagged) may collapse
+    # to a byte-identical world or reuse the same secret. The high-entropy loot path and
+    # flag templates make this hold; this pins it across every topology.
+    for manifest in (_DEFAULT_MANIFEST, _COMPANY_MANIFEST, _LATERAL_MANIFEST):
+        hashes: dict[str, int] = {}
+        flags: dict[str, int] = {}
+        for seed in range(20):
+            graph = _admit({**manifest, "seed": seed}).graph
+            h = graph.content_hash()
+            f = str(graph.nodes["secret_flag"].attrs["value_ref"])
+            assert h not in hashes, (
+                f"{manifest.get('topology', 'flat')}: seeds "
+                f"{hashes.get(h)} and {seed} are byte-identical"
+            )
+            assert f not in flags, (
+                f"{manifest.get('topology', 'flat')}: seeds "
+                f"{flags.get(f)} and {seed} reuse the same flag"
+            )
+            hashes[h] = seed
+            flags[f] = seed
+
+
+def test_diversify_keeps_the_oracle_loot_compatible() -> None:
+    # Diversify rotates the on-path technique, not just off-path decoys — but a swap of
+    # the flag-READING oracle must stay within the loot's exploit shapes (file-loot ->
+    # file_read/code_exec; db-loot -> response_leak) or it strands the flag. Off-path
+    # decoys stay free to become any class.
+    from cyber_webapp.mutation import _affects_target_id, _oracle_allowed_shapes
+    from cyber_webapp.vulnerabilities import CATALOG
+    from graphschema import apply_patch
+
+    for loot, shapes in (
+        ("file", {"file_read", "code_exec"}),
+        ("db", {"response_leak"}),
+    ):
+        other = "db" if loot == "file" else "file"
+        oracle_swaps = 0
+        for seed in range(10):
+            graph = _admit(
+                {**_DEFAULT_MANIFEST, "seed": seed, "loot": {loot: 1, other: 0}}
+            ).graph
+            assert _oracle_allowed_shapes(graph) == frozenset(shapes)
+            oracle_endpoints, _ = _oracle_path_targets(graph)
+            for mut in available_mutations(graph, "webapp.pentest", []):
+                if mut.direction != "diversify":
+                    continue
+                vulns = [
+                    n for n in mut.patch.nodes_updated if n.kind == "vulnerability"
+                ]
+                if not vulns:
+                    continue
+                evolved = _clone_graph(graph)
+                apply_patch(evolved, mut.patch)
+                if _affects_target_id(evolved, vulns[0].id) in oracle_endpoints:
+                    oracle_swaps += 1
+                    swapped_shape = CATALOG[vulns[0].attrs["kind"]].shape
+                    assert swapped_shape in shapes, (
+                        f"{loot} seed {seed}: oracle swap to {vulns[0].attrs['kind']} "
+                        f"({swapped_shape}) breaks loot compatibility"
+                    )
+        assert oracle_swaps, f"{loot}: diversify never rotated the on-path oracle"
+
+
+def test_diversify_oracle_swap_keeps_the_world_solvable(tmp_path: Path) -> None:
+    # The behavioral guarantee behind the structural loot-shape constraint: realizing a
+    # world after an on-path diversify swap still leaks the flag — including the rare
+    # endpoint that hosts a co-located sibling the body-shaped method-flip touches (db
+    # seed 11). The world stays solvable after rotating the technique the agent learns
+    from cyber_webapp.mutation import _affects_target_id
+    from graphschema import apply_patch
+
+    pack = WebappPack()
+
+    def world_accepts(snap: Snapshot, sub: str) -> bool:
+        svc = EpisodeService(pack, tmp_path / sub)
+        try:
+            task = next(
+                t for t in snap.tasks if t.meta.get("family") == "webapp.pentest"
+            )
+            return accepts(snap, svc.base_url(svc.start_episode(snap, task.id)))
+        finally:
+            svc.close()
+
+    checked = 0
+    for loot, lo in (("db", 12), ("file", 6)):
+        other = "db" if loot == "file" else "file"
+        for seed in range(lo):
+            base = _admit(
+                {**_DEFAULT_MANIFEST, "seed": seed, "loot": {loot: 1, other: 0}}
+            )
+            if not world_accepts(base, f"b{loot}{seed}"):
+                continue  # only worlds whose base is already solvable
+            oracle_endpoints, _ = _oracle_path_targets(base.graph)
+            for mut in available_mutations(base.graph, "webapp.pentest", []):
+                if mut.direction != "diversify":
+                    continue
+                vulns = [
+                    n for n in mut.patch.nodes_updated if n.kind == "vulnerability"
+                ]
+                if not vulns:
+                    continue
+                evolved = _clone_graph(base.graph)
+                apply_patch(evolved, mut.patch)
+                if _affects_target_id(evolved, vulns[0].id) not in oracle_endpoints:
+                    continue
+                nsnap = dataclasses.replace(base, graph=evolved)
+                assert world_accepts(nsnap, f"s{loot}{seed}{checked}"), mut.note
+                checked += 1
+    assert checked, "no on-path diversify swap was exercised"
+
+
+def test_eval_pool_seed_gate_admits_solvable_drops_unsolvable(tmp_path: Path) -> None:
+    # The held-out EvalPool gets the same seed-gate guarantee as the train pool: a
+    # solvable world is kept, a rejected one dropped — so an unsolvable world can never
+    # silently corrupt the generalization measurement.
+    pack = WebappPack()
+    seeds = [_COMPANY_MANIFEST, {**_COMPANY_MANIFEST, "topology": "chain"}]
+
+    kept = EvalPool.seed(
+        pack,
+        seeds,
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        seed_gate=consequence_seed_gate(pack, tmp_path / "keep", accepts),
+    )
+    assert len(kept) == len(seeds)
+
+    dropped = EvalPool.seed(
+        pack,
+        seeds,
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        seed_gate=lambda _snapshot: False,
+    )
+    assert len(dropped) == 0
+
+
+def test_diversify_swap_params_are_deterministic() -> None:
+    # available_mutations is pure: enumerating diversify swaps on the same graph twice
+    # yields byte-identical patch params (the swap seeds its rng from a hash of
+    # kind+target, not a live rng), so a curriculum's evolved lineage is reproducible.
+    graph = _admit(_LATERAL_MANIFEST).graph
+
+    def diversify_params() -> dict[str, object]:
+        out: dict[str, object] = {}
+        for mut in available_mutations(graph, "webapp.pentest", []):
+            if mut.direction != "diversify":
+                continue
+            for node in mut.patch.nodes_updated:
+                if node.kind == "vulnerability":
+                    out[node.id] = (node.attrs["kind"], node.attrs["params"])
+        return out
+
+    assert diversify_params() == diversify_params()
+    assert diversify_params()  # a chain world does offer diversify swaps
+
+
 def test_world_difficulty_rises_with_chain_depth() -> None:
     flat = world_difficulty(_admit(_DEFAULT_MANIFEST).graph)
     company = world_difficulty(_admit(_COMPANY_MANIFEST).graph)
@@ -411,7 +593,12 @@ def test_off_path_decoys_cannot_outrank_a_real_hop() -> None:
     base = world_difficulty(graph)
     for i in range(20):
         _add_off_path_vuln(graph, i)
-    assert world_difficulty(graph) - base <= _DECOY_CAP
+    delta = world_difficulty(graph) - base
+    # Each decoy is a vuln on its own internal host. Both responses saturate — the vuln
+    # term at _DECOY_CAP, the host-triage term at _FANOUT_CAP — so 20 decoys add no more
+    # than a believable estate's worth and can never out-rank a real credential hop.
+    assert delta <= _DECOY_CAP + _FANOUT_CAP
+    assert delta < _W_HOP
 
 
 def test_an_oracle_sibling_decoy_is_never_scored_on_path() -> None:
@@ -485,6 +672,35 @@ def test_pool_round_keeps_the_easy_tail() -> None:
     rows = pool.round_rows(groups=2, num_generations=1)
     chosen = {row["snapshot_id"] for row in rows}
     assert easiest.snapshot.snapshot_id in chosen
+
+
+def test_seed_gate_admits_solvable_drops_unsolvable(tmp_path: Path) -> None:
+    # A structurally-admitted world enters the pool only when its reference breach
+    # actually leaks: the real consequence verdict keeps every solvable seed, while a
+    # gate that rejects everything drops them all — so a live-unsolvable world (the gap
+    # structural admission alone left open) can never seed the curriculum.
+    pack = WebappPack()
+    seeds = [_COMPANY_MANIFEST, {**_COMPANY_MANIFEST, "topology": "chain"}]
+
+    kept = WorldPool.seed(
+        pack,
+        seeds,
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=8,
+        seed_gate=consequence_seed_gate(pack, tmp_path / "keep", accepts),
+    )
+    assert len(kept) == len(seeds)  # the real verdict admits every solvable world
+
+    dropped = WorldPool.seed(
+        pack,
+        seeds,
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=8,
+        seed_gate=lambda _snapshot: False,
+    )
+    assert len(dropped) == 0  # a rejected world never enters the pool
 
 
 def test_pool_curriculum_grows_bounds_and_keeps_a_mix(tmp_path: Path) -> None:
@@ -1017,6 +1233,12 @@ def test_held_out_eval_pool_is_fenced_and_measured(tmp_path: Path) -> None:
     assert all(m.held_out_solve_rate == 1.0 for m in metrics)
     assert all(m.generalization_gap == 0.0 for m in metrics)
     assert not any(m.frontier_capped for m in metrics)
+    # difficulty_gain is the honest "is the frontier still moving" read, distinct from
+    # frontier_capped: every round admits a harder child (capped False), but company
+    # worlds have no credential walk, so the gain is the small cosmetic decoy creep —
+    # well under a real credential hop — exposing the plateau the boolean can't.
+    gains = [m.difficulty_gain for m in metrics]
+    assert all(g is not None and 0 <= g < _W_HOP for g in gains)
     assert held_out.keys() == eval_keys
     assert not (train.keys() & eval_keys)
 
@@ -1155,7 +1377,9 @@ def test_company_solves_across_real_containers() -> None:
         # internal estate but never the flag.
         status, recon_body = _get(base, str(recon.attrs["public_url"]))
         assert status == 200, recon_body
-        assert set(json.loads(recon_body)["upstreams"]) == internal_names
+        # Every real internal host is disclosed, padded with decoy hosts (the page is a
+        # candidate set, not a perfect oracle) — and it never leaks the flag itself.
+        assert internal_names <= set(json.loads(recon_body)["upstreams"])
         assert flag not in recon_body
 
         trace = solve_chain(graph, lambda p: _get(base, p)[1])

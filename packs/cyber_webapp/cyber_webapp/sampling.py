@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import posixpath
 import random
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -116,6 +117,21 @@ _RECORD_KEYS: tuple[str, ...] = (
     "ops_seal",
     "support_override",
     "release_token",
+    "service_account_key",
+    "deploy_key",
+    "signing_secret",
+    "encryption_key",
+    "session_secret",
+    "webhook_secret",
+    "oauth_client_secret",
+    "backup_credential",
+    "provisioning_token",
+    "audit_token",
+    "recovery_code",
+    "ci_runner_token",
+    "kms_root_key",
+    "replication_secret",
+    "break_glass_token",
 )
 
 
@@ -151,7 +167,17 @@ _HOST_ENVS: tuple[str, ...] = ("prod", "stg", "infra")
 # real company's estate rather than ``api1`` / ``db2`` (DESIGN.md §2: realism is
 # procedural-first, from curated pools). Hyphen-safe so a name doubles as a docker host.
 _SERVICE_NAMES_BY_KIND: Mapping[str, tuple[str, ...]] = {
-    "web": ("storefront", "customer-portal", "shop", "portal", "dashboard", "www-app"),
+    "web": (
+        "storefront",
+        "customer-portal",
+        "shop",
+        "portal",
+        "dashboard",
+        "www-app",
+        "admin-console",
+        "support-portal",
+        "marketing-site",
+    ),
     "api": (
         "orders-api",
         "catalog-api",
@@ -159,8 +185,20 @@ _SERVICE_NAMES_BY_KIND: Mapping[str, tuple[str, ...]] = {
         "inventory-api",
         "checkout-api",
         "billing-api",
+        "shipping-api",
+        "pricing-api",
+        "search-api",
+        "reviews-api",
     ),
-    "auth": ("identity", "sso-gateway", "accounts", "login-service", "idp"),
+    "auth": (
+        "identity",
+        "sso-gateway",
+        "accounts",
+        "login-service",
+        "idp",
+        "token-service",
+        "directory",
+    ),
     "db": (
         "orders-db",
         "users-db",
@@ -168,10 +206,14 @@ _SERVICE_NAMES_BY_KIND: Mapping[str, tuple[str, ...]] = {
         "ledger-db",
         "records-db",
         "warehouse-db",
+        "sessions-db",
+        "catalog-db",
+        "analytics-db",
+        "audit-db",
     ),
-    "queue": ("jobs-queue", "event-bus", "broker"),
-    "mail": ("mailer", "smtp-relay", "notifications"),
-    "fileshare": ("file-store", "documents", "asset-store"),
+    "queue": ("jobs-queue", "event-bus", "broker", "task-runner", "stream-processor"),
+    "mail": ("mailer", "smtp-relay", "notifications", "campaign-sender"),
+    "fileshare": ("file-store", "documents", "asset-store", "media-vault", "backups"),
 }
 
 
@@ -398,12 +440,17 @@ def _add_decoy_files(
 ) -> None:
     candidates = [(p, c) for p, c in _DECOY_FILES if p != exclude]
     rng.shuffle(candidates)
+    # A per-world revision tag (off the flag path, so no extra rng draw shifts the
+    # stream) keeps the decoy loot from being byte-identical across worlds — an agent
+    # can't memorize "these files are noise" from a single episode.
+    rev = hashlib.sha256(exclude.encode()).hexdigest()[:8]
+    decoys = [(p, f"{c}\n# rev: {rev}\n") for p, c in candidates[:2]]
     hint_path = rng.choice(_HINT_CONFIG_PATHS)
     hint = (
         f"[storage]\ndata_dir = {posixpath.dirname(exclude)}\n"
         f"backup_file = {exclude}\nrotate_days = 7\n"
     )
-    placed = [*candidates[:2], (hint_path, hint)]
+    placed = [*decoys, (hint_path, hint)]
     for path, content in placed:
         if path == exclude:
             continue
@@ -576,7 +623,7 @@ def sample_graph(
     if _is_lateral(prior):
         _lateralize(graph, rng, prior)
     else:
-        _networkize_ssrf(graph)
+        _networkize_ssrf(graph, loot_shape)
     if company and _recon_disclosure(prior) != "none":
         _add_recon_disclosure(graph, rng)
 
@@ -938,9 +985,24 @@ _SSRF_INTERNAL_HOSTS: tuple[str, ...] = (
     "localhost",
     "metadata.internal",
     "127.0.0.1",
+    "metadata.google.internal",
+    "instance-data",
+    "vault.internal",
+    "consul.internal",
+    "admin.internal",
+    "169.254.170.2",
+    "10.0.0.1",
 )
 # IPv4-only internal hosts: the decimal_ip filter needs a dotted-quad to encode.
-_SSRF_INTERNAL_IPS: tuple[str, ...] = ("169.254.169.254", "127.0.0.1")
+_SSRF_INTERNAL_IPS: tuple[str, ...] = (
+    "169.254.169.254",
+    "127.0.0.1",
+    "169.254.170.2",
+    "10.0.0.1",
+    "172.16.0.1",
+    "192.168.0.1",
+    "10.0.0.254",
+)
 _SSRF_ALLOWED_HOSTS: tuple[str, ...] = (
     "allowed.example.com",
     "api.partner.com",
@@ -1096,12 +1158,16 @@ def _flag_service_id(graph: WorldGraph) -> str | None:
     )
 
 
-def _networkize_ssrf(graph: WorldGraph) -> None:
+def _networkize_ssrf(graph: WorldGraph, loot_shape: str) -> None:
     # The sampler co-locates the SSRF with the flag on one internal service.
     # Re-home it onto the public service and add an internal metadata endpoint
     # that serves the flag, so the flag is reachable only by pivoting across the
     # network. It stays solvable in-process for PROCESS (the SSRF reads the shared
     # flag); CONTAINER makes the pivot a real fetch.
+    # The metadata pivot serves secrets["flag"]; a file-backed flag isn't there, so
+    # networkizing would strand it — leave it flat, where the file-read oracle solves.
+    if loot_shape == "file":
+        return
     ssrf = next(
         (n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == "ssrf"),
         None,
@@ -1227,6 +1293,20 @@ def _add_recon_disclosure(graph: WorldGraph, rng: random.Random) -> None:
         )
     )
     _add_edge(graph, "exposes", public.id, ep_id)
+    # A real status page lists hosts that don't all leak. Mix in decoy hostnames the
+    # SSRF can't reach (they aren't real services, so a pivot to one gets no route): the
+    # page becomes a set of candidates to triage, not the one answer. The reference
+    # solver pivots to the real host by name, so solvability is untouched.
+    real = set(internal_names)
+    chaff_pool = sorted(
+        name
+        for kind, names in _SERVICE_NAMES_BY_KIND.items()
+        if kind != "web"
+        for name in names
+        if name not in real
+    )
+    chaff = rng.sample(chaff_pool, k=min(len(chaff_pool), rng.randint(2, 4)))
+    disclosed = sorted(real | set(chaff))
     vuln_id = "vuln_config_disclosure_0"
     graph.add_node(
         Node(
@@ -1236,7 +1316,7 @@ def _add_recon_disclosure(graph: WorldGraph, rng: random.Random) -> None:
                 "kind": "config_disclosure",
                 "family": "code_web",
                 "params": {
-                    "internal_services": internal_names,
+                    "internal_services": disclosed,
                     "internal_path": internal_path,
                 },
             },

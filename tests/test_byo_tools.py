@@ -56,7 +56,13 @@ def _flag_from(body: str) -> str:
             value = obj.get(key)
             if isinstance(value, str):
                 return value
-    found = re.search(r"(?:ghp_|sk_live_|AKIA)[A-Za-z0-9_]+|[0-9a-f-]{32,36}", body)
+    found = re.search(
+        r"sk_live_[A-Za-z0-9]+|ghp_[A-Za-z0-9]+|AKIA[A-Z0-9]+"
+        r"|xoxb-[0-9]+-[0-9]+-[A-Za-z0-9]+"
+        r"|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+        r"|[0-9a-f]{40}",
+        body,
+    )
     return found.group(0) if found else ""
 
 

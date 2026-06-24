@@ -72,6 +72,29 @@ def _report_passed(report: EpisodeReportLike) -> bool:
 # label is trusted.
 EvolutionGate = Callable[["Snapshot", Mutation], bool]
 
+# Returns True iff a candidate world is kept at pool-seeding time. Same shape as the
+# pack verdict an :data:`EvolutionGate` runs, minus the mutation — a structurally
+# admitted but live-unsolvable world (no reference breach leaks) is dropped before it
+# can enter the pool as a permanent zero-reward task.
+SeedGate = Callable[["Snapshot"], bool]
+
+
+def _verify_realized(
+    pack: Pack,
+    root: Path,
+    snapshot: Snapshot,
+    accept: Callable[[Snapshot, str], bool],
+) -> bool:
+    task = next((t for t in snapshot.tasks if t.entrypoints), None)
+    if task is None:
+        return True  # nothing realizable to check; let it through
+    svc = EpisodeService(pack, root)
+    try:
+        handle = svc.start_episode(snapshot, task.id)
+        return accept(snapshot, str(svc.surface(handle)["base_url"]))
+    finally:
+        svc.close()
+
 
 def consequence_gate(
     pack: Pack,
@@ -86,17 +109,22 @@ def consequence_gate(
 
     def gate(evolved: Snapshot, mutation: Mutation) -> bool:
         del mutation  # the world is verified regardless of which move produced it
-        task = next((t for t in evolved.tasks if t.entrypoints), None)
-        if task is None:
-            return True
-        svc = EpisodeService(pack, root)
-        try:
-            handle = svc.start_episode(evolved, task.id)
-            return accept(evolved, str(svc.surface(handle)["base_url"]))
-        finally:
-            svc.close()
+        return _verify_realized(pack, root, evolved, accept)
 
     return gate
+
+
+def consequence_seed_gate(
+    pack: Pack,
+    workdir: str | Path,
+    accept: Callable[[Snapshot, str], bool],
+) -> SeedGate:
+    """A :data:`SeedGate` that applies the same ``accept`` verdict as
+    :func:`consequence_gate`, but at pool construction — so an initial world is admitted
+    into the pool only if its reference breach actually leaks. Closes the gap where
+    structural admission alone let a live-unsolvable world seed the curriculum."""
+    root = Path(workdir)
+    return lambda snapshot: _verify_realized(pack, root, snapshot, accept)
 
 
 def auto_evolve(

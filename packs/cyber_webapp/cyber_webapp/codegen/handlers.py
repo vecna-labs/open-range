@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from graphschema import Node, WorldGraph
 from openrange_pack_sdk import PackError
 
+from cyber_webapp.sampling import _is_networked
 from cyber_webapp.vulnerabilities import (
     CATALOG as VULN_CATALOG,
 )
@@ -16,7 +17,7 @@ from cyber_webapp.vulnerabilities import render_vulnerability
 def build_handlers_and_routes(
     graph: WorldGraph,
     only_services: frozenset[str] | None = None,
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
     # ``only_services`` restricts to one service's own endpoints — the per-service split
     # that the networked CONTAINER backing realizes (each service is its own container).
     services_by_id: dict[str, Node] = {
@@ -39,6 +40,11 @@ def build_handlers_and_routes(
 
     handlers: list[dict[str, str]] = []
     routes: list[dict[str, str]] = []
+    internal_routes: list[dict[str, str]] = []
+    # A segmented world (the SSRF reaches the public service) only lets the agent in at
+    # the DMZ; internal services are reached by pivoting. A flat world has no such
+    # boundary — every service answers directly, which is the intended solve there.
+    segmented = only_services is None and _is_networked(graph)
 
     for endpoint_id, endpoint in endpoints_by_id.items():
         service_id = service_for_endpoint.get(endpoint_id)
@@ -77,10 +83,15 @@ def build_handlers_and_routes(
         # caller reaches it at ``http://<service-name><path>``.
         route_path = path if only_services is not None else public_url
         method = str(endpoint.attrs.get("method", "GET"))
-        routes.append(
-            {"path": route_path, "handler": handler_name, "method": method},
-        )
-    return handlers, routes
+        route = {"path": route_path, "handler": handler_name, "method": method}
+        # A single app co-locates every service, so in a segmented world an internal
+        # ``/svc/<name>`` endpoint would otherwise answer a direct request — the agent
+        # could read the flag off the metadata host with no SSRF pivot. There they are
+        # dispatch-only: present for the in-process pivot, never externally served, so
+        # network position is the gate as it is for real under CONTAINER.
+        internal = segmented and service.attrs.get("exposure") != "public"
+        (internal_routes if internal else routes).append(route)
+    return handlers, routes, internal_routes
 
 
 def _render_vuln_body(vuln_node: Node) -> str:
