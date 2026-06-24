@@ -152,11 +152,12 @@ class _FilesystemRuntime(ABC):
 
     def _init_env(self) -> None:
         env_root = Path(tempfile.mkdtemp(prefix=f"{self._tempdir_prefix()}-"))
+        # Record before the mkdirs below so a failure still leaves it reclaimable.
+        self._env_root = env_root
         solver_root = env_root / "solver"
         solver_root.mkdir(parents=True, exist_ok=True)
         pack_root = env_root / "pack"
         pack_root.mkdir(parents=True, exist_ok=True)
-        self._env_root = env_root
         self._solver_root = solver_root
         self._pack_root = pack_root
         write_tree(pack_root, self.prepare_env_files(self._graph))
@@ -180,7 +181,7 @@ class _FilesystemRuntime(ABC):
             return {}
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
-        except OSError, json.JSONDecodeError:
+        except OSError, ValueError:  # ValueError also covers a non-UTF-8 read
             return {}
         return dict(data) if isinstance(data, Mapping) else {}
 
