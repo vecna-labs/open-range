@@ -95,11 +95,9 @@ def available_mutations(
             ),
         )
 
-    # Shortening the credential chain is a soften too — and the only one that can rescue
-    # an agent stuck ON the chain (decoy-removal can't). Its relevance is the agent's
-    # engagement with the whole chain (the entry leak and every gate, all on internal
-    # hosts reached only by pivoting), so it outranks decoy-removal only when the
-    # chain — not an off-path decoy — is where the agent is spending requests.
+    # The only soften that can rescue an agent stuck ON the chain (decoy-removal can't).
+    # Its relevance is the agent's engagement with the whole chain, so it outranks
+    # decoy-removal only when the chain is where the agent is spending requests.
     chain_vuln_ids = [
         v.id
         for v in graph.by_kind("vulnerability")
@@ -260,9 +258,8 @@ def _diversify_swap_kind_mutations(
         target = graph.nodes.get(target_id)
         if target is None:
             continue
-        # An on-path swap must keep the flag readable; an off-path decoy can become any
-        # class. This is what lets diversify rotate the *technique the agent must learn*
-        # (not just decoys) without stranding the flag.
+        # On the oracle path the swap is constrained to shapes that still read the flag;
+        # an off-path decoy can become any class.
         on_oracle_path = target_id in oracle_endpoints
         alt_kind = _pick_alt_kind(
             current_kind=kind,
@@ -286,13 +283,12 @@ def _diversify_swap_kind_mutations(
             visibility=Visibility.HIDDEN,
         )
         updated_nodes = [updated_node]
-        # Match the sampler's delivery convention so a diversified vuln is
-        # indistinguishable from a sampled one: a body-shaped class is POST, rest GET.
-        # Safe even on a rare endpoint hosting a co-located decoy: the handler reads
-        # query and body the same, and the gate returns on the first vuln that leaks,
-        # so flipping the method can't break the solve (it only shifts delivery shape).
+        # Match the sampler: a body-shaped class is POST, others GET, so a diversified
+        # vuln looks sampled. Flip only when this is the endpoint's sole vuln, so a
+        # co-located decoy's delivery is left untouched.
         method = "POST" if alt_kind in BODY_SHAPED_KINDS else "GET"
-        if str(target.attrs.get("method", "GET")) != method:
+        sole_vuln = sum(1 for _, t in existing_kinds_by_target if t == target.id) == 1
+        if sole_vuln and str(target.attrs.get("method", "GET")) != method:
             updated_nodes.append(
                 Node(
                     id=target.id,
@@ -420,14 +416,10 @@ def _soften_remove_hop_mutation(
     family_id: str,
     relevance: float,
 ) -> Mutation | None:
-    # The inverse of ``_harden_append_hop``: collapse the last credential hop so a
-    # chain-stuck agent gets a strictly shorter chain to solve. Promote the relay that
-    # enables the terminal flag back into the flag-server (drop its ``next_*`` relay
-    # params); remove the terminal gate, its endpoint, and the credential between them;
-    # and re-home the flag store onto the relay's host so it still owns the flag under
-    # the per-service scoped seed. Fires at depth >= 2 (a relay) — at depth 1 the leak
-    # enables the flag directly, so there is no hop to remove and decoy-removal stays
-    # the only soften. Consumes no rng, so the shortened world is deterministic.
+    # Inverse of ``_harden_append_hop``: collapse the last credential hop into the flag
+    # server. Re-homing the flag store onto the relay's host keeps the flag owned under
+    # the per-service scoped seed CONTAINER uses. Consumes no rng, so the result is
+    # deterministic.
     terminal = _credential_gated_flag(graph)
     if terminal is None:
         return None
@@ -763,9 +755,6 @@ def _pick_alt_kind(
             continue
         if target_node_kind not in VULN_CATALOG[alt].target_kinds:
             continue
-        # On the oracle path the swap must keep reading the flag's loot: a db-loot
-        # oracle stays a response-leak class, a file-loot oracle a file-read/exec class.
-        # Off-path decoys are unconstrained (``allowed_shapes is None``).
         if allowed_shapes is not None and VULN_CATALOG[alt].shape not in allowed_shapes:
             continue
         return alt
@@ -773,9 +762,8 @@ def _pick_alt_kind(
 
 
 def _oracle_allowed_shapes(graph: WorldGraph) -> frozenset[str] | None:
-    # The exploit shapes that can still read the flag, from where it is stored: a db/kv
-    # store needs a response-leak class, a file store a file-read/exec class. ``None``
-    # when there is no flag (nothing to constrain).
+    # Exploit shapes that can still read the flag from where it is stored (see
+    # ``_ORACLE_SHAPES_FOR_LOOT``). ``None`` when there is no flag to constrain.
     flag = next(
         (n for n in graph.by_kind("secret") if n.attrs.get("kind") == "flag"), None
     )
@@ -806,11 +794,9 @@ def _stable_index(seed: str, modulo: int) -> int:
 
 
 def _default_vuln_params(kind: str, target: Node) -> dict[str, object]:
-    # Reuse the sampler's per-kind builder, seeded deterministically by (kind, target)
-    # rather than a live rng, so ``available_mutations`` stays pure AND a curriculum-
-    # introduced vuln is byte-identical to a sampler-introduced one. Covering every kind
-    # through the one builder is also what keeps a class like cmdi/xxe from rendering on
-    # an undefined param (the old three-kind table left the rest with empty params).
+    # Reuse the sampler's per-kind builder, seeded deterministically from (kind, target)
+    # rather than a live rng, so ``available_mutations`` stays pure and a
+    # curriculum-introduced vuln draws from the same pools as a sampled one.
     digest = hashlib.sha256(f"{kind}:{target.id}".encode()).digest()
     seed = int.from_bytes(digest[:8], "big")
     return default_vuln_params(kind, target, random.Random(seed))

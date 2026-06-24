@@ -72,10 +72,9 @@ def _report_passed(report: EpisodeReportLike) -> bool:
 # label is trusted.
 EvolutionGate = Callable[["Snapshot", Mutation], bool]
 
-# Returns True iff a candidate world is kept at pool-seeding time. Same shape as the
-# pack verdict an :data:`EvolutionGate` runs, minus the mutation — a structurally
-# admitted but live-unsolvable world (no reference breach leaks) is dropped before it
-# can enter the pool as a permanent zero-reward task.
+# Returns True iff a candidate world is kept at pool-seeding time — the pack verdict an
+# :data:`EvolutionGate` runs, minus the mutation. Drops a structurally admitted but
+# live-unsolvable world before it can seed the pool as a permanent zero-reward task.
 SeedGate = Callable[["Snapshot"], bool]
 
 
@@ -120,9 +119,8 @@ def consequence_seed_gate(
     accept: Callable[[Snapshot, str], bool],
 ) -> SeedGate:
     """A :data:`SeedGate` that applies the same ``accept`` verdict as
-    :func:`consequence_gate`, but at pool construction — so an initial world is admitted
-    into the pool only if its reference breach actually leaks. Closes the gap where
-    structural admission alone let a live-unsolvable world seed the curriculum."""
+    :func:`consequence_gate`, but at pool construction — so an initial world seeds the
+    pool only if its reference breach actually leaks against the realized world."""
     root = Path(workdir)
     return lambda snapshot: _verify_realized(pack, root, snapshot, accept)
 

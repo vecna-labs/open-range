@@ -333,19 +333,14 @@ def _resolve_round_backing(
     sandbox: bool,
     docker_ok: bool,
 ) -> Backing:
-    """The backing a round's rollouts realize on. Escalate the requested ``backing``
-    FLOOR to at least the round's worlds' ``minimum_backing`` (a file-read world is
-    0-reward blackbox on PROCESS) and to CONTAINER when sandboxing; PROCESS stays the
-    default for in-band worlds. If the escalation reaches CONTAINER but ``docker_ok`` is
-    False, raise — never silently train on an emulation the agent can't exploit. An
-    explicitly-requested CONTAINER is the caller's own choice, left for the realizer to
-    surface. Pure (``docker_ok`` injected) so escalation + fail-loud are unit-testable
-    without Docker."""
     effective = resolve_backing(backing, backing, sandbox=sandbox)
     for snapshot in snapshots:
         effective = resolve_backing(
             effective, pack.minimum_backing(snapshot.graph), sandbox=sandbox
         )
+    # An escalation INTO CONTAINER without Docker would train on an emulation the agent
+    # can't exploit, so fail loud. An explicitly-requested CONTAINER (``effective is
+    # backing``) is the caller's choice — leave that for the realizer to surface.
     if effective is Backing.CONTAINER and effective is not backing and not docker_ok:
         raise RuntimeError(
             "this round needs the CONTAINER backing (a file-read/code-exec world or a "

@@ -41,9 +41,11 @@ def build_handlers_and_routes(
     handlers: list[dict[str, str]] = []
     routes: list[dict[str, str]] = []
     internal_routes: list[dict[str, str]] = []
-    # A segmented world (the SSRF reaches the public service) only lets the agent in at
-    # the DMZ; internal services are reached by pivoting. A flat world has no such
-    # boundary — every service answers directly, which is the intended solve there.
+    # In a single-process networked world every service shares one server, so a direct
+    # request to an internal ``/svc/<name>`` route would hand over the flag with no SSRF
+    # pivot. Those routes go into ``internal_routes`` (reachable only via the in-process
+    # pivot), making network position the gate as under CONTAINER. A flat world has no
+    # such boundary — every service answers directly, which is the intended solve.
     segmented = only_services is None and _is_networked(graph)
 
     for endpoint_id, endpoint in endpoints_by_id.items():
@@ -84,11 +86,6 @@ def build_handlers_and_routes(
         route_path = path if only_services is not None else public_url
         method = str(endpoint.attrs.get("method", "GET"))
         route = {"path": route_path, "handler": handler_name, "method": method}
-        # A single app co-locates every service, so in a segmented world an internal
-        # ``/svc/<name>`` endpoint would otherwise answer a direct request — the agent
-        # could read the flag off the metadata host with no SSRF pivot. There they are
-        # dispatch-only: present for the in-process pivot, never externally served, so
-        # network position is the gate as it is for real under CONTAINER.
         internal = segmented and service.attrs.get("exposure") != "public"
         (internal_routes if internal else routes).append(route)
     return handlers, routes, internal_routes

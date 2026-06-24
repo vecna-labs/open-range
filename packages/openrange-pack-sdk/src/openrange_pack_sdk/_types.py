@@ -34,13 +34,10 @@ class Backing(StrEnum):
     HYBRID = "hybrid"
 
 
-# Realization-fidelity ladder for escalation. CONTAINER (a real fs/shell/network) is the
-# most capable realized substrate and PROCESS (in-process emulation) the least, so
-# escalating toward a higher rank always targets the real container. SIMULATOR/HYBRID
-# are reserved enum values no pack realizes yet; they rank BELOW CONTAINER so a sandbox
-# escalation still resolves to CONTAINER, not an unrealized backing. The enum values are
-# unordered strings, so this explicit rank is required — never ``max()`` over the enum
-# (``"container" < "process"`` lexically would pick the wrong one).
+# Capability rank for escalation: CONTAINER (a real fs/shell/network) is the most
+# capable realized substrate, PROCESS the least. SIMULATOR/HYBRID are reserved values no
+# pack realizes yet, ranked below CONTAINER so a sandbox escalation still resolves to
+# CONTAINER, not an unrealized backing.
 _BACKING_RANK: dict[Backing, int] = {
     Backing.PROCESS: 0,
     Backing.SIMULATOR: 1,

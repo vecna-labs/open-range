@@ -96,11 +96,8 @@ def world_difficulty(graph: WorldGraph) -> float:
         pivots = len({host for host, _ in walk}) if walk else 1
         boundaries = 1
         blind = 0 if any(v.attrs.get("kind") == _RECON_KIND for v in vulns) else 1
-        # Internal hosts the agent must triage to find the one that leaks, beyond the
-        # ones already on the credential walk and the single target itself. A wide
-        # estate (the company shape) earns it where a two-service SSRF does not, so size
-        # shows
-        # up — but capped below a hop, so it never out-ranks a real chain step.
+        # Internal hosts to triage beyond the ones on the credential walk and the target
+        # itself — a wide estate earns difficulty a two-service SSRF does not.
         internal = sum(
             1 for s in graph.by_kind("service") if s.attrs.get("exposure") != "public"
         )

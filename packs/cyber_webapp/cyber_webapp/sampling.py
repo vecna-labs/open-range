@@ -440,9 +440,9 @@ def _add_decoy_files(
 ) -> None:
     candidates = [(p, c) for p, c in _DECOY_FILES if p != exclude]
     rng.shuffle(candidates)
-    # A per-world revision tag (off the flag path, so no extra rng draw shifts the
-    # stream) keeps the decoy loot from being byte-identical across worlds — an agent
-    # can't memorize "these files are noise" from a single episode.
+    # Per-world revision tag so decoy loot isn't byte-identical across worlds (an agent
+    # can't memorize "these files are noise"). Derived from ``exclude``, not ``rng``, so
+    # it adds no draw to the stream.
     rev = hashlib.sha256(exclude.encode()).hexdigest()[:8]
     decoys = [(p, f"{c}\n# rev: {rev}\n") for p, c in candidates[:2]]
     hint_path = rng.choice(_HINT_CONFIG_PATHS)
@@ -1294,9 +1294,8 @@ def _add_recon_disclosure(graph: WorldGraph, rng: random.Random) -> None:
     )
     _add_edge(graph, "exposes", public.id, ep_id)
     # A real status page lists hosts that don't all leak. Mix in decoy hostnames the
-    # SSRF can't reach (they aren't real services, so a pivot to one gets no route): the
-    # page becomes a set of candidates to triage, not the one answer. The reference
-    # solver pivots to the real host by name, so solvability is untouched.
+    # SSRF can't reach, so the page is candidates to triage, not the one answer. The
+    # reference solver pivots to the real host by name, so solvability is untouched.
     real = set(internal_names)
     chaff_pool = sorted(
         name

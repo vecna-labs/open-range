@@ -72,6 +72,26 @@ def _members_of(
         )
 
 
+def _gated_members(
+    pack: Pack,
+    manifests: Sequence[Mapping[str, object]],
+    *,
+    difficulty_fn: DifficultyFn,
+    family: str | None,
+    max_repairs: int,
+    seed_gate: SeedGate | None,
+) -> list[_Member]:
+    members: list[_Member] = []
+    for manifest in manifests:
+        result = admit(pack, dict(manifest), max_repairs=max_repairs)
+        if isinstance(result, AdmissionFailure):
+            continue
+        if seed_gate is not None and not seed_gate(result):
+            continue
+        _members_of(result, difficulty_fn(result), family, members)
+    return members
+
+
 def _rows_for(members: Iterable[_Member], num_generations: int) -> list[PromptRow]:
     rows: list[PromptRow] = []
     for member in members:
@@ -158,14 +178,14 @@ class WorldPool:
         max_repairs: int = 2,
         seed_gate: SeedGate | None = None,
     ) -> WorldPool:
-        members: list[_Member] = []
-        for manifest in manifests:
-            result = admit(pack, dict(manifest), max_repairs=max_repairs)
-            if isinstance(result, AdmissionFailure):
-                continue
-            if seed_gate is not None and not seed_gate(result):
-                continue  # structurally admitted but its reference breach won't leak
-            _members_of(result, difficulty_fn(result), family, members)
+        members = _gated_members(
+            pack,
+            manifests,
+            difficulty_fn=difficulty_fn,
+            family=family,
+            max_repairs=max_repairs,
+            seed_gate=seed_gate,
+        )
         return cls(
             members, difficulty_fn=difficulty_fn, max_size=max_size, mix_floor=mix_floor
         )
@@ -247,11 +267,6 @@ class WorldPool:
         # Frontier cap: a member was due to advance but no admissible harder world
         # passed the gate.
         capped = False
-        # The most any evolved child advanced the difficulty this round (signed, so a
-        # soften reads negative; ``None`` when nothing evolved). With the default
-        # one-evolution-per-round this is just that child's delta. Near zero while
-        # ``capped`` is still False means the worlds are creeping on cosmetic decoys,
-        # advancing the real frontier — the honest "is the frontier still moving" read.
         gains: list[float] = []
         ran = sorted(
             (m for m in self._members.values() if reports.get(m.key)),
@@ -335,14 +350,14 @@ class EvalPool:
         max_repairs: int = 2,
         seed_gate: SeedGate | None = None,
     ) -> EvalPool:
-        members: list[_Member] = []
-        for manifest in manifests:
-            result = admit(pack, dict(manifest), max_repairs=max_repairs)
-            if isinstance(result, AdmissionFailure):
-                continue
-            if seed_gate is not None and not seed_gate(result):
-                continue  # structurally admitted but its reference breach won't leak
-            _members_of(result, difficulty_fn(result), family, members)
+        members = _gated_members(
+            pack,
+            manifests,
+            difficulty_fn=difficulty_fn,
+            family=family,
+            max_repairs=max_repairs,
+            seed_gate=seed_gate,
+        )
         return cls(members)
 
     def __len__(self) -> int:

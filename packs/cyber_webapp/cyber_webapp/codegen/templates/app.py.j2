@@ -163,11 +163,9 @@ ROUTES = {
 ROUTES.setdefault("/", _index)
 ROUTES.setdefault("/openapi.json", _openapi)
 
-# Internal-service endpoints: reachable only by an in-process pivot (the SSRF proxy
-# dispatches through this table), never served to a direct request. One process holds the
-# whole world here, so this table is what enforces the network segmentation CONTAINER
-# gets from real per-service hosts. Empty under CONTAINER (each service is its own host,
-# isolation is the network's).
+# Internal endpoints, dispatched to only by the SSRF proxy — never served to a direct
+# request. This table enforces network segmentation when one process holds the whole
+# world; empty under CONTAINER, where each service is its own host.
 INTERNAL_ROUTES = {
 {% for route in internal_routes %}
     {{ route.path | tojson }}: {{ route.handler }},
