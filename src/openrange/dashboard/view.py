@@ -460,6 +460,7 @@ def _lineage_node(snapshot: Snapshot) -> dict[str, object]:
     manifest.pop("_evolve", None)
     difficulty = lineage.get("curriculum_difficulty")
     curriculum = dict(difficulty) if isinstance(difficulty, Mapping) else {}
+    solve_cost = lineage.get("world_difficulty")
     return {
         "id": snapshot.snapshot_id,
         "parent_id": _parent_snapshot_id(lineage),
@@ -467,6 +468,9 @@ def _lineage_node(snapshot: Snapshot) -> dict[str, object]:
         "manifest": manifest,
         "pack": {"id": lineage.get("pack"), "version": lineage.get("pack_version")},
         "curriculum": curriculum,
+        "world_difficulty": float(solve_cost)
+        if isinstance(solve_cost, int | float)
+        else None,
         "evolve": dict(evolve) if evolve else None,
         "graph": graph_projection(snapshot.graph),
     }

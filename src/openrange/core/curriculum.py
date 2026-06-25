@@ -78,9 +78,11 @@ def _verify_realized(
     snapshot: Snapshot,
     accept: Callable[[Snapshot, str], bool],
 ) -> bool:
+    # No realizable task means the world can't be driven to prove it leaks; an
+    # unassessable world is not admissible, so it fails rather than passing blind.
     task = next((t for t in snapshot.tasks if t.entrypoints), None)
     if task is None:
-        return True
+        return False
     svc = EpisodeService(pack, root)
     try:
         handle = svc.start_episode(snapshot, task.id)
@@ -97,7 +99,7 @@ def consequence_gate(
     """An :data:`EvolutionGate` that realizes each evolved world and keeps it only when
     ``accept(snapshot, base_url)`` confirms it — a pack-supplied check run against the
     realized world. ``accept`` is the pack's verdict, so core needs no pack import. A
-    world with no realizable task can't be checked and passes through."""
+    world with no realizable task can't be checked, so it is rejected."""
     root = Path(workdir)
 
     def gate(evolved: Snapshot, mutation: Mutation) -> bool:

@@ -32,6 +32,7 @@ from cyber_webapp.difficulty import (
 )
 from cyber_webapp.invariants import unique_vuln_per_endpoint
 from cyber_webapp.mutation import _oracle_path_targets, available_mutations
+from cyber_webapp.realize_admit import classify_service_admission
 from cyber_webapp.reference_solver import solve_chain
 from cyber_webapp.verify import accepts, verdict
 from graphschema import Edge, Node, Visibility, WorldGraph
@@ -1421,3 +1422,117 @@ def test_warm_pool_reuses_real_containers(tmp_path: Path) -> None:
     finally:
         svc.close()
     assert not svc._warm
+
+
+_FLAT_SQLI = {
+    "pack": {"id": "webapp"},
+    "runtime": {"tick": {"mode": "off"}},
+    "npc": [],
+    "vuln": {"pin": [{"kind": "sql_injection"}]},
+    "loot": {"db": 1, "file": 0},
+}
+
+
+def _flat_sqli_with_sibling_db() -> Snapshot:
+    # A db-loot world whose db service exposes more than one endpoint: the SQLi oracle
+    # plus a sibling on the default handler — the case that used to leak the flag by a
+    # plain ?key lookup with no exploit.
+    for seed in range(16):
+        snap = _admit({**_FLAT_SQLI, "seed": seed})
+        svc_of_ep = {
+            e.dst: e.src for e in snap.graph.edges.values() if e.kind == "exposes"
+        }
+        db_eps = sum(
+            1
+            for ep in snap.graph.by_kind("endpoint")
+            if snap.graph.nodes.get(svc_of_ep.get(ep.id, "")) is not None
+            and snap.graph.nodes[svc_of_ep[ep.id]].attrs.get("kind") == "db"
+        )
+        if db_eps >= 2:
+            return snap
+    pytest.skip("no flat sqli world with a sibling db endpoint in range(16)")
+
+
+def test_benign_db_endpoint_never_serves_the_flag(tmp_path: Path) -> None:
+    # The honest contract: a benign request never returns a guarded (HIDDEN) value; the
+    # vuln's own handler is the only path that leaks it. A sibling default-db endpoint
+    # used to hand over the flag for ?key=<flagkey> with no exploit (the sibling leak).
+    snap = _flat_sqli_with_sibling_db()
+    graph = snap.graph
+    holds = {e.src: e.dst for e in graph.edges.values() if e.kind == "holds"}
+    flag_record = next(rid for rid, sid in holds.items() if sid == "secret_flag")
+    flag_key = str(graph.nodes[flag_record].attrs["key"])
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        base = svc.base_url(svc.start_episode(snap, task.id))
+        for ep in graph.by_kind("endpoint"):
+            url = str(ep.attrs["public_url"])
+            assert flag not in _http(base, f"{url}?key={flag_key}")
+            assert flag not in _http(base, url)
+        # The intended SQLi exploit still leaks, and the whole-world verdict accepts.
+        entry = str(graph.nodes[task.entrypoints[0]].attrs["public_url"])
+        outcome = verdict(graph, base, entry)
+        assert outcome.accepted
+        assert "no benign endpoint leaks" in outcome.reason
+    finally:
+        svc.close()
+
+
+def test_whole_world_verdict_rejects_a_sibling_leak() -> None:
+    # The guarantee verify.verdict now enforces: even when the oracle is honest (its
+    # exploit leaks and its benign does not), a sibling benign endpoint that serves the
+    # flag rejects the world — it would be winnable without the intended exploit.
+    graph = _admit({**_FLAT_SQLI, "seed": 0}).graph
+    flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
+    outcome = classify_service_admission(
+        graph,
+        oracle_exploit_body=flag,
+        oracle_benign_body="{}",
+        benign_endpoint_bodies={"/orders": "{}", "/leak": flag},
+        root_ok=True,
+    )
+    assert not outcome.accepted
+    assert "benign endpoint" in outcome.reason
+
+
+def test_evolved_snapshot_persists_world_difficulty(tmp_path: Path) -> None:
+    # The pool stamps each evolved child's recomputed solve-cost onto its lineage (the
+    # core re-admit builder can't), so the dashboard can surface a difficulty trend.
+    pack = WebappPack()
+    seeds = [{**_COMPANY_MANIFEST, "seed": s} for s in range(4)]
+    round_no = [0]
+
+    def run_round(
+        rows: list[dict[str, object]], snapshots: list[Snapshot]
+    ) -> dict[tuple[str, str], list[EpisodeReport]]:
+        round_no[0] += 1
+        return _solve_round(pack, tmp_path / f"r{round_no[0]}", rows, snapshots)
+
+    pool = WorldPool.seed(
+        pack,
+        seeds,
+        difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        family="webapp.pentest",
+        max_size=5,
+    )
+    run_pool_curriculum(
+        pool,
+        run_round,
+        rounds=2,
+        pack=pack,
+        groups=3,
+        num_generations=2,
+        gate=_pentest_only,
+    )
+    evolved = [
+        s
+        for s in pool.snapshots()
+        if (s.lineage.get("_evolve") or {}).get("kind") == "patch"
+    ]
+    assert evolved  # a solving agent hardened at least one world
+    for snap in evolved:
+        stamped = snap.lineage.get("world_difficulty")
+        assert stamped == pytest.approx(float(world_difficulty(snap.graph)))

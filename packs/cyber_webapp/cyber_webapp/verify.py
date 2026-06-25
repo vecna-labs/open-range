@@ -18,7 +18,11 @@ from graphschema import WorldGraph
 from openrange_pack_sdk import Snapshot
 
 from cyber_webapp import _is_networked
-from cyber_webapp.realize_admit import AdmissionVerdict, classify_admission
+from cyber_webapp.realize_admit import (
+    AdmissionVerdict,
+    classify_admission,
+    classify_service_admission,
+)
 from cyber_webapp.reference_solver import (
     Request,
     exploit_and_benign,
@@ -58,28 +62,64 @@ def perform(base_url: str, request: Request) -> str:
     return raw.decode("utf-8", "replace")
 
 
+def _benign_sweep(graph: WorldGraph, base_url: str) -> dict[str, str]:
+    """Benign GET bodies for every directly reachable endpoint. A networked world's
+    internal services answer only through the pivot, so only public endpoints are
+    swept; a flat world exposes every endpoint directly."""
+    networked = _is_networked(graph)
+    service_of_endpoint = {
+        e.dst: e.src for e in graph.edges.values() if e.kind == "exposes"
+    }
+    services = {n.id: n for n in graph.nodes.values() if n.kind == "service"}
+    bodies: dict[str, str] = {}
+    for endpoint in graph.by_kind("endpoint"):
+        service = services.get(service_of_endpoint.get(endpoint.id, ""))
+        if (
+            networked
+            and service is not None
+            and service.attrs.get("exposure") != "public"
+        ):
+            continue
+        public_url = str(endpoint.attrs.get("public_url", ""))
+        if public_url:
+            bodies[public_url] = _fetch(base_url + public_url)
+    return bodies
+
+
 def verdict(graph: WorldGraph, base_url: str, entry_path: str) -> AdmissionVerdict:
     """Drive the reference breach against an already-running world at ``base_url`` and
-    classify whether the exploit leaks while a benign request to ``entry_path`` does
-    not."""
+    classify it whole-world: the exploit must leak, the benign entry must not, and NO
+    directly reachable benign endpoint may leak — a sibling endpoint that serves the
+    flag would make the world winnable without the intended exploit."""
 
     def fetch(path: str) -> str:
         return _fetch(base_url + str(path))
 
     benign = fetch(entry_path)
+    reachable = _benign_sweep(graph, base_url)
     if _is_networked(graph):
         try:
             terminal = solve_chain(graph, fetch).terminal
         except Exception:  # noqa: BLE001 — a chain that won't drive isn't solvable
             return AdmissionVerdict(False, False, False, "reference breach failed")
-        return classify_admission(graph, terminal, benign)
+        return classify_service_admission(
+            graph,
+            oracle_exploit_body=terminal,
+            oracle_benign_body=benign,
+            benign_endpoint_bodies=reachable,
+            root_ok=True,
+        )
     for vuln in graph.by_kind("vulnerability"):
         try:
             exploit_req, benign_req = exploit_and_benign(graph, str(vuln.attrs["kind"]))
         except Exception:  # noqa: BLE001 — no reference exploit for this kind
             continue
-        return classify_admission(
-            graph, perform(base_url, exploit_req), perform(base_url, benign_req)
+        return classify_service_admission(
+            graph,
+            oracle_exploit_body=perform(base_url, exploit_req),
+            oracle_benign_body=perform(base_url, benign_req),
+            benign_endpoint_bodies=reachable,
+            root_ok=True,
         )
     return AdmissionVerdict(False, False, False, "no reference exploit to verify")
 
@@ -87,13 +127,13 @@ def verdict(graph: WorldGraph, base_url: str, entry_path: str) -> AdmissionVerdi
 def accepts(snapshot: Snapshot, base_url: str) -> bool:
     """True iff the evolved world's reference breach leaks (a benign request does not).
     The shape ``consequence_gate`` wants: it realizes the world, this drives the breach.
-    A world with no pentest task or entrypoint can't be assessed, so it passes."""
+    A world with no pentest task or entrypoint can't be assessed, so it is rejected."""
     task = next(
         (t for t in snapshot.tasks if t.meta.get("family") == "webapp.pentest"),
         None,
     )
     if task is None or not task.entrypoints:
-        return True
+        return False
     entry = str(snapshot.graph.nodes[task.entrypoints[0]].attrs["public_url"])
     return verdict(snapshot.graph, base_url, entry).accepted
 

@@ -445,3 +445,26 @@ def test_snapshot_id_helper_resolves_from_new_snapshot() -> None:
         assert state["snapshot_id"] == snap.snapshot_id
     finally:
         view.close()
+
+
+def test_lineage_node_surfaces_world_difficulty() -> None:
+    # The dashboard reads the solve-cost the builder stamps into admission_meta ->
+    # lineage (world_difficulty), not the unrelated curriculum_difficulty knob dict, so
+    # the Build panel shows a real number on the common patch-driven pool.
+    from cyber_webapp.difficulty import world_difficulty
+
+    from openrange.dashboard.view import _lineage_node
+
+    snap = admit(
+        WebappPack(),
+        manifest={
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "off"}},
+            "npc": [],
+            "seed": 3,
+        },
+        max_repairs=3,
+    )
+    assert isinstance(snap, Snapshot)
+    node = _lineage_node(snap)
+    assert node["world_difficulty"] == float(world_difficulty(snap.graph))

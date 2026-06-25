@@ -348,3 +348,45 @@ def test_lateral_solves_across_real_containers() -> None:
         assert "secret_flag" in runtime.collect()["leaked_secret_ids"]
     finally:
         runtime.stop()
+
+
+def test_chain_soften_is_reachable_from_real_reports(tmp_path: Path) -> None:
+    # Loop reachability, not just the mechanism: a real report from an agent that
+    # reached the public SSRF foothold but did not finish must make available_mutations
+    # OFFER the hop-collapse soften with positive, decoy-beating relevance -- otherwise
+    # the move is dead in the curriculum even though _soften_remove_hop_mutation works
+    # in isolation (the bug the foothold-engagement relevance closes).
+    from cyber_webapp.mutation import _REMOVE_RELEVANCE_FLOOR, available_mutations
+
+    pack = WebappPack()
+    snap = admit(
+        pack,
+        manifest={**_manifest(1), "chain": {"depth": {"min": 2, "max": 2}}},
+        max_repairs=3,
+    )
+    assert isinstance(snap, Snapshot)
+    graph = snap.graph
+    task = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
+
+    svc = EpisodeService(pack, tmp_path)
+    try:
+        handle = svc.start_episode(snap, task.id)
+        entry = str(graph.nodes[task.entrypoints[0]].attrs["public_url"])
+        _get(svc.base_url(handle), entry)  # reaches the foothold, then gives up
+        report = svc.stop_episode(handle)
+    finally:
+        svc.close()
+
+    options = available_mutations(graph, "webapp.pentest", [report])
+    hop = next(
+        (
+            m
+            for m in options
+            if m.direction == "soften" and m.note.startswith("collapse")
+        ),
+        None,
+    )
+    # offered from real foothold engagement, not a hardcoded value
+    assert hop is not None
+    # and it outranks a cosmetic decoy-removal
+    assert hop.relevance > _REMOVE_RELEVANCE_FLOOR

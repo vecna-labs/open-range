@@ -9,6 +9,8 @@ Difficulty is injected by the caller so the pool stays pack-agnostic.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -24,6 +26,8 @@ from openrange.core.curriculum import (
 )
 from openrange.core.episode import EpisodeReport
 from openrange.training import Reward, episode_reward
+
+_LOG = logging.getLogger(__name__)
 
 RewardFn = Callable[[EpisodeReport], Reward]
 
@@ -72,6 +76,16 @@ def _members_of(
         )
 
 
+def _stamp_difficulty(snapshot: Snapshot, difficulty: float) -> Snapshot:
+    # Persist the solve-cost onto the evolved snapshot's lineage so the dashboard
+    # can surface a difficulty trend. The initial builder stamps it; evolve re-admits
+    # through a core builder that can't. The snapshot id is graph-addressed, so adding
+    # lineage metadata leaves the id unchanged.
+    return dataclasses.replace(
+        snapshot, lineage={**dict(snapshot.lineage), "world_difficulty": difficulty}
+    )
+
+
 def _gated_members(
     pack: Pack,
     manifests: Sequence[Mapping[str, object]],
@@ -87,6 +101,11 @@ def _gated_members(
         if isinstance(result, AdmissionFailure):
             continue
         if seed_gate is not None and not seed_gate(result):
+            _LOG.warning(
+                "seed world %s dropped: consequence gate rejected it "
+                "(unsolvable, or a benign request already leaks)",
+                result.snapshot_id,
+            )
             continue
         _members_of(result, difficulty_fn(result), family, members)
     return members
@@ -284,6 +303,7 @@ class WorldPool:
                 capped = True
                 continue
             difficulty = self._difficulty_fn(child)
+            child = _stamp_difficulty(child, difficulty)
             gains.append(difficulty - member.difficulty)
             for task in child.tasks:
                 if str(task.meta.get("family", "")) != member.family:

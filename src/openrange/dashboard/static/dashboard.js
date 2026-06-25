@@ -1745,6 +1745,7 @@ function renderBuildPanel() {
     <dl class="kv-grid">
       <dt>Pack</dt><dd>${escapeHtml(target.pack?.id || "—")}</dd>
       <dt>Builder</dt><dd>${escapeHtml(target.manifest?.builder || "default")}</dd>
+      <dt>Difficulty</dt><dd>${target.world_difficulty != null ? Number(target.world_difficulty).toFixed(1) : "—"}</dd>
       <dt>NPCs</dt><dd>${(target.manifest?.npc || []).map((n) => escapeHtml(n.type)).join(", ") || "—"}</dd>
       <dt>Mode</dt><dd>${escapeHtml(target.manifest?.mode || "simulation")}</dd>
     </dl>`);
