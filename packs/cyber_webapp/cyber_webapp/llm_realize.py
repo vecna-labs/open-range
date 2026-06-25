@@ -17,7 +17,13 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 from graphschema import Node, WorldGraph
-from openrange_pack_sdk import LLMBackend, LLMRequest, PackError, Snapshot
+from openrange_pack_sdk import (
+    LLMBackend,
+    LLMRequest,
+    PackError,
+    Snapshot,
+    realize_verified,
+)
 
 from cyber_webapp.codegen.handlers import _extract_handle_body
 from cyber_webapp.realize_admit import (
@@ -505,57 +511,51 @@ def exploit_from_result(parsed_json: Mapping[str, object] | None) -> tuple[str, 
     )
 
 
-def realize_world(
-    snapshot: Snapshot,
-    propose: Callable[[WorldGraph, str], str],
-    run_probes: Callable[[str], tuple[str, str, str | None]],
-) -> Snapshot:
-    """Generate-verify-freeze: turn a procedural snapshot into an LLM-realized one.
+@dataclass(frozen=True, slots=True)
+class _HandlerAuthor:
+    propose: Callable[[WorldGraph, str], str]
+    run_probes: Callable[[str], tuple[str, str, str | None]]
 
-    For each realizable vuln: `propose` a handler, have the host `run_probes` boot the
-    world and return the (exploit, benign, control) response bodies, and keep the
-    handler only if the gate accepts it — the exploit leaks the flag, a benign request
-    does not, and the faithfulness control computes (so a faked/hard-coded handler is
-    rejected) — otherwise fall back to the procedural template. The result is re-frozen
-    to a new content-addressed snapshot recording the realized kinds in lineage. The
-    host injects `propose` (the LLM) and `run_probes` (booting an episode is a host
-    concern), so the pack stays transport-free. Mutates `snapshot.graph` — use the
-    returned snapshot.
-    """
-    graph = snapshot.graph
-    realized: list[str] = []
-    for kind in REALIZABLE_KINDS:
-        vuln = next(
-            (n for n in graph.by_kind("vulnerability") if n.attrs.get("kind") == kind),
-            None,
-        )
-        if vuln is None:
-            continue
-        handler = propose(graph, kind)
+    def authorable(self, snapshot: Snapshot) -> list[str]:
+        kinds = {n.attrs.get("kind") for n in snapshot.graph.by_kind("vulnerability")}
+        return [k for k in REALIZABLE_KINDS if k in kinds]
+
+    def apply(self, snapshot: Snapshot, kind: str) -> bool:
+        handler = self.propose(snapshot.graph, kind)
         if not handler.strip() or not _is_valid_handler(handler):
-            continue
-        vuln.attrs["realized_handler"] = handler
-        exploit_body, benign_body, control_body = run_probes(kind)
+            return False
+        _vuln_of_kind(snapshot.graph, kind).attrs["realized_handler"] = handler
+        return True
+
+    def verify(self, snapshot: Snapshot, kind: str) -> bool:
+        graph = snapshot.graph
+        exploit_body, benign_body, control_body = self.run_probes(kind)
         control = control_request(graph, kind)
-        verdict = classify_admission_with_control(
+        return classify_admission_with_control(
             graph,
             exploit_body,
             benign_body,
             control_body,
             control.expected if control else None,
-        )
-        if verdict.accepted:
-            realized.append(kind)
-        else:
-            del vuln.attrs["realized_handler"]  # rejected — keep the template
-    return Snapshot(
-        snapshot_id=graph.content_hash(),
-        ontology_id=snapshot.ontology_id,
-        graph=graph,
-        tasks=snapshot.tasks,
-        lineage={**dict(snapshot.lineage), "realized_handlers": tuple(realized)},
-        history=snapshot.history,
-    )
+        ).accepted
+
+    def revert(self, snapshot: Snapshot, kind: str) -> None:
+        del _vuln_of_kind(snapshot.graph, kind).attrs["realized_handler"]
+
+
+def realize_world(
+    snapshot: Snapshot,
+    propose: Callable[[WorldGraph, str], str],
+    run_probes: Callable[[str], tuple[str, str, str | None]],
+) -> Snapshot:
+    """Generate-verify-freeze each realizable vuln's handler through the kind-agnostic
+    gate: `propose` it, keep it only if the gate accepts (the exploit leaks the flag, a
+    benign request does not, and the faithfulness control computes), else fall back to
+    the procedural template. The host injects `propose` (the LLM) and `run_probes`
+    (booting an episode), so the pack stays transport-free; the realized kinds land in
+    `lineage["realized"]`. Mutates `snapshot.graph` — use the returned snapshot.
+    """
+    return realize_verified(snapshot, _HandlerAuthor(propose, run_probes))
 
 
 def realize_with_backend(

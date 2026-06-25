@@ -84,6 +84,11 @@ def _tool_method(env: EpisodeEnv, fn: Tool) -> Any:
     ns: dict[str, Any] = {"_fn": fn}
     decl, forward = "", ""
     for p in params:
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD, p.POSITIONAL_ONLY):
+            raise ValueError(
+                f"tool {fn.__name__!r} parameter {p.name!r} must be "
+                f"positional-or-keyword or keyword-only, not {p.kind.name}"
+            )
         ns[f"_ann_{p.name}"] = p.annotation if p.annotation is not p.empty else str
         decl += f", {p.name}: _ann_{p.name}"
         if p.default is not p.empty:
@@ -139,6 +144,11 @@ class EpisodeEnv:
         for fn in tools:
             if fn.__name__ in self._tools:
                 raise ValueError(f"duplicate tool name: {fn.__name__!r}")
+            # setattr below would silently shadow a same-named method/attribute.
+            if hasattr(self, fn.__name__):
+                raise ValueError(
+                    f"tool name {fn.__name__!r} collides with an EpisodeEnv member"
+                )
             self._tools[fn.__name__] = fn
             setattr(self, fn.__name__, _tool_method(self, fn))
 
@@ -192,7 +202,8 @@ class EpisodeEnv:
         return "Environment ready. Use the available tools."
 
     def _invoke(self, fn: Tool, **kwargs: Any) -> str:
-        out = self._safe(lambda: fn(self._require_surface(), **kwargs))
+        # str(): a non-str return must not crash the slice/_record below.
+        out = self._safe(lambda: str(fn(self._require_surface(), **kwargs)))
         self._record(fn.__name__, kwargs, out)
         return out[-_OUTPUT_TAIL:]
 
@@ -538,21 +549,28 @@ def reward_variance_policy(
     *,
     epsilon: float = 1e-9,
     harden_mean: float = 0.5,
+    reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
 ) -> Direction | None:
     """Evolve only when GRPO's gradient has collapsed.
 
-    GRPO learns from the *spread* of a group's rewards, so a round whose
-    ``episode_reward`` scalars are all (near-)equal yields no advantage signal.
-    When the spread collapses this nudges the frontier toward the side that
-    revives it — ``harden`` if the group is mostly solving, ``soften`` if mostly
-    failing. While the spread is alive it returns ``None`` (hold the world). It
-    reads the dense scalar when a concrete ``EpisodeReport`` is present, else
-    falls back to the binary ``passed`` gate — a strict refinement of
-    ``direction_from_reports`` keyed on what the trainer actually consumes.
+    GRPO learns from the *spread* of a group's rewards, so a round whose reward
+    scalars are all (near-)equal yields no advantage signal. When the spread
+    collapses this nudges the frontier toward the side that revives it — ``harden``
+    if the group is mostly solving, ``soften`` if mostly failing. While the spread
+    is alive it returns ``None`` (hold the world). It reads the dense scalar when a
+    concrete ``EpisodeReport`` is present, else falls back to the binary ``passed``
+    gate — a strict refinement of ``direction_from_reports`` keyed on what the
+    trainer actually consumes.
+
+    ``reward_fn`` must be the SAME one the trainer optimizes (the one passed to
+    ``make_grpo_rounds``), or this keys on a different signal than GRPO's gradient.
+    The pool calls a policy as ``policy(reports)``, so bind a custom reward with
+    ``functools.partial(reward_variance_policy, reward_fn=my_reward_fn)``. Defaults
+    to :func:`episode_reward`.
     """
     if not reports:
         return None
-    scalars = [_report_scalar(r) for r in reports]
+    scalars = [_report_scalar(r, reward_fn) for r in reports]
     mean = sum(scalars) / len(scalars)
     variance = sum((s - mean) ** 2 for s in scalars) / len(scalars)
     if variance > epsilon:
@@ -560,9 +578,12 @@ def reward_variance_policy(
     return "harden" if mean >= harden_mean else "soften"
 
 
-def _report_scalar(report: EpisodeReportLike) -> float:
+def _report_scalar(
+    report: EpisodeReportLike,
+    reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
+) -> float:
     if isinstance(report, EpisodeReport):
-        return episode_reward(report).scalar
+        return reward_fn(report).scalar
     # CurriculumPolicy takes the EpisodeReportLike Protocol, but the trainer only
     # emits concrete EpisodeReport; this contract fallback needs a fake to hit.
     return 1.0 if report.passed else 0.0  # pragma: no cover

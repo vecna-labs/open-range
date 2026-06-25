@@ -22,7 +22,9 @@ from openrange.core.curriculum import (
     direction_from_reports,
 )
 from openrange.core.episode import EpisodeReport
-from openrange.training import episode_reward
+from openrange.training import Reward, episode_reward
+
+RewardFn = Callable[[EpisodeReport], Reward]
 
 DifficultyFn = Callable[[Snapshot], float]
 PromptRow = dict[str, object]
@@ -97,8 +99,10 @@ def _mean_pass_rate(report_groups: Iterable[Sequence[EpisodeReport]]) -> float:
     return sum(rates) / len(rates) if rates else 0.0
 
 
-def _member_priority(reports: Sequence[EpisodeReport]) -> float:
-    scalars = [episode_reward(r).scalar for r in reports]
+def _member_priority(
+    reports: Sequence[EpisodeReport], reward_fn: RewardFn = episode_reward
+) -> float:
+    scalars = [reward_fn(r).scalar for r in reports]
     mean = sum(scalars) / len(scalars)
     learnability = 1.0 - abs(2.0 * mean - 1.0)
     gaps = []
@@ -214,11 +218,12 @@ class WorldPool:
         gate_factory: GateFactory | None = None,
         evolve_top: int = 1,
         max_repairs: int = 2,
+        reward_fn: RewardFn = episode_reward,
     ) -> bool:
         for member in self._members.values():
             ran = reports.get(member.key)
             if ran:
-                member.priority = _member_priority(ran)
+                member.priority = _member_priority(ran, reward_fn)
             else:
                 member.priority = min(member.priority + _STALENESS_STEP, _MAX_PRIORITY)
         grown, capped = self._grow(
@@ -356,6 +361,7 @@ def run_pool_curriculum(
     evolve_top: int = 1,
     eval_pool: EvalPool | None = None,
     eval_round: RunRound | None = None,
+    reward_fn: RewardFn = episode_reward,
 ) -> list[RoundMetrics]:
     """Run the curriculum, updating ``pool`` in place.
 
@@ -364,6 +370,12 @@ def run_pool_curriculum(
     scripted solver measures it with the same ``run_round``; a real trainer must
     pass an ``eval_round`` that rolls out and grades *without* a gradient step, or
     it would train on the held-out set and break the fence.
+
+    ``reward_fn`` is the scalar the pool ranks worlds by (learnability/priority);
+    pass the *same* one the trainer optimizes (the ``reward_fn`` given to
+    ``openrange-trl``) so the pool evolves on the objective the policy is trained on.
+    Defaults to :func:`episode_reward`. Evolution *direction* still tracks the pack's
+    pass-rate (``check_success``), independent of the reward shaping.
     """
     measure = eval_round or run_round
     metrics: list[RoundMetrics] = []
@@ -383,6 +395,7 @@ def run_pool_curriculum(
             gate=gate,
             gate_factory=gate_factory,
             evolve_top=evolve_top,
+            reward_fn=reward_fn,
         )
         metrics.append(
             RoundMetrics(
