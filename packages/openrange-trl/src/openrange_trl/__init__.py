@@ -181,10 +181,8 @@ class EpisodeEnv:
         self._finalized = False
         return self._initial_observation()
 
-    def close(self) -> None:
-        """Release the env's resources: tear down any sandbox and close the underlying
-        ``EpisodeService`` (stopping live episodes and warm-pooled worlds). TRL never
-        closes the envs it builds from a factory, so the factory's owner must."""
+    # underscore-prefixed: TRL reflects every public env method into a policy tool.
+    def _close(self) -> None:
         self._teardown_sandbox()
         self.service.close()
 
@@ -503,7 +501,7 @@ def make_grpo_rounds(
             # TRL builds one env per batch slot and never closes them; without this
             # each round's CONTAINER worlds (a per-service container stack) leak.
             for env in getattr(trainer, "environments", None) or []:
-                env.close()
+                env._close()
         return collector
 
     def train_round(rows: list[PromptRow], snapshots: list[Snapshot]) -> RoundReports:
