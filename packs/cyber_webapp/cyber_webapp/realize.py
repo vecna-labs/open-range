@@ -190,7 +190,7 @@ class _WebappRuntime(SubprocessRuntime):
         try:
             with urlopen(self._base_url + "/", timeout=2) as resp:
                 return bool(getattr(resp, "status", 0) == 200)
-        except URLError, TimeoutError, OSError:
+        except (URLError, TimeoutError, OSError):
             return False
 
 

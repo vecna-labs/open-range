@@ -8,7 +8,7 @@ name = "openrange"
 version = "0.1.0"
 description = "Domain-agnostic admitted world builder for agent training environments."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "PyYAML>=6.0.3",
     "Jinja2>=3.1",
@@ -44,6 +44,7 @@ dev = [
     "openrange-trading",
     "openrange-swe",
     "openrange-trl",
+    "openrange-rllm",
 ]
 
 [tool.uv.workspace]
@@ -54,6 +55,7 @@ members = [
     "packages/graphschema",
     "packages/openrange-pack-sdk",
     "packages/openrange-trl",
+    "packages/openrange-rllm",
 ]
 
 [tool.uv.sources]
@@ -63,19 +65,20 @@ openrange-trading = { workspace = true }
 openrange-swe = { workspace = true }
 openrange-pack-sdk = { workspace = true }
 openrange-trl = { workspace = true }
+openrange-rllm = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openrange"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py314"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.12"
 mypy_path = [
     "src",
     "packs/cyber_webapp",
@@ -84,6 +87,7 @@ mypy_path = [
     "packages/graphschema/src",
     "packages/openrange-pack-sdk/src",
     "packages/openrange-trl/src",
+    "packages/openrange-rllm/src",
 ]
 strict = true
 warn_unreachable = true
@@ -114,6 +118,18 @@ follow_imports = "skip"
 # litellm is an optional (``openrange[litellm]``) lazy import in LiteLLMBackend.
 [[tool.mypy.overrides]]
 module = ["litellm", "litellm.*"]
+ignore_missing_imports = true
+
+# rLLM ships no py.typed; the openrange-rllm adapter imports it lazily (from
+# source, never on PyPI). Treat it as untyped whether or not it's installed.
+[[tool.mypy.overrides]]
+module = ["rllm", "rllm.*"]
+ignore_missing_imports = true
+
+# hydra / omegaconf are lazy imports in the rLLM training example (the trainer's
+# config layer); untyped and only present with the rLLM train extra.
+[[tool.mypy.overrides]]
+module = ["hydra", "hydra.*", "omegaconf", "omegaconf.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

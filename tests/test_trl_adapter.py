@@ -188,17 +188,41 @@ def test_base_env_resets_with_no_tools(tmp_path: Path) -> None:
 
 
 def test_env_close_releases_the_service(tmp_path: Path) -> None:
-    # TRL builds envs from a factory and never closes them, so env.close() is the
+    # TRL builds envs from a factory and never closes them, so env._close() is the
     # only hook to stop the live episode + warm worlds. Without it, CONTAINER rollouts
-    # leak a container stack per env. close() is idempotent and safe before any reset.
+    # leak a container stack per env. _close() is idempotent and safe before any reset.
     snapshot = _admit("calc_sum")
     service = EpisodeService(SwePack(), tmp_path / "close")
     env = EpisodeEnv(service=service, snapshots={snapshot.snapshot_id: snapshot})
     env.reset(snapshot_id=snapshot.snapshot_id)
     assert service._episodes  # a live episode is registered
-    env.close()
+    env._close()
     assert not service._episodes  # closed: nothing left running
-    env.close()  # idempotent
+    env._close()  # idempotent
+
+
+def test_only_brought_tools_are_exposed(tmp_path: Path) -> None:
+    # TRL reflects every public env method except `reset` into a policy tool, so a
+    # lifecycle hook like close must stay private.
+    import inspect
+
+    def my_tool(surface: Mapping[str, Any]) -> str:
+        return "ok"
+
+    snapshot = _admit("calc_sum")
+    service = EpisodeService(SwePack(), tmp_path / "tools")
+    env = EpisodeEnv(
+        service=service, snapshots={snapshot.snapshot_id: snapshot}, tools=[my_tool]
+    )
+    try:
+        visible = {
+            n
+            for n, _ in inspect.getmembers(env, predicate=inspect.ismethod)
+            if n != "reset" and not n.startswith("_")
+        }
+        assert visible == {"my_tool"}, f"non-tool methods leaked to TRL: {visible}"
+    finally:
+        service.close()
 
 
 class TestBuildDataset:

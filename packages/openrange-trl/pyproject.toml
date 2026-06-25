@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Optional HuggingFace TRL GRPO integration for OpenRange. Adapts an OpenRange episode into a trl.GRPOTrainer agentic environment; OpenRange itself stays trainer-agnostic."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "openrange",
     "openrange-pack-sdk",

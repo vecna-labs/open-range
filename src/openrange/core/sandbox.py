@@ -6,8 +6,8 @@ agent its **own** hardened container with ``bash``/``curl``/``python``, let it r
 **its own** commands against the world, and ship no tools from the harness. The
 sandbox binds to whatever the world's ``surface`` exposes:
 
-* an HTTP world (``base_url``) is a network target — the sandbox joins the world's
-  docker network and the agent reaches it by alias (``curl http://target:8000/...``);
+* a networked world (``base_url``) is a network target — the sandbox joins the
+  world's docker network and the agent reaches it by its network alias;
 * a code world (``solver_root``) is a workspace — the sandbox bind-mounts it so the
   agent edits the tree as its own filesystem and the grader reads the edited tree.
 
@@ -43,7 +43,7 @@ _AGENT_DOCKERFILE = (
 )
 
 # Mirrors the worlds' container hardening (cyber_webapp ``hardening_run_args``); kept
-# here so the adapter doesn't depend on a pack. Contains attacker-controlled code: no
+# here so core doesn't depend on a pack. Contains attacker-controlled code: no
 # capabilities, no privilege gain, bounded memory/cpu/pids.
 _HARDENING = [
     "--cap-drop",
@@ -127,9 +127,10 @@ class CommandResult(NamedTuple):
 class AgentSandbox:
     """A hardened throwaway container the agent runs its own commands in.
 
-    Bind it to a world ``surface``: an HTTP world (``base_url``) joins ``network`` and
-    the target is reached by alias; a code world (``solver_root``) is bind-mounted at
-    ``/workspace``. :meth:`run` executes one shell command; :meth:`close` removes the
+    Bind it to a world ``surface``: a networked world (``base_url``) joins
+    ``network`` and the target is reached by alias; a code world (``solver_root``)
+    is bind-mounted at ``/workspace``. :meth:`run` executes one shell command;
+    :meth:`close` removes the
     container (the network, if any, is the caller's). Usable as a context manager.
     """
 
@@ -226,14 +227,14 @@ class AgentSandbox:
         if isinstance(base_url, str):
             if self._network is None:
                 raise SandboxError(
-                    "an HTTP world (base_url) needs a docker network to reach the "
-                    "target by alias; pass network=..."
+                    "a networked world (base_url) needs a docker network to reach "
+                    "the target by alias; pass network=..."
                 )
             # Join the world's network; the agent reaches the target by its alias.
             return ["--network", self._network, "--network-alias", cname]
         if solver_root is not None:
             # Mount the workspace so the agent edits the code as its own filesystem;
-            # the grader later reads the edited tree back on the host.
+            # the grader later reads the edited tree back from the bind mount.
             root = Path(str(solver_root)).resolve()
             return ["-v", f"{root}:/workspace", "-w", "/workspace"]
         return []

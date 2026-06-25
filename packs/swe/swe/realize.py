@@ -127,6 +127,6 @@ def _read_tree(root: Path) -> dict[str, str]:
             continue
         try:
             files[str(rel)] = path.read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
     return files

@@ -25,10 +25,11 @@ from cyber_webapp import NetworkedContainerWebappRuntime, WebappPack
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from graphschema import WorldGraph
 from openrange_pack_sdk import Backing, Snapshot
-from openrange_trl import EpisodeEnv, SandboxError
+from openrange_trl import EpisodeEnv
 
 from openrange.core.admit import admit
 from openrange.core.episode import EpisodeService
+from openrange.core.sandbox import SandboxError
 
 _CMDI_MANIFEST = {
     "pack": {"id": "webapp"},

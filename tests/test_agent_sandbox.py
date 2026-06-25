@@ -26,10 +26,10 @@ from cyber_webapp import WebappPack
 from cyber_webapp.container import hardening_run_args, image_files
 from cyber_webapp.realize_admit import cmdi_exploit_and_benign
 from openrange_pack_sdk import Snapshot
-from openrange_trl import AgentSandbox, SandboxError
-from openrange_trl import sandbox as sandbox_mod
 
+from openrange.core import sandbox as sandbox_mod
 from openrange.core.admit import admit
+from openrange.core.sandbox import AgentSandbox, SandboxError
 
 # --- pure: the binding contract and lifecycle guards (no docker) ----------------------
 

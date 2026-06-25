@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Cyber webapp pack for OpenRange — procedural multi-service web targets with HTTP-shaped vulns."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "openrange-pack-sdk",
     "graphschema",

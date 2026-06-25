@@ -181,7 +181,7 @@ class _FilesystemRuntime(ABC):
             return {}
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
-        except OSError, ValueError:  # ValueError also covers a non-UTF-8 read
+        except (OSError, ValueError):  # ValueError also covers a non-UTF-8 read
             return {}
         return dict(data) if isinstance(data, Mapping) else {}
 

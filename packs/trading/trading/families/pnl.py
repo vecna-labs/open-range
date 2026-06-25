@@ -295,7 +295,7 @@ def _difficulty(target: _Target) -> float:
 def _float(value: object, default: float) -> float:
     try:
         return float(str(value))
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 

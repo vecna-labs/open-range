@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openrange-rllm"
+version = "0.1.0"
+description = "Optional rLLM AgentTrainer integration for OpenRange. Maps an OpenRange agent rollout onto rLLM's Episode/Trajectory/Step and wraps the harness as an @rllm.rollout flow; OpenRange itself stays trainer-agnostic."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "openrange",
+    "openrange-pack-sdk",
+]
+
+# ``import openrange_rllm`` pulls no rLLM: every rLLM import is local to the
+# function that needs it, so the module loads on a plain machine. The live trainer
+# (``rllm.trainer.AgentTrainer``) needs rLLM plus its ``verl`` GPU backend
+# (torch/vllm/verl) installed from source on a CUDA box — see README. rLLM is not
+# published on PyPI, so it is deliberately not declared as a dependency here
+# (doing so makes the universal workspace lock unsatisfiable).
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openrange_rllm"]
+
+[tool.uv.sources]
+openrange = { workspace = true }
+openrange-pack-sdk = { workspace = true }

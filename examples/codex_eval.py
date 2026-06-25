@@ -25,7 +25,7 @@ from openrange_pack_sdk import (
     TaskSpec,
 )
 
-from examples._briefing import agent_briefing
+from openrange.agent import agent_briefing
 from openrange.agent_backend import CodexAgentBackend
 from openrange.core import PACKS, auto_evolve, consequence_gate
 from openrange.core.episode import AgentTurn, EpisodeReport
