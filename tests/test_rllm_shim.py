@@ -128,7 +128,11 @@ def test_agent_rollout_to_episode_maps_turns(tmp_path: Path) -> None:
         "extracted_anything",
         "matched_flag",
     }
-    assert episode.termination_reason == "finished"
+    # regression: termination_reason must NOT be a raw string — rLLM's verl
+    # transform calls ``reason.value`` and crashes on a str. Leave it unset
+    # (rLLM fills its enum); the value lives in artifacts instead.
+    assert episode.termination_reason is None
+    assert episode.artifacts["terminal_reason"] == rollout.terminal_reason
 
 
 def test_make_rollout_drives_a_real_episode(tmp_path: Path) -> None:

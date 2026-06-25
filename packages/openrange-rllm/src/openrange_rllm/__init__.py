@@ -94,7 +94,9 @@ def agent_rollout_to_episode(rollout: AgentRollout, *, task: Any = None) -> Epis
     return Episode(
         task=task,
         is_correct=rollout.success,
-        termination_reason=rollout.terminal_reason,
+        # NB: leave Episode.termination_reason unset — rLLM fills it with its
+        # TerminationReason enum, and its verl transform does ``reason.value`` (a
+        # raw string would crash there). The value is kept in ``artifacts`` below.
         trajectories=[
             Trajectory(name=rollout.task_id, steps=steps, reward=rollout.reward.scalar)
         ],

@@ -12,16 +12,40 @@ pentest task, carrying its ``snapshot_id``/``task_id``); ``snapshot_resolver``
 maps each sampled rLLM task back to its world. The agent reaches the live webapp
 over HTTP from a host shell (PROCESS backing) and composes ``curl`` itself.
 
-Run (needs a CUDA GPU and rLLM installed with its verl backend, from source —
-``pip install -e <rllm>[verl]``)::
+Run on one CUDA GPU through rLLM's verl backend. Validated end to end on an
+A100-40GB inside the maintainers' ``verlai/verl:vllm011.latest`` image (torch 2.8
+/ vLLM 0.11 / flash-attn)::
 
-    uv run python -m examples.rllm_grpo_cyber \
-        rllm/backend=verl \
-        +model.name=Qwen/Qwen3-1.7B actor_rollout_ref.model.path=Qwen/Qwen3-1.7B \
+    python -m examples.rllm_grpo_cyber \
+        rllm/backend=verl algorithm.adv_estimator=grpo \
+        +model.name=Qwen/Qwen2.5-7B-Instruct \
+        actor_rollout_ref.model.path=Qwen/Qwen2.5-7B-Instruct \
+        actor_rollout_ref.model.lora_rank=32 \
+        actor_rollout_ref.model.lora_alpha=32 \
+        actor_rollout_ref.actor.use_dynamic_bsz=True \
+        actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16384 \
+        actor_rollout_ref.actor.use_kl_loss=False \
+        actor_rollout_ref.rollout.name=vllm \
         actor_rollout_ref.rollout.mode=async \
-        trainer.n_gpus_per_node=1 data.train_batch_size=8
+        actor_rollout_ref.rollout.enforce_eager=True \
+        actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+        actor_rollout_ref.rollout.n=4 \
+        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+        trainer.n_gpus_per_node=1 data.train_batch_size=2 \
+        rllm.trainer.total_batches=1
 
-Building the pool and registering the dataset is CPU-only; ``trainer.train()`` is
+Gotchas (both cost real debugging):
+
+- LoRA uses the **flat** keys ``lora_rank`` / ``lora_alpha``. The nested
+  ``lora.rank`` is silently ignored, which means full fine-tuning — a 7B then
+  OOMs a 40GB card, whereas with LoRA on it fits comfortably.
+- OpenRange currently requires Python **3.14** (PEP 758 ``except`` syntax) but the
+  verl GPU stack ships only Python **3.12** wheels, so they cannot share a
+  process. Running this needs OpenRange made 3.12-compatible (a 3-line change) or
+  3.14 wheels for torch/vLLM/flash-attn (not available yet).
+
+Building the pool + registering the dataset is CPU-only; ``trainer.train()`` is
 the CUDA boundary (Ray + vLLM + FSDP under the verl backend).
 """
 
