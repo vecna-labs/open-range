@@ -122,15 +122,11 @@ def test_agent_rollout_to_episode_maps_turns(tmp_path: Path) -> None:
     assert episode.is_correct == rollout.success
     assert episode.artifacts["reward"] == rollout.reward.scalar
     assert episode.trajectories[0].reward == rollout.reward.scalar
-    # the pack's dense reward ladder reaches the rLLM episode for the evaluator
     assert set(episode.metrics) == {
         "reached_endpoint",
         "extracted_anything",
         "matched_flag",
     }
-    # regression: termination_reason must NOT be a raw string — rLLM's verl
-    # transform calls ``reason.value`` and crashes on a str. Leave it unset
-    # (rLLM fills its enum); the value lives in artifacts instead.
     assert episode.termination_reason is None
     assert episode.artifacts["terminal_reason"] == rollout.terminal_reason
 
@@ -206,7 +202,6 @@ def test_build_rllm_dataset_rows_carries_resolution_keys() -> None:
     pentest = _pentest(snap)
     rows = build_rllm_dataset_rows([snap], family="webapp.pentest")
     assert rows
-    # family filter drops the cmdi world's build task, keeps pentest
     assert {row["task_id"] for row in rows} == {pentest}
     assert all(row["snapshot_id"] == snap.snapshot_id for row in rows)
     assert all(row["instruction"] and row["id"] for row in rows)
