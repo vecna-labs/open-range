@@ -19,18 +19,12 @@ from cyber_webapp.sampling import (
 from cyber_webapp.vulnerabilities import BODY_SHAPED_KINDS
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 
-# Guarantees a remove pick exists even when the path-hit heuristic is silent.
 _REMOVE_RELEVANCE_FLOOR = 0.05
 
-# Fixed mid-value: no agent-data signal exists for a kind that isn't in
-# the world yet.
 _ADD_ABSENT_RELEVANCE = 0.5
 
-# Below remove relevance: rotating the exploit is a softer step than dropping the kind.
 _SWAP_PRESENT_RELEVANCE = 0.2
 
-# Above the decoy harden (0.5) so deepening the chain is the preferred frontier
-# step: it extends the required skill instead of adding an off-path vuln.
 _APPEND_HOP_RELEVANCE = 0.9
 
 _GATE_PATH = "/internal/vault"
@@ -121,9 +115,6 @@ def _harden_add_absent_mutations(
     services = list(graph.by_kind("service"))
     if not endpoints and not services:
         return []
-    # Prefer off-oracle surfaces for the decoy: a record-reading vuln on the
-    # flag's own surface can become a second path to it (easier). Only a
-    # preference — auto_evolve's consequence gate is the actual safeguard.
     oracle_endpoints, oracle_services = _oracle_path_targets(graph)
     endpoints_decoy_first = sorted(
         endpoints,
@@ -199,9 +190,6 @@ def _soften_remove_kind_mutation(
     relevance: float,
     score: float,
 ) -> Mutation:
-    # ``apply_patch`` drops dangling edges automatically; we enumerate
-    # them anyway so the patch reads as a complete diff and so callers
-    # inspecting ``edges_removed`` see the full picture.
     edge_ids: list[str] = []
     vuln_id_set = set(vuln_node_ids)
     for edge in graph.edges.values():
@@ -228,7 +216,6 @@ def _diversify_swap_kind_mutations(
     family_id: str,
     vulns_by_kind: Mapping[str, Sequence[str]],
 ) -> list[Mutation]:
-    # In-place update — affects edge keeps its id since src/kind/dst are unchanged.
     if not vulns_by_kind:
         return []
     networked = _is_networked(graph)
@@ -262,7 +249,7 @@ def _diversify_swap_kind_mutations(
         if alt_kind is None:
             continue
         if networked and alt_kind == _FOOTHOLD_KIND:
-            continue  # never introduce a second public foothold into a networked world
+            continue
         alt_entry = VULN_CATALOG[alt_kind]
         updated_node = Node(
             id=vuln_node.id,
@@ -427,7 +414,7 @@ def _soften_remove_hop_mutation(
     )
     relay = graph.nodes.get(relay_id) if relay_id is not None else None
     if relay is None or relay.attrs.get("kind") != "credential_gated_relay":
-        return None  # depth 1: nothing to collapse onto
+        return None
     relay_ep_id = _affects_target_id(graph, relay.id)
     relay_host = _service_of_endpoint(graph, relay_ep_id) if relay_ep_id else None
     store = _flag_store(graph)
@@ -688,7 +675,6 @@ def _oracle_path_targets(graph: WorldGraph) -> tuple[set[str], set[str]]:
 def _successful_path_hits(
     reports: Sequence[EpisodeReportLike],
 ) -> dict[str, int]:
-    # Status filtering already happened upstream — `requests_made` is the kept set.
     counts: dict[str, int] = {}
     for report in reports:
         requests_value = report.final_state.get("requests_made")
@@ -726,9 +712,6 @@ def _fresh_vuln_id(kind: str, existing_ids: set[str]) -> str:
 
 
 def _edge_id(src: str, kind: str, dst: str) -> str:
-    # Synthesizing from the triple keeps the same semantic edge stable
-    # across patches and avoids id collisions when several proposals
-    # are inspected side-by-side.
     return f"{src}--{kind}-->{dst}"
 
 
@@ -753,8 +736,6 @@ def _pick_alt_kind(
 
 
 def _oracle_allowed_shapes(graph: WorldGraph) -> frozenset[str] | None:
-    # Shapes that can read the flag from its store; see ``_ORACLE_SHAPES_FOR_LOOT``.
-    # ``None`` when there is no flag to constrain.
     flag = next(
         (n for n in graph.by_kind("secret") if n.attrs.get("kind") == "flag"), None
     )

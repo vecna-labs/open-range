@@ -34,7 +34,6 @@ RunRound = Callable[[list[PromptRow], list[Snapshot]], RoundReports]
 GateFactory = Callable[[Snapshot], EvolutionGate]
 
 _STALENESS_STEP = 0.1
-# Fresh children seat at this cap so a frontier world survives a round before eviction.
 _MAX_PRIORITY = 2.0
 
 
@@ -131,8 +130,6 @@ def _member_priority(
         if subgoals:
             achieved = sum(1 for hit in subgoals.values() if hit)
             gaps.append(1.0 - achieved / len(subgoals))
-    # Regret keeps a partly-solved world at the frontier that low reward-spread alone
-    # would retire.
     regret = sum(gaps) / len(gaps) if gaps else 0.0
     return learnability + regret
 
@@ -284,7 +281,6 @@ class WorldPool:
                 max_repairs=max_repairs,
             )
             if child is None:
-                # No admissible harder world passed the gate: the frontier is capped.
                 capped = True
                 continue
             difficulty = self._difficulty_fn(child)
@@ -320,9 +316,6 @@ class RoundMetrics:
     train_solve_rate: float
     held_out_solve_rate: float | None = None
     frontier_capped: bool = False
-    # Most any child advanced difficulty this round (signed; None if nothing evolved).
-    # Unlike frontier_capped, near-zero here means children admit but only creep on
-    # cosmetic decoys.
     difficulty_gain: float | None = None
 
     @property

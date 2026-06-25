@@ -75,7 +75,6 @@ from openrange.training import (
 
 Tool = Callable[..., str]
 
-# Tail tool output so a chatty surface can't flood the context window.
 _OUTPUT_TAIL = 2000
 
 
@@ -101,10 +100,10 @@ def _tool_method(env: EpisodeEnv, fn: Tool) -> Any:
             ns[f"_def_{p.name}"] = p.default
             decl += f" = _def_{p.name}"
         forward += f", {p.name}={p.name}"
-    exec(  # noqa: S102 - source is built from the tool's own signature, not input
-        f"def {fn.__name__}(self{decl}):\n    return self._invoke(_fn{forward})\n",
-        ns,
+    func_source = (
+        f"def {fn.__name__}(self{decl}):\n    return self._invoke(_fn{forward})\n"
     )
+    exec(func_source, ns)  # noqa: S102
     method = ns[fn.__name__]
     method.__doc__ = fn.__doc__
     method.__annotations__["return"] = str
@@ -159,7 +158,7 @@ class EpisodeEnv:
             setattr(self, fn.__name__, _tool_method(self, fn))
 
     if TYPE_CHECKING:
-        # Tools are attached dynamically; type them as string-returning tool calls.
+
         def __getattr__(self, name: str) -> Callable[..., str]: ...
 
     def reset(
@@ -205,7 +204,6 @@ class EpisodeEnv:
         return "Environment ready. Use the available tools."
 
     def _invoke(self, fn: Tool, **kwargs: Any) -> str:
-        # str(): a non-str return must not crash the slice/_record below.
         out = self._safe(lambda: str(fn(self._require_surface(), **kwargs)))
         self._record(fn.__name__, kwargs, out)
         return out[-_OUTPUT_TAIL:]
@@ -259,8 +257,6 @@ class EpisodeEnv:
             self._sandbox.close()
             self._sandbox = None
         if self._network is not None:
-            # Best-effort detach (stop_episode usually did it) so the network can be
-            # dropped even on an un-finalized re-reset.
             if self._target_container is not None:
                 _run_docker(
                     "network",
@@ -302,7 +298,7 @@ class EpisodeEnv:
     def _safe(fn: Callable[[], str]) -> str:
         try:
             return fn()
-        except Exception as exc:  # fail-soft: a bad tool call costs reward only
+        except Exception as exc:
             return f"error: {exc}"
 
     def _record(self, tool: str, args: Mapping[str, Any], result: str) -> None:
@@ -342,9 +338,6 @@ def _resolve_round_backing(
         effective = resolve_backing(
             effective, pack.minimum_backing(snapshot.graph), sandbox=sandbox
         )
-    # Auto-escalation into CONTAINER without Docker would train on an emulation the
-    # agent can't exploit, so fail loud. An explicit CONTAINER (``effective is
-    # backing``) is the caller's own choice.
     if effective is Backing.CONTAINER and effective is not backing and not docker_ok:
         raise RuntimeError(
             "this round needs the CONTAINER backing (a file-read/code-exec world or a "

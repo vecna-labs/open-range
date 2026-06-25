@@ -39,6 +39,8 @@ Direction = Literal["harden", "soften", "diversify"]
 
 CurriculumPolicy = Callable[[Sequence[EpisodeReportLike]], "Direction | None"]
 
+_DIFFICULTY_STEP: dict[str, float] = {"harden": 0.2, "soften": -0.2}
+
 
 def direction_from_reports(
     reports: Sequence[EpisodeReportLike],
@@ -65,14 +67,8 @@ def _report_passed(report: EpisodeReportLike) -> bool:
         return False
 
 
-# True iff the candidate genuinely matches its claimed ``direction``; the caller
-# realizes + verifies, dropping a mutation whose static label lies. Absent a gate,
-# the family's label is trusted.
 EvolutionGate = Callable[["Snapshot", Mutation], bool]
 
-# True iff a candidate world is kept at pool-seeding time: the :data:`EvolutionGate`
-# verdict minus the mutation. Drops a live-unsolvable world before it seeds a
-# permanent zero-reward task.
 SeedGate = Callable[["Snapshot"], bool]
 
 
@@ -84,7 +80,7 @@ def _verify_realized(
 ) -> bool:
     task = next((t for t in snapshot.tasks if t.entrypoints), None)
     if task is None:
-        return True  # nothing realizable to check; let it through
+        return True
     svc = EpisodeService(pack, root)
     try:
         handle = svc.start_episode(snapshot, task.id)
@@ -105,7 +101,7 @@ def consequence_gate(
     root = Path(workdir)
 
     def gate(evolved: Snapshot, mutation: Mutation) -> bool:
-        del mutation  # the world is verified regardless of which move produced it
+        del mutation
         return _verify_realized(pack, root, evolved, accept)
 
     return gate
@@ -153,7 +149,7 @@ def auto_evolve(
     for chosen in _patch_candidates(pack, snapshot, reports, direction, llm=llm):
         try:
             evolved = _evolve_snapshot(snapshot, pack, chosen, max_repairs=max_repairs)
-        except Exception:  # noqa: BLE001 — pack-supplied code is untrusted
+        except Exception:  # noqa: BLE001
             continue
         if evolved is None or evolved.snapshot_id == snapshot.snapshot_id:
             continue
@@ -161,7 +157,7 @@ def auto_evolve(
             try:
                 if not gate(evolved, chosen):
                     continue
-            except Exception:  # noqa: BLE001 — caller-supplied gate is untrusted
+            except Exception:  # noqa: BLE001
                 continue
         return evolved
 
@@ -214,7 +210,7 @@ def _grow_snapshot(
     baseline = pack.default_prior()
     if baseline is None:
         return None
-    step = {"harden": 0.2, "soften": -0.2}.get(direction)
+    step = _DIFFICULTY_STEP.get(direction)
     if step is None:
         return None
     carried = snapshot.lineage.get("curriculum_difficulty")
@@ -240,8 +236,6 @@ def _grow_snapshot(
         return None
     grown = _with_grow_lineage(result, snapshot, direction, stepped)
     if grown.snapshot_id == snapshot.snapshot_id:
-        # Same world back means the builder ignored the bump; refuse it so lineage
-        # stays a chain.
         return None
     return grown
 
@@ -255,7 +249,6 @@ def _evolve_block(
     family: str | None = None,
     note: str = "",
 ) -> dict[str, object]:
-    # Absent fields are explicit None, not omitted, so every path shares one schema.
     return {
         "parent_snapshot_id": parent_snapshot_id,
         "direction": direction,
@@ -321,8 +314,6 @@ def _evolve_snapshot(
         dict(manifest_in) if isinstance(manifest_in, dict) else {}
     )
 
-    # Regenerate tasks so a shape-changing mutation reaches the agent's instruction,
-    # not just the graph.
     regenerated: list[TaskSpec] = []
     for family in pack.task_families():
         regenerated.extend(family.generate(evolved_graph, base_manifest, None))
@@ -344,8 +335,6 @@ def _evolve_snapshot(
         ),
         refs=(snapshot.snapshot_id,),
     )
-    # Carry grow difficulty across patch steps so a later grow resumes from it,
-    # not baseline.
     carried = snapshot.lineage.get("curriculum_difficulty")
     lineage = dict(result.lineage)
     if isinstance(carried, dict):
