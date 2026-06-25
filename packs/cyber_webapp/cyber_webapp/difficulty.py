@@ -20,9 +20,6 @@ from cyber_webapp.mutation import (
 )
 from cyber_webapp.vulnerabilities import CATALOG
 
-# A curriculum re-weights by injecting its own difficulty_fn into the pool, not by
-# editing these. Per-class exploit hardness lives on the catalog
-# (Vulnerability.exploit_complexity), not here.
 _W_HOP = 10
 _W_PIVOT = 4
 _W_BOUNDARY = 3

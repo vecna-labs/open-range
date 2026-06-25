@@ -18,8 +18,6 @@ def build_handlers_and_routes(
     graph: WorldGraph,
     only_services: frozenset[str] | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
-    # ``only_services`` restricts to one service's own endpoints — the per-service split
-    # that the networked CONTAINER backing realizes (each service is its own container).
     services_by_id: dict[str, Node] = {
         n.id: n for n in graph.nodes.values() if n.kind == "service"
     }
@@ -61,14 +59,11 @@ def build_handlers_and_routes(
         handler_name = _handler_name(service_name, endpoint_id)
         vuln_id = vuln_for_target.get(endpoint_id)
         if vuln_id is None:
-            # Service-level vulns also affect every endpoint of the service.
             vuln_id = vuln_for_target.get(service_id)
         if vuln_id is not None and vuln_id in vulns_by_id:
             vuln_node = vulns_by_id[vuln_id]
             body = _render_vuln_body(vuln_node)
         else:
-            # A benign endpoint may carry an LLM-realized body (admitted by
-            # realize_service_surface) — prefer it over the flat default stub.
             realized = endpoint.attrs.get("realized_handler")
             if isinstance(realized, str) and realized.strip():
                 body = _extract_handle_body(realized)
@@ -90,8 +85,6 @@ def build_handlers_and_routes(
 
 
 def _render_vuln_body(vuln_node: Node) -> str:
-    # A realized_handler was already admitted upstream (realize_admit), so use it
-    # verbatim like any rendered template.
     realized = vuln_node.attrs.get("realized_handler")
     if isinstance(realized, str) and realized.strip():
         return _extract_handle_body(realized)
@@ -107,7 +100,6 @@ def _render_vuln_body(vuln_node: Node) -> str:
 
 
 def _extract_handle_body(rendered: str) -> str:
-    # Inline as handler-local to avoid name collisions across handlers of the same kind.
     try:
         module = ast.parse(rendered)
     except SyntaxError as exc:
@@ -151,8 +143,6 @@ def _extract_handle_body(rendered: str) -> str:
 
 
 def _default_handler_body(service_name: str, path: str, kind: str) -> str:
-    # Per-kind bodies so the agent can't distinguish vulnerable from
-    # non-vulnerable endpoints purely by response shape.
     if kind == "api":
         body = (
             f'payload = {{"items": [], "next_cursor": None, '

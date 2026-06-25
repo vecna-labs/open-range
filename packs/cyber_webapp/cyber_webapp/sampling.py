@@ -16,8 +16,6 @@ from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.vulnerabilities import BODY_SHAPED_KINDS
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 
-# Secret formats modeled on real production credentials, not a CTF-style
-# ``ctf{...}`` / ``FLAG[...]`` wrapper.
 _HEX_ALPHABET = "0123456789abcdef"
 _BASE62 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -134,7 +132,6 @@ _RECORD_KEYS: tuple[str, ...] = (
 )
 
 
-# Rides on ``WorldGraph.meta`` so codegen reads it.
 DISCOVERY_TITLES: tuple[str, ...] = (
     "Operations Portal API",
     "Customer Services Hub",
@@ -160,7 +157,6 @@ _CORP_DOMAINS: tuple[str, ...] = (
 _HOST_ENVS: tuple[str, ...] = ("prod", "stg", "infra")
 
 
-# Hyphen-safe so a name doubles as a docker host.
 _SERVICE_NAMES_BY_KIND: Mapping[str, tuple[str, ...]] = {
     "web": (
         "storefront",
@@ -212,7 +208,6 @@ _SERVICE_NAMES_BY_KIND: Mapping[str, tuple[str, ...]] = {
 }
 
 
-# Sampled per-build so exploit payloads differ across builds.
 _SQLI_PARAMS: tuple[str, ...] = ("q", "query", "search", "term", "filter", "ref")
 _SQLI_TABLES: tuple[str, ...] = (
     "records",
@@ -261,10 +256,6 @@ _PATH_TRAVERSAL_PARAMS: tuple[str, ...] = (
     "template",
     "page",
 )
-# Base dir the handler confines to (the confinement it fails to enforce);
-# distinct from the loot's private dirs so '../' or an absolute path escapes.
-# Varied depths (2-5) so the relative-traversal payload's "../" count is
-# build-specific rather than constant.
 _PATH_TRAVERSAL_BASE_DIRS: tuple[str, ...] = (
     "/var/data",
     "/srv/app/public",
@@ -280,9 +271,6 @@ _COMMAND_INJECTION_PARAMS: tuple[str, ...] = (
     "ip",
     "domain",
 )
-# Classes general sampling never places: each would leak the flag with no exploit on a
-# reachable endpoint. They go only inside the SSRF/cred-reuse chain or the company
-# recon disclosure.
 _INTERNAL_ONLY_KINDS: frozenset[str] = frozenset(
     {
         "metadata_credential_leak",
@@ -295,7 +283,6 @@ _INTERNAL_ONLY_KINDS: frozenset[str] = frozenset(
 
 _TOKEN_PARAMS: tuple[str, ...] = ("token", "api_key", "auth", "session", "key")
 
-# Actual depth is sampled per world and also bounded by the internal hosts available.
 _MAX_CHAIN_DEPTH = 3
 
 _RECON_PATHS: tuple[str, ...] = (
@@ -373,7 +360,6 @@ _DEFAULT_VULN_KIND_WEIGHTS: Mapping[str, int] = {
 
 _DB_STORE_KINDS: frozenset[str] = frozenset({"kv", "sql"})
 
-# ``file`` loot lives in an in-memory file map; the flag never lands on disk.
 _DEFAULT_LOOT_WEIGHTS: Mapping[str, int] = {"db": 7, "file": 3}
 _ORACLE_SHAPES_FOR_LOOT: Mapping[str, frozenset[str]] = {
     "db": frozenset({"response_leak"}),
@@ -394,8 +380,6 @@ _LOOT_FILE_NAMES: tuple[str, ...] = (
     "credentials.env",
     "token.dat",
 )
-# Benign files sharing the store with the flag so a file-read isn't a single-entry
-# giveaway.
 _DECOY_FILES: tuple[tuple[str, str], ...] = (
     ("/srv/app/public/index.html", "<h1>welcome</h1>"),
     ("/var/www/static/app.css", "body { margin: 0; }"),
@@ -405,8 +389,6 @@ _DECOY_FILES: tuple[tuple[str, str], ...] = (
 )
 
 
-# One is planted per file-loot world; its hint discloses the flag's dir so the path
-# is found by reading config, not only by guessing the pool.
 _HINT_CONFIG_PATHS: tuple[str, ...] = (
     "/etc/app/settings.conf",
     "/app/config.ini",
@@ -468,8 +450,6 @@ def _loot_store_attrs(loot_shape: str, name: str) -> dict[str, str]:
 
 
 def _sample_loot_path(rng: random.Random) -> str:
-    # High-entropy segment makes the absolute path unenumerable from the dir/name pools;
-    # the config hint derives from the same value to stay in sync.
     token = f"{rng.randrange(16**8):08x}"
     return f"{rng.choice(_LOOT_FILE_DIRS)}/{token}/{rng.choice(_LOOT_FILE_NAMES)}"
 
@@ -612,8 +592,6 @@ def sample_graph(
 
 
 def _annotate_exploit_recipes(graph: WorldGraph) -> None:
-    # Stamp the exploit recipe into meta (non-hashed, so the id is unchanged). Lazy
-    # import dodges a builder->solver cycle.
     from cyber_webapp.reference_solver import (
         SUPPORTED_KINDS,
         _vuln_of_kind,
@@ -625,7 +603,7 @@ def _annotate_exploit_recipes(graph: WorldGraph) -> None:
         try:
             vuln = _vuln_of_kind(graph, kind)
             recipe = exploit_recipe(graph, kind)
-        except Exception:  # noqa: BLE001 -- best-effort; the author derives it instead
+        except Exception:  # noqa: BLE001
             continue
         graph.nodes[vuln.id] = dataclasses.replace(
             vuln, meta={**vuln.meta, "exploit_recipe": recipe}
@@ -656,7 +634,6 @@ def _add_networks(graph: WorldGraph, company: bool) -> None:
             )
         )
         return
-    # A company estate is segmented: public in dmz, internal in an isolated segment.
     graph.add_node(
         Node(
             id="net_dmz",
@@ -708,9 +685,6 @@ def _sample_services(
 
 
 def _service_name(kind: str, used: set[str]) -> str:
-    # A realistic name from the kind's pool, distinct within the world. Deterministic
-    # (no rng draw) so adding it does not shift the structural sampling stream — the
-    # world is the same one, just better-named; the pool order gives the assignment.
     pool = _SERVICE_NAMES_BY_KIND.get(kind, (kind,))
     for name in pool:
         if name not in used:
@@ -730,8 +704,6 @@ def _sample_endpoints(
     prior: PackPrior | None,
     service: Mapping[str, str],
 ) -> list[Node]:
-    # Count clamped to ``len(pool)``: duplicate paths on one service would shadow each
-    # other in the codegen route table.
     count = _sample_int(rng, prior, "endpoints_per_service")
     pool = list(ENDPOINT_PATHS_BY_KIND.get(service["kind"], ("/",)))
     rng.shuffle(pool)
@@ -763,8 +735,6 @@ def _burn_retired_account_rng(rng: random.Random) -> None:
 
 
 def _public_url(service: Mapping[str, str], path: str) -> str:
-    # The mount convention lives in the graph, not the realizer, so the graph carries
-    # the truth.
     if service.get("exposure") == "public":
         return path
     return f"/svc/{service['name']}{path}"
@@ -778,9 +748,6 @@ def _sample_vulnerabilities(
     oracle_service_id: str | None = None,
     oracle_shapes: frozenset[str] = frozenset({"response_leak"}),
 ) -> None:
-    # The first placed vuln is the oracle: a kind whose exploit shape matches the loot,
-    # anchored to ``oracle_service_id``, so the flag is reachable by construction. The
-    # rest are decoys.
     count = _sample_int(rng, prior, "vuln_count")
     vuln_pin = [str(k) for k in (prior.topology.get("vuln_pin") or [])]
     pool = vuln_pin or _weighted_pool(prior, "vuln_kinds", exclude=_INTERNAL_ONLY_KINDS)
@@ -801,7 +768,6 @@ def _sample_vulnerabilities(
 
     rng.shuffle(endpoints)
 
-    # A file-only store has no table for a SQL-injection handler to query.
     store_kind: dict[str, str] = {
         n.id: str(n.attrs.get("kind", "")) for n in graph.by_kind("data_store")
     }
@@ -847,8 +813,6 @@ def _sample_vulnerabilities(
             if not candidates:
                 continue
             target_node = candidates[i % len(candidates)]
-        # Codegen renders one handler per (kind, endpoint); a duplicate pair is a dead
-        # node the uniqueness invariant rejects.
         if (kind, target_node.id) in placed_pairs:
             continue
         placed_pairs.add((kind, target_node.id))
@@ -875,8 +839,6 @@ def _sample_vulnerabilities(
                 "injection_site": str(target_node.attrs.get("path", "service")),
             },
         )
-        # Method follows the first vuln bound to the endpoint: a body-shaped kind makes
-        # it POST; a later co-located decoy must not change the decided method.
         if target_node.kind == "endpoint" and target_node.id not in bound_endpoints:
             bound_endpoints.add(target_node.id)
             if kind in BODY_SHAPED_KINDS:
@@ -903,8 +865,6 @@ def _forced_oracle(
     graph: WorldGraph,
     db_backed_services: set[str],
 ) -> tuple[str, Node] | None:
-    # Preferred = configured pool (lets a manifest steer the oracle class); fallback =
-    # any shape-matching catalog entry, so the world stays solvable.
     fallback = [
         k
         for k, v in VULN_CATALOG.items()
@@ -934,8 +894,6 @@ def _eligible_endpoints_for(
     graph: WorldGraph,
     db_backed_services: set[str],
 ) -> list[Node]:
-    # A db-requiring vuln on an endpoint with no ``backed_by`` data_store would query a
-    # table that does not exist.
     if vuln_kind not in VULN_KINDS_REQUIRING_DB:
         return endpoints
     eligible: list[Node] = []
@@ -1003,10 +961,7 @@ def default_vuln_params(
     target: Node,
     rng: random.Random,
 ) -> dict[str, object]:
-    """Sample per-build params for a vuln of ``kind``."""
     del target
-    # Each class samples a payload-context axis whose value demands a different exploit,
-    # so no fixed payload works across builds.
     if kind == "sql_injection":
         return {
             "target_param": rng.choice(_SQLI_PARAMS),
@@ -1041,8 +996,6 @@ def default_vuln_params(
             "trust_context": rng.choice(
                 ["single_token", "dual_factor", "encoded_token"]
             ),
-            # Confirm params for every context (not just dual_factor) so single /
-            # encoded recognize a foreign dual forge by its gate name and reject.
             "confirm_param": rng.choice(_BROKEN_AUTHZ_CONFIRM_PARAMS),
             "confirm_value": rng.choice(_BROKEN_AUTHZ_CONFIRM_VALUES),
             "confirm_pool": list(_BROKEN_AUTHZ_CONFIRM_PARAMS),

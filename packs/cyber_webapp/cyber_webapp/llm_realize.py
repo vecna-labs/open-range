@@ -40,13 +40,8 @@ from cyber_webapp.reference_solver import (
 )
 from cyber_webapp.verify import perform, verdict_authored
 
-# Injected by the host: booting an episode needs the runtime, which the pack must not
-# import, so it takes the boot as a callback yielding the world's base_url.
 BootEpisode = Callable[[Snapshot, str], AbstractContextManager[str]]
 
-# The classes a prompt exists for. command_injection is the first realized class (#266);
-# sql_injection and path_traversal extend it across the response-leak and file-read
-# families. The rest follow the same shape.
 REALIZABLE_KINDS = (
     "command_injection",
     "sql_injection",
@@ -388,17 +383,11 @@ def _ssrf_prompt(param: str, ctx: str, params: Mapping[str, object]) -> str:
 
 
 def realization_request(graph: WorldGraph, kind: str) -> LLMRequest:
-    """The LLM request to realize `kind`'s handler, tailored to its sampled context.
-
-    Raises if `kind` has no prompt yet (see `REALIZABLE_KINDS`). The host runs this
-    against an `LLMBackend` and passes the returned handler through the admission gate.
-    """
+    """Raises if `kind` has no prompt (see `REALIZABLE_KINDS`)."""
     vuln = _vuln_of_kind(graph, kind)
     params = vuln.attrs["params"]
     if not isinstance(params, Mapping):
         raise PackError(f"{kind} vuln has no params mapping")
-    # Most classes inject through one query param; broken_authz/weak_credentials carry
-    # their own param names instead, so this stays optional.
     param = str(params.get("target_param", ""))
     if kind == "command_injection":
         ctx = str(params.get("inj_context", "separator"))
@@ -455,8 +444,6 @@ def handler_from_result(parsed_json: Mapping[str, object] | None) -> str:
 
 
 def _is_valid_handler(src: str) -> bool:
-    # A real LLM sometimes emits unparseable Python; codegen renders the handler by
-    # AST-parsing it, so an invalid one crashes the episode boot. Reject it up front.
     try:
         _extract_handle_body(src)
     except PackError:
@@ -480,10 +467,11 @@ _EXPLOIT_RETURN = (
 
 
 def exploit_request(graph: WorldGraph, kind: str) -> LLMRequest:
-    """The LLM request to author an (exploit, benign) pair for `kind`. The recipe
-    -- the technique plus the flag's LOCATION, never its value -- is read off the vuln's
-    meta if the world carries one (an LLM-built world supplies its own, #261), else
-    derived; so one generic prompt covers every kind."""
+    """Author an (exploit, benign) pair for `kind`.
+
+    The recipe carries the flag's LOCATION, never its value, so the proposal can't
+    echo a memorized flag. Read off `vuln.meta` if the world supplies one, else derived.
+    """
     vuln = _vuln_of_kind(graph, kind)
     endpoint_id = next(e.dst for e in graph.out_edges(vuln.id, "affects"))
     endpoint = graph.nodes[endpoint_id]
@@ -624,10 +612,10 @@ def realize_generated(
 
 @dataclass(frozen=True, slots=True)
 class NovelClass:
-    """An LLM-proposed vulnerability class the catalog does not have: a new `kind`, its
-    exploit `recipe` (technique + flag location, never the value), a vulnerable
-    `handler`, and the (exploit, benign) pair that proves it — verified as one coherent
-    unit behind the kind-agnostic gate."""
+    """An LLM-proposed vulnerability class outside the catalog.
+
+    `recipe` carries the flag's location, never its value.
+    """
 
     kind: str
     recipe: str
@@ -656,11 +644,11 @@ _CATALOG_KINDS = (
 
 
 def novel_class_request(graph: WorldGraph) -> LLMRequest:
-    """The LLM request to propose a NOVEL vulnerability class for a procedural skeleton
-    (#261): a class outside the catalog, leaking the same procedurally-planted flag from
-    the same db lookup endpoint. The prompt carries the endpoint, the param, the `state`
-    interface and the flag's LOCATION — never its value — so the proposal is honest by
-    construction (re-seed the flag, re-run the exploit; a genuine one still leaks)."""
+    """Request a NOVEL vulnerability class outside the catalog for a skeleton.
+
+    The prompt carries the flag's LOCATION, never its value, so the proposal is honest
+    by construction: re-seed the flag and re-run the exploit and a genuine one leaks.
+    """
     vuln = _novel_target(graph)
     params = vuln.attrs["params"]
     if not isinstance(params, Mapping):
@@ -710,17 +698,11 @@ def realize_novel(
     propose: Callable[[WorldGraph], NovelClass | None],
     boot: BootEpisode,
 ) -> Snapshot:
-    """Realize an LLM-PROPOSED vulnerability class the catalog does not have (#261).
+    """Realize an LLM-PROPOSED vulnerability class the catalog does not have.
 
-    `propose` reads the procedural skeleton and returns a coherent novel class, or None
-    to keep the skeleton. The proposal is stamped onto the skeleton's vuln (its `kind`,
-    the `realized_handler`, and the recipe on `meta`) and admitted by the SAME
-    kind-agnostic gate: the authored exploit must leak the flag and the benign must not,
-    and -- the integrity check -- the exploit must recover a FRESHLY re-seeded flag,
-    so a memorized value or a handler that hard-codes the flag is rejected. Accepted ->
-    re-freeze with the novel kind on the lineage; rejected -> return the skeleton
-    unchanged. The host injects `propose` (the LLM) and `boot` (an episode), so the pack
-    stays transport-free. Mutates `snapshot.graph` -- use the returned snapshot.
+    The proposal is admitted only if its exploit recovers a FRESHLY re-seeded flag, so a
+    memorized value or a handler that hard-codes the flag is rejected. Mutates
+    `snapshot.graph` — use the returned snapshot.
     """
     graph = snapshot.graph
     task = next(t for t in snapshot.tasks if t.meta.get("family") == "webapp.pentest")
@@ -775,8 +757,7 @@ def _novel_target(graph: WorldGraph) -> Node:
 def _novel_admits(
     snapshot: Snapshot, task_id: str, proposal: NovelClass, boot: BootEpisode
 ) -> bool:
-    # Function-local: importing reseed/sampling at module scope is a cycle.
-    from cyber_webapp.reseed import replant_flag
+    from cyber_webapp.reseed import replant_flag  # module-scope import cycles
     from cyber_webapp.sampling import generate_flag
 
     with boot(snapshot, task_id) as base_url:
@@ -785,8 +766,6 @@ def _novel_admits(
         )
     if not verdict.accepted:
         return False
-    # Integrity: a fresh flag + the SAME exploit must still recover it, so a memorized
-    # value or a flag-hard-coding handler (which passed the first gate) is caught.
     fresh = replant_flag(snapshot, generate_flag(random.Random(_RESEED_SEED)))
     with boot(fresh, task_id) as base_url:
         leaked = perform(
@@ -809,17 +788,16 @@ _SERVICE_SCHEMA: dict[str, object] = {
 
 
 def benign_endpoints_of(graph: WorldGraph, service_id: str) -> list[Node]:
-    """The service's endpoints with no affecting vuln — its realizable benign surface.
+    """Endpoints with no affecting vuln; empty if a vuln affects the whole service.
 
-    Empty if a vuln affects the whole service, or for the framework routes / and
-    /openapi.json (which the LLM must not author).
+    Excludes the framework routes / and /openapi.json.
     """
     vuln_eps = {
         e.dst
         for v in graph.by_kind("vulnerability")
         for e in graph.out_edges(v.id, "affects")
     }
-    if service_id in vuln_eps:  # a service-level vuln owns every endpoint
+    if service_id in vuln_eps:
         return []
     out: list[Node] = []
     for edge in graph.out_edges(service_id, "exposes"):
@@ -833,12 +811,7 @@ def benign_endpoints_of(graph: WorldGraph, service_id: str) -> list[Node]:
 
 
 def service_realization_request(graph: WorldGraph, service_id: str) -> LLMRequest:
-    """The LLM request to author realistic bodies for a service's benign endpoints.
-
-    Procedural keeps the vuln, flag and routes; the LLM only fills the non-vuln
-    endpoints with plausible content. The host runs this and passes the result through
-    `realize_service_surface`'s whole-service admission.
-    """
+    """Request realistic bodies for a service's benign (non-vuln) endpoints."""
     service = graph.nodes[service_id]
     kind = str(service.attrs.get("kind", "service"))
     name = str(service.attrs.get("name", service_id))
