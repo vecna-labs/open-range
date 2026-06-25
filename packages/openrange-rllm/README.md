@@ -12,8 +12,7 @@ loop. This adapter is the thin seam between them:
 - **`GatewaySampler`** — a `Sampler` that calls the policy at `config.base_url`
   through OpenRange's own OpenAI-compatible backend. rLLM's gateway records token
   ids and logprobs, so the rollout leaves those fields empty and rLLM's trace
-  enrichment fills them. Train and eval differ only in which endpoint the
-  sampler points at.
+  enrichment fills them.
 
 `import openrange_rllm` pulls **no** rLLM — every rLLM import is local to the
 function that needs it. To run the real trainer, install the `train` extra and
@@ -33,6 +32,10 @@ trainer = AgentTrainer(
 )
 trainer.train()
 ```
+
+A complete, runnable example — building a world pool, registering the dataset,
+and the validated single-GPU run command — is in
+[`examples/rllm_grpo_cyber.py`](../../examples/rllm_grpo_cyber.py).
 
 rLLM is installed from source (`rllm-org/rllm`); the GPU backend (`rllm[verl]`)
 needs CUDA. The adapter itself, and its tests, run on CPU against rLLM's
