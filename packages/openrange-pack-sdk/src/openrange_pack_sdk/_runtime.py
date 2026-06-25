@@ -180,7 +180,7 @@ class _FilesystemRuntime(ABC):
             return {}
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):
             return {}
         return dict(data) if isinstance(data, Mapping) else {}
 

@@ -169,7 +169,7 @@ def _read_text(path: Path) -> str | None:
         if not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
             return None
         return path.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return None
 
 

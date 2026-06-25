@@ -41,7 +41,7 @@ def _content_type_is_json(headers: Mapping[str, str]) -> bool:
 def _parse_json_body(body: bytes) -> object | None:
     try:
         parsed: object = json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError, UnicodeDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     return parsed
 

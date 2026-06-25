@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Trading pack for OpenRange — backtest allocation strategies over real historical OHLC windows."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "openrange-pack-sdk",
     "graphschema",

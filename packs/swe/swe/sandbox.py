@@ -146,7 +146,7 @@ def _bwrap_usable() -> bool:
             timeout=15,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0
 

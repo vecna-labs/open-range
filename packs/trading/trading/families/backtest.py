@@ -76,7 +76,7 @@ def run_backtest(
         )
     try:
         curve = [float(x) for x in curve_raw]
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return BacktestReport(False, 0.0, 0.0, False, False, "non-numeric equity curve")
     equity = [initial_cash, *curve]
     pnl = equity[-1] / initial_cash - 1.0 if initial_cash else 0.0

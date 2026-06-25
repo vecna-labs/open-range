@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Pack-author SDK for OpenRange: Protocols, value types, and base errors that packs depend on. Zero runtime deps on OpenRange."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "graphschema",
 ]
