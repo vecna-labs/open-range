@@ -78,8 +78,7 @@ def _verify_realized(
     snapshot: Snapshot,
     accept: Callable[[Snapshot, str], bool],
 ) -> bool:
-    # No realizable task means the world can't be driven to prove it leaks; an
-    # unassessable world is not admissible, so it fails rather than passing blind.
+    # No realizable task: fail closed (reject) rather than pass blind.
     task = next((t for t in snapshot.tasks if t.entrypoints), None)
     if task is None:
         return False

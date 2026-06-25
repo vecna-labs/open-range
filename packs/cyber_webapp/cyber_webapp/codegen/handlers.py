@@ -151,9 +151,8 @@ def _default_handler_body(service_name: str, path: str, kind: str) -> str:
             "json.dumps(payload).encode()\n"
         )
     elif kind == "db":
-        # A benign lookup enforces access control: it never serves a guarded
-        # (HIDDEN) value. Leaking the flag is the job of a vuln's own handler
-        # (the bypass), not of the default endpoint a sibling route renders.
+        # A sibling route shares this table; the benign default must not serve a
+        # guarded (HIDDEN) value here — only the vuln's bypass may.
         body = (
             'schema = state["schema"]\n'
             'table = schema["table"]\n'

@@ -77,10 +77,9 @@ def _members_of(
 
 
 def _stamp_difficulty(snapshot: Snapshot, difficulty: float) -> Snapshot:
-    # Persist the solve-cost onto the evolved snapshot's lineage so the dashboard
-    # can surface a difficulty trend. The initial builder stamps it; evolve re-admits
-    # through a core builder that can't. The snapshot id is graph-addressed, so adding
-    # lineage metadata leaves the id unchanged.
+    # The seed builder stamps world_difficulty for the dashboard; evolve re-admits
+    # through pack-agnostic core that can't, so re-stamp here. Lineage is outside the
+    # graph content hash, so the snapshot_id (the members key) stays stable.
     return dataclasses.replace(
         snapshot, lineage={**dict(snapshot.lineage), "world_difficulty": difficulty}
     )

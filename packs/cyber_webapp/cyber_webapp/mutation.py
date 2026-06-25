@@ -20,8 +20,7 @@ from cyber_webapp.vulnerabilities import BODY_SHAPED_KINDS
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 
 _REMOVE_RELEVANCE_FLOOR = 0.05
-# A chain-collapse soften justified by the agent's foothold engagement must outrank a
-# cosmetic decoy-removal, so its relevance floors above _REMOVE_RELEVANCE_FLOOR.
+# Above _REMOVE_RELEVANCE_FLOOR so a chain soften outranks decoy-removal.
 _HOP_SOFTEN_FLOOR = 0.5
 
 _ADD_ABSENT_RELEVANCE = 0.5
@@ -86,11 +85,8 @@ def available_mutations(
             ),
         )
 
-    # Rescues an agent stuck ON the chain, which decoy-removal can't. The chain is
-    # reached only through the public SSRF foothold; the internal hops are proxied
-    # server-side and never reach requests_made -- foothold engagement is the one
-    # observable signal that the agent is on the chain. Floored above decoy-removal
-    # so a chain-engaged agent eases the chain, not a cosmetic decoy.
+    # Internal chain hops are proxied server-side and never reach requests_made, so the
+    # public SSRF foothold is the only observable signal the agent is on the chain.
     engagement = _chain_engagement_score(graph, path_hits)
     hop_relevance = max(engagement, _HOP_SOFTEN_FLOOR) if engagement > 0.0 else 0.0
     hop_soften = _soften_remove_hop_mutation(graph, family_id, hop_relevance)
@@ -703,8 +699,7 @@ def _exploitation_score(
 
 
 def _public_foothold_paths(graph: WorldGraph) -> set[str]:
-    # The agent reaches the chain through the SSRF endpoint; requests_made logs the
-    # requested URL (``public_url``), so match on that, not the bare ``path`` attr.
+    # requests_made logs the endpoint's public_url, not its path attr -- match on that.
     urls: set[str] = set()
     for vuln in graph.by_kind("vulnerability"):
         if str(vuln.attrs.get("kind", "")) != "ssrf":

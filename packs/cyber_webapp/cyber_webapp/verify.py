@@ -63,9 +63,6 @@ def perform(base_url: str, request: Request) -> str:
 
 
 def _benign_sweep(graph: WorldGraph, base_url: str) -> dict[str, str]:
-    """Benign GET bodies for every directly reachable endpoint. A networked world's
-    internal services answer only through the pivot, so only public endpoints are
-    swept; a flat world exposes every endpoint directly."""
     networked = _is_networked(graph)
     service_of_endpoint = {
         e.dst: e.src for e in graph.edges.values() if e.kind == "exposes"
@@ -74,6 +71,7 @@ def _benign_sweep(graph: WorldGraph, base_url: str) -> dict[str, str]:
     bodies: dict[str, str] = {}
     for endpoint in graph.by_kind("endpoint"):
         service = services.get(service_of_endpoint.get(endpoint.id, ""))
+        # internal services answer only via the pivot; a direct fetch can't reach them
         if (
             networked
             and service is not None

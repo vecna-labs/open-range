@@ -1434,9 +1434,6 @@ _FLAT_SQLI = {
 
 
 def _flat_sqli_with_sibling_db() -> Snapshot:
-    # A db-loot world whose db service exposes more than one endpoint: the SQLi oracle
-    # plus a sibling on the default handler — the case that used to leak the flag by a
-    # plain ?key lookup with no exploit.
     for seed in range(16):
         snap = _admit({**_FLAT_SQLI, "seed": seed})
         svc_of_ep = {
@@ -1454,9 +1451,8 @@ def _flat_sqli_with_sibling_db() -> Snapshot:
 
 
 def test_benign_db_endpoint_never_serves_the_flag(tmp_path: Path) -> None:
-    # The honest contract: a benign request never returns a guarded (HIDDEN) value; the
-    # vuln's own handler is the only path that leaks it. A sibling default-db endpoint
-    # used to hand over the flag for ?key=<flagkey> with no exploit (the sibling leak).
+    # A sibling default-db endpoint once served the flag for ?key=<flagkey> with
+    # no exploit — hence the probe with the flag's own key.
     snap = _flat_sqli_with_sibling_db()
     graph = snap.graph
     holds = {e.src: e.dst for e in graph.edges.values() if e.kind == "holds"}
@@ -1472,7 +1468,6 @@ def test_benign_db_endpoint_never_serves_the_flag(tmp_path: Path) -> None:
             url = str(ep.attrs["public_url"])
             assert flag not in _http(base, f"{url}?key={flag_key}")
             assert flag not in _http(base, url)
-        # The intended SQLi exploit still leaks, and the whole-world verdict accepts.
         entry = str(graph.nodes[task.entrypoints[0]].attrs["public_url"])
         outcome = verdict(graph, base, entry)
         assert outcome.accepted
@@ -1482,9 +1477,6 @@ def test_benign_db_endpoint_never_serves_the_flag(tmp_path: Path) -> None:
 
 
 def test_whole_world_verdict_rejects_a_sibling_leak() -> None:
-    # The guarantee verify.verdict now enforces: even when the oracle is honest (its
-    # exploit leaks and its benign does not), a sibling benign endpoint that serves the
-    # flag rejects the world — it would be winnable without the intended exploit.
     graph = _admit({**_FLAT_SQLI, "seed": 0}).graph
     flag = str(graph.nodes["secret_flag"].attrs["value_ref"])
     outcome = classify_service_admission(
@@ -1499,8 +1491,6 @@ def test_whole_world_verdict_rejects_a_sibling_leak() -> None:
 
 
 def test_evolved_snapshot_persists_world_difficulty(tmp_path: Path) -> None:
-    # The pool stamps each evolved child's recomputed solve-cost onto its lineage (the
-    # core re-admit builder can't), so the dashboard can surface a difficulty trend.
     pack = WebappPack()
     seeds = [{**_COMPANY_MANIFEST, "seed": s} for s in range(4)]
     round_no = [0]
@@ -1532,7 +1522,7 @@ def test_evolved_snapshot_persists_world_difficulty(tmp_path: Path) -> None:
         for s in pool.snapshots()
         if (s.lineage.get("_evolve") or {}).get("kind") == "patch"
     ]
-    assert evolved  # a solving agent hardened at least one world
+    assert evolved
     for snap in evolved:
         stamped = snap.lineage.get("world_difficulty")
         assert stamped == pytest.approx(float(world_difficulty(snap.graph)))

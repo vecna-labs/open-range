@@ -351,11 +351,8 @@ def test_lateral_solves_across_real_containers() -> None:
 
 
 def test_chain_soften_is_reachable_from_real_reports(tmp_path: Path) -> None:
-    # Loop reachability, not just the mechanism: a real report from an agent that
-    # reached the public SSRF foothold but did not finish must make available_mutations
-    # OFFER the hop-collapse soften with positive, decoy-beating relevance -- otherwise
-    # the move is dead in the curriculum even though _soften_remove_hop_mutation works
-    # in isolation (the bug the foothold-engagement relevance closes).
+    # The soften must be OFFERED from a real foothold-engagement report, not merely
+    # work in isolation -- otherwise it's dead in the loop.
     from cyber_webapp.mutation import _REMOVE_RELEVANCE_FLOOR, available_mutations
 
     pack = WebappPack()
@@ -372,7 +369,7 @@ def test_chain_soften_is_reachable_from_real_reports(tmp_path: Path) -> None:
     try:
         handle = svc.start_episode(snap, task.id)
         entry = str(graph.nodes[task.entrypoints[0]].attrs["public_url"])
-        _get(svc.base_url(handle), entry)  # reaches the foothold, then gives up
+        _get(svc.base_url(handle), entry)  # reaches the foothold without finishing
         report = svc.stop_episode(handle)
     finally:
         svc.close()
@@ -386,7 +383,5 @@ def test_chain_soften_is_reachable_from_real_reports(tmp_path: Path) -> None:
         ),
         None,
     )
-    # offered from real foothold engagement, not a hardcoded value
     assert hop is not None
-    # and it outranks a cosmetic decoy-removal
     assert hop.relevance > _REMOVE_RELEVANCE_FLOOR

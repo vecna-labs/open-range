@@ -448,9 +448,8 @@ def test_snapshot_id_helper_resolves_from_new_snapshot() -> None:
 
 
 def test_lineage_node_surfaces_world_difficulty() -> None:
-    # The dashboard reads the solve-cost the builder stamps into admission_meta ->
-    # lineage (world_difficulty), not the unrelated curriculum_difficulty knob dict, so
-    # the Build panel shows a real number on the common patch-driven pool.
+    # world_difficulty (the stamped solve-cost), not the unrelated
+    # curriculum_difficulty knob dict.
     from cyber_webapp.difficulty import world_difficulty
 
     from openrange.dashboard.view import _lineage_node
