@@ -125,9 +125,6 @@ def world_difficulty(graph: WorldGraph) -> float:
 def breach_path(graph: WorldGraph) -> dict[str, object] | None:
     """The reference solver's winning path from a public entry to the flag: the
     ordered on-path node ids plus a summary, or ``None`` when the world has no flag.
-
-    Walks the same spine the difficulty metric reads, so the two must stay in sync;
-    everything off this path is decoy.
     """
     flag_ids = [n.id for n in graph.by_kind("secret") if n.attrs.get("kind") == "flag"]
     if not flag_ids:

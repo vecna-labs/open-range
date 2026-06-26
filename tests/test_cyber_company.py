@@ -568,8 +568,6 @@ def test_breach_path_connects_the_public_entry_to_the_flag() -> None:
     assert path["hops"] >= 1
     assert path["classes"][0] == "ssrf"
     assert path["classes"][-1] == "credential_gated_flag"
-    # the spine is one connected run from the entry exploit to the flag, not a
-    # scatter of unrelated nodes -- this is what the dashboard glows.
     assert _spine_reaches(graph, set(path["nodes"]), path["entry"], path["flag"])
 
     def vuln_pos(kind: str) -> int:
@@ -578,7 +576,6 @@ def test_breach_path_connects_the_public_entry_to_the_flag() -> None:
         )
         return path["nodes"].index(vid)
 
-    # the chain is in real exploit order: loot a credential before replaying it onward.
     assert vuln_pos("credential_leak") < vuln_pos("credential_gated_flag")
 
 

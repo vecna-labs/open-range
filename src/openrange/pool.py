@@ -78,9 +78,8 @@ def _members_of(
 
 
 def _restamp_lineage(snapshot: Snapshot, facts: Mapping[str, object]) -> Snapshot:
-    # The seed builder stamps these display facts for the dashboard; evolve re-admits
-    # through pack-agnostic core that can't, so re-stamp here. Lineage is outside the
-    # graph content hash, so the snapshot_id stays stable.
+    # snapshot_id is the graph content hash, not derived from lineage, so stamping
+    # these display facts here leaves a world's identity (its _members key) unchanged.
     return dataclasses.replace(snapshot, lineage={**dict(snapshot.lineage), **facts})
 
 

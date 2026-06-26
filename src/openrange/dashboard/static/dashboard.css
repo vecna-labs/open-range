@@ -1008,8 +1008,6 @@ button { font: inherit; cursor: pointer; }
 .evo-graph .npill { font: 500 9px var(--f-ui); fill: #7a571f; opacity: 0; transition: opacity .3s ease; pointer-events: none; }
 .evo-graph .evo-node.added .npill { opacity: 1; }
 
-/* Breach path: the reference solver's public-entry -> flag chain. When a path is
-   shown, everything off it dims so the way the world is won reads at a glance. */
 .evo-graph.show-path .evo-node.off-path { opacity: .2; }
 .evo-graph.show-path .evo-edge.off-path { opacity: .08; }
 .evo-graph .evo-node.on-path .main { stroke: #c64a2e; stroke-width: 3; }
