@@ -461,6 +461,7 @@ def _lineage_node(snapshot: Snapshot) -> dict[str, object]:
     difficulty = lineage.get("curriculum_difficulty")
     curriculum = dict(difficulty) if isinstance(difficulty, Mapping) else {}
     solve_cost = lineage.get("world_difficulty")
+    breach = lineage.get("breach_path")
     return {
         "id": snapshot.snapshot_id,
         "parent_id": _parent_snapshot_id(lineage),
@@ -471,6 +472,7 @@ def _lineage_node(snapshot: Snapshot) -> dict[str, object]:
         "world_difficulty": float(solve_cost)
         if isinstance(solve_cost, int | float)
         else None,
+        "breach_path": dict(breach) if isinstance(breach, Mapping) else None,
         "evolve": dict(evolve) if evolve else None,
         "graph": graph_projection(snapshot.graph),
     }

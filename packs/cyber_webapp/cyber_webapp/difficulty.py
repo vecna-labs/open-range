@@ -15,8 +15,10 @@ from graphschema import Node, WorldGraph
 
 from cyber_webapp.mutation import (
     _affects_target_id,
+    _credential_chain_vulns,
     _credential_walk,
     _oracle_path_targets,
+    _service_of_endpoint,
 )
 from cyber_webapp.vulnerabilities import CATALOG
 
@@ -118,3 +120,70 @@ def world_difficulty(graph: WorldGraph) -> float:
         + min(_DECOY_CAP, _DECOY_PER * off_path),
         2,
     )
+
+
+def breach_path(graph: WorldGraph) -> dict[str, object] | None:
+    """The reference solver's winning path from a public entry to the flag: the
+    ordered on-path node ids plus a summary, or ``None`` when the world has no flag.
+
+    Walks the same spine the difficulty metric reads, so the two must stay in sync;
+    everything off this path is decoy.
+    """
+    flag_ids = [n.id for n in graph.by_kind("secret") if n.attrs.get("kind") == "flag"]
+    if not flag_ids:
+        return None
+    flag_id = sorted(flag_ids)[0]
+
+    nodes: list[str] = []
+
+    def add(node_id: str | None) -> None:
+        if node_id and node_id in graph.nodes and node_id not in nodes:
+            nodes.append(node_id)
+
+    def add_exploit(vuln: Node) -> None:
+        endpoint = _affects_target_id(graph, vuln.id)
+        service = _service_of_endpoint(graph, endpoint) if endpoint else None
+        if service is not None:
+            add(service.id)
+        add(endpoint)
+        add(vuln.id)
+
+    entry = _entry_ssrf(graph)
+    oracle = _oracle_vuln(graph)
+    if entry is None and oracle is None:
+        return None
+
+    classes: list[str] = []
+    if entry is not None:
+        add_exploit(entry)
+        classes.append(str(entry.attrs.get("kind", "")))
+    for vuln in _credential_chain_vulns(graph):
+        add_exploit(vuln)
+        classes.append(str(vuln.attrs.get("kind", "")))
+    if oracle is not None:
+        add_exploit(oracle)
+        oracle_kind = str(oracle.attrs.get("kind", ""))
+        if oracle_kind not in classes:
+            classes.append(oracle_kind)
+
+    def srcs(kind: str, dsts: set[str]) -> set[str]:
+        return {e.src for e in graph.edges.values() if e.kind == kind and e.dst in dsts}
+
+    records = srcs("holds", {flag_id})
+    stores = srcs("contains", records)
+    backing = srcs("backed_by", stores)
+    for service_id in sorted(backing):
+        add(service_id)
+    for store_id in sorted(stores):
+        add(store_id)
+    for record_id in sorted(records):
+        add(record_id)
+    add(flag_id)
+
+    return {
+        "nodes": nodes,
+        "entry": entry.id if entry is not None else oracle.id,
+        "flag": flag_id,
+        "hops": len(_credential_walk(graph)),
+        "classes": classes,
+    }

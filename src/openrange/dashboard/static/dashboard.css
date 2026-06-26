@@ -1008,6 +1008,18 @@ button { font: inherit; cursor: pointer; }
 .evo-graph .npill { font: 500 9px var(--f-ui); fill: #7a571f; opacity: 0; transition: opacity .3s ease; pointer-events: none; }
 .evo-graph .evo-node.added .npill { opacity: 1; }
 
+/* Breach path: the reference solver's public-entry -> flag chain. When a path is
+   shown, everything off it dims so the way the world is won reads at a glance. */
+.evo-graph.show-path .evo-node.off-path { opacity: .2; }
+.evo-graph.show-path .evo-edge.off-path { opacity: .08; }
+.evo-graph .evo-node.on-path .main { stroke: #c64a2e; stroke-width: 3; }
+.evo-graph .evo-edge.on-path {
+  stroke: #c64a2e; stroke-width: 3.2; stroke-opacity: .95; stroke-dasharray: none;
+}
+.evo-graph .evo-node .flag-glyph { font: 700 12px var(--f-ui); fill: #fff5dc; pointer-events: none; }
+.evo-graph .evo-node.is-flag .main { fill: #b88521; }
+.evo-graph .evo-node.on-path.is-flag .main { stroke: #ffcf6b; stroke-width: 3.5; }
+
 .evo-legend {
   position: absolute; top: 72px; right: 18px; display: flex; flex-direction: column;
   gap: 5px; background: var(--bg-1); border: 1px solid var(--line);
@@ -1017,6 +1029,7 @@ button { font: inherit; cursor: pointer; }
 .evo-legend .sw { width: 11px; height: 11px; border-radius: 50%; flex: 0 0 auto; }
 .evo-legend .sw.ring { background: transparent; border: 2.5px solid #9e7232; }
 .evo-legend .sw.ring.amber { border-color: #b88521; }
+.evo-legend .sw.path { width: 16px; height: 0; border-radius: 0; border-top: 3px solid #c64a2e; }
 
 .evo-emptymsg {
   position: absolute; inset: 0; display: flex; align-items: center;
@@ -1044,6 +1057,12 @@ button { font: inherit; cursor: pointer; }
 .evo-step-changes .rm { color: #8d3f3a; }
 .evo-step-changes .mod { color: #b88521; }
 .evo-step-changes .neutral { color: var(--ink-3); }
+.evo-step-path { font: 500 12px var(--f-ui); color: var(--ink-2); margin-top: 3px; }
+.evo-step-path:empty { display: none; }
+.evo-step-path .evo-path-tag {
+  color: #c64a2e; font-weight: 700; text-transform: uppercase;
+  font-size: 10.5px; letter-spacing: .04em; margin-right: 6px;
+}
 .evo-dots { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .evo-dot { width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-1-solid); cursor: pointer; padding: 0; }
 .evo-dot.on { background: var(--accent); border-color: var(--accent); }

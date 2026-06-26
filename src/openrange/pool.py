@@ -32,6 +32,7 @@ _LOG = logging.getLogger(__name__)
 RewardFn = Callable[[EpisodeReport], Reward]
 
 DifficultyFn = Callable[[Snapshot], float]
+PathFn = Callable[[Snapshot], Mapping[str, object] | None]
 PromptRow = dict[str, object]
 RoundReports = Mapping[tuple[str, str], Sequence[EpisodeReport]]
 RunRound = Callable[[list[PromptRow], list[Snapshot]], RoundReports]
@@ -76,13 +77,11 @@ def _members_of(
         )
 
 
-def _stamp_difficulty(snapshot: Snapshot, difficulty: float) -> Snapshot:
-    # The seed builder stamps world_difficulty for the dashboard; evolve re-admits
+def _restamp_lineage(snapshot: Snapshot, facts: Mapping[str, object]) -> Snapshot:
+    # The seed builder stamps these display facts for the dashboard; evolve re-admits
     # through pack-agnostic core that can't, so re-stamp here. Lineage is outside the
-    # graph content hash, so the snapshot_id (the members key) stays stable.
-    return dataclasses.replace(
-        snapshot, lineage={**dict(snapshot.lineage), "world_difficulty": difficulty}
-    )
+    # graph content hash, so the snapshot_id stays stable.
+    return dataclasses.replace(snapshot, lineage={**dict(snapshot.lineage), **facts})
 
 
 def _gated_members(
@@ -176,9 +175,11 @@ class WorldPool:
         difficulty_fn: DifficultyFn,
         max_size: int,
         mix_floor: float = 0.3,
+        path_fn: PathFn | None = None,
     ) -> None:
         self._members: dict[tuple[str, str], _Member] = {m.key: m for m in members}
         self._difficulty_fn = difficulty_fn
+        self._path_fn = path_fn
         self._max_size = max_size
         self._mix_floor = mix_floor
         self._last_difficulty_gain: float | None = None
@@ -195,6 +196,7 @@ class WorldPool:
         mix_floor: float = 0.3,
         max_repairs: int = 2,
         seed_gate: SeedGate | None = None,
+        path_fn: PathFn | None = None,
     ) -> WorldPool:
         members = _gated_members(
             pack,
@@ -205,7 +207,11 @@ class WorldPool:
             seed_gate=seed_gate,
         )
         return cls(
-            members, difficulty_fn=difficulty_fn, max_size=max_size, mix_floor=mix_floor
+            members,
+            difficulty_fn=difficulty_fn,
+            max_size=max_size,
+            mix_floor=mix_floor,
+            path_fn=path_fn,
         )
 
     def __len__(self) -> int:
@@ -302,7 +308,10 @@ class WorldPool:
                 capped = True
                 continue
             difficulty = self._difficulty_fn(child)
-            child = _stamp_difficulty(child, difficulty)
+            facts: dict[str, object] = {"world_difficulty": difficulty}
+            if self._path_fn is not None:
+                facts["breach_path"] = self._path_fn(child)
+            child = _restamp_lineage(child, facts)
             gains.append(difficulty - member.difficulty)
             for task in child.tasks:
                 if str(task.meta.get("family", "")) != member.family:

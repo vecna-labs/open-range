@@ -2165,7 +2165,8 @@ const EVO_LABELED = new Set([
 const EVO_LEGEND = [
   ["infrastructure", "#9e8e72"], ["service", "#3d6a8a"], ["endpoint", "#6f9bb5"],
   ["data / records", "#5e7c3d"], ["secret", "#b88521"], ["account / cred", "#6e5a85"],
-  ["vulnerability", "#8d3f3a"], ["added this step", "ring"], ["changed this step", "ring-amber"],
+  ["vulnerability", "#8d3f3a"], ["breach path", "path"],
+  ["added this step", "ring"], ["changed this step", "ring-amber"],
 ];
 
 const evo = {
@@ -2328,6 +2329,15 @@ function mountEvoGraph() {
     c.setAttribute("stroke", n.public ? "#4f3a1f" : "#faf7ee");
     c.setAttribute("stroke-width", n.public ? "2.6" : "1.4");
     g.appendChild(c);
+    if (n.kind === "secret") {
+      g.classList.add("is-flag");
+      const star = document.createElementNS(SVGNS, "text");
+      star.setAttribute("class", "flag-glyph");
+      star.setAttribute("text-anchor", "middle");
+      star.setAttribute("y", "3.5");
+      star.textContent = "★";
+      g.appendChild(star);
+    }
     const title = document.createElementNS(SVGNS, "title");
     title.textContent = `${n.id}  ·  ${n.kind}${n.zone ? "  ·  " + n.zone : ""}${n.public ? "  ·  public" : ""}`;
     g.appendChild(title);
@@ -2374,9 +2384,11 @@ function mountEvoLegend() {
   const el = document.getElementById("evo-legend");
   if (!el) return;
   el.innerHTML = EVO_LEGEND.map(([name, color]) => {
-    const isRing = color === "ring" || color === "ring-amber";
-    const cls = color === "ring-amber" ? " ring amber" : color === "ring" ? " ring" : "";
-    const style = isRing ? "" : ` style="background:${color}"`;
+    const isSwatch = color !== "ring" && color !== "ring-amber" && color !== "path";
+    const cls = color === "ring-amber" ? " ring amber"
+      : color === "ring" ? " ring"
+      : color === "path" ? " path" : "";
+    const style = isSwatch ? ` style="background:${color}"` : "";
     return `<div class="row"><span class="sw${cls}"${style}></span>${escapeHtml(name)}</div>`;
   }).join("");
 }
@@ -2448,6 +2460,17 @@ function evoShortName(vid) {
 const EVO_DIRECTION_WORD = { harden: "harder", soften: "easier", diversify: "varied" };
 function evoDirectionWord(d) { return EVO_DIRECTION_WORD[d] || d || ""; }
 
+function evoBreachBadge(bp, step) {
+  const hops = Number(bp.hops) || 0;
+  const chain = hops === 0 ? "direct read" : hops === 1 ? "1-hop chain" : `${hops}-hop chain`;
+  const classes = Array.isArray(bp.classes) ? bp.classes : [];
+  const entry = classes.length ? String(classes[0]).replace(/_/g, " ") : "exploit";
+  const diff = step.world_difficulty != null
+    ? ` · diff ${Number(step.world_difficulty).toFixed(1)}` : "";
+  return `<span class="evo-path-tag">breach</span>`
+    + `${escapeHtml(chain)} · ${escapeHtml(entry)} → flag${escapeHtml(diff)}`;
+}
+
 function evoSummaryText(node) {
   const ev = node.evolve;
   if (!ev) return node.builder_summary || "";   // initial world
@@ -2499,6 +2522,26 @@ function renderEvoStep() {
   });
 
   const step = evo.steps[i];
+  const svg = document.getElementById("evo-graph");
+  const bp = step.breach_path;
+  const pathSet = bp && Array.isArray(bp.nodes) ? new Set(bp.nodes) : null;
+  if (svg) svg.classList.toggle("show-path", pathSet != null);
+  evo.nodeEls.forEach((el, id) => {
+    const present = ns.has(id);
+    el.classList.toggle("on-path", pathSet != null && present && pathSet.has(id));
+    el.classList.toggle("off-path", pathSet != null && present && !pathSet.has(id));
+  });
+  evo.edges.forEach((e) => {
+    const el = evo.edgeEls.get(e.id);
+    if (!el) return;
+    const present = es.has(e.id);
+    const on = present && pathSet != null && pathSet.has(e.src) && pathSet.has(e.dst);
+    el.classList.toggle("on-path", on);
+    el.classList.toggle("off-path", present && pathSet != null && !on);
+  });
+  const pathEl = document.getElementById("evo-step-path");
+  if (pathEl) pathEl.innerHTML = pathSet ? evoBreachBadge(bp, step) : "";
+
   document.getElementById("evo-step-label").textContent = i === 0 ? "Initial world" : "Evolution " + i;
   document.getElementById("evo-step-snap").textContent = "…" + (step.id || "").slice(-8);
   document.getElementById("evo-step-summary").textContent = evoSummaryText(step);
