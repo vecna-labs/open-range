@@ -2176,8 +2176,8 @@ const evo = {
   mounted: false,
   W: 1280, H: 760,
   nodes: [], edges: [], steps: [],
-  stepNodeSets: [], stepEdgeSets: [], stepAttrs: [],
-  nodeEls: new Map(), edgeEls: new Map(),
+  stepNodeSets: [], stepEdgeSets: [], stepAttrs: [], stepLabels: [],
+  nodeEls: new Map(), edgeEls: new Map(), labelEls: new Map(),
   view: { x: 0, y: 0, k: 1 },
 };
 
@@ -2236,6 +2236,13 @@ function buildEvo() {
     (s.graph.nodes || []).forEach((n) => m.set(n.id, n.attrs || {}));
     return m;
   });
+  // A node's kind can change across steps (a chain hop's terminal flag-read becomes a
+  // relay when the chain deepens), so its label is per-step, not first-appearance.
+  evo.stepLabels = steps.map((s) => {
+    const m = new Map();
+    (s.graph.nodes || []).forEach((n) => m.set(n.id, evoNodeLabel(n)));
+    return m;
+  });
   if (evo.step > steps.length - 1) evo.step = Math.max(0, steps.length - 1);
   layoutEvo();
   evo.mounted = false;
@@ -2287,6 +2294,7 @@ function mountEvoGraph() {
   svg.innerHTML = "";
   evo.nodeEls.clear();
   evo.edgeEls.clear();
+  evo.labelEls.clear();
 
   const vp = document.createElementNS(SVGNS, "g");
   vp.setAttribute("id", "evo-viewport");
@@ -2354,6 +2362,7 @@ function mountEvoGraph() {
       }
       t.textContent = lab;
       g.appendChild(t);
+      evo.labelEls.set(n.id, t);
       let sub = "";
       if (n.kind === "service" && n.zone) sub = n.public ? n.zone + " · public" : n.zone;
       else if (n.kind === "network") sub = "network";
@@ -2520,6 +2529,13 @@ function renderEvoStep() {
     el.classList.toggle("gone", !on && !justRemoved);
     el.classList.toggle("added", on && prevE != null && !prevE.has(id));
   });
+  const labels = evo.stepLabels[i];
+  if (labels) {
+    evo.labelEls.forEach((t, id) => {
+      const lab = labels.get(id);
+      if (lab != null && t.textContent !== lab) t.textContent = lab;
+    });
+  }
 
   const step = evo.steps[i];
   const svg = document.getElementById("evo-graph");
