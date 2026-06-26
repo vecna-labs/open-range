@@ -2249,10 +2249,50 @@ function buildEvo() {
   return true;
 }
 
+// Column per node. When the world records a breach path, columns follow the attack
+// order (one per hop) so the path reads left->right; otherwise fall back to kind bands.
+function evoColumns(byId, nbrs) {
+  let canon = null;
+  evo.steps.forEach((s) => {
+    const bp = s.breach_path;
+    if (bp && Array.isArray(bp.nodes) && (!canon || bp.nodes.length > canon.length)) {
+      canon = bp.nodes;
+    }
+  });
+  const col = new Map();
+  if (!canon) {
+    evo.nodes.forEach((n) => col.set(n.id, EVO_BAND[n.kind] ?? 4));
+    return col;
+  }
+  const LOOT = new Set(["data_store", "record", "secret"]);
+  let hop = -1, maxHop = 0;
+  canon.forEach((id) => {
+    const n = byId.get(id);
+    if (!n || LOOT.has(n.kind)) return;
+    if (n.kind === "service") hop++;   // each service starts a hop
+    col.set(id, Math.max(0, hop));
+    maxHop = Math.max(maxHop, hop);
+  });
+  canon.forEach((id) => {
+    const n = byId.get(id);
+    if (n && LOOT.has(n.kind)) col.set(id, maxHop + 1);   // the loot sits past the last hop
+  });
+  // Hang each off-path node off the column of its nearest on-path neighbour.
+  for (let it = 0; it < 5; it++) {
+    let changed = false;
+    evo.nodes.forEach((n) => {
+      if (col.has(n.id)) return;
+      const cs = nbrs.get(n.id).map((id) => col.get(id)).filter((c) => c != null);
+      if (cs.length) { col.set(n.id, Math.max(...cs)); changed = true; }
+    });
+    if (!changed) break;
+  }
+  evo.nodes.forEach((n) => { if (!col.has(n.id)) col.set(n.id, 0); });
+  return col;
+}
+
 function layoutEvo() {
   const padX = 110, padY = 60, W = evo.W, H = evo.H;
-  const bands = 5;
-  const colX = (b) => padX + b * ((W - 2 * padX) / (bands - 1));
   const byId = new Map(evo.nodes.map((n) => [n.id, n]));
   const nbrs = new Map(evo.nodes.map((n) => [n.id, []]));
   evo.edges.forEach((e) => {
@@ -2261,9 +2301,12 @@ function layoutEvo() {
       nbrs.get(e.dst).push(e.src);
     }
   });
+  const colOf = evoColumns(byId, nbrs);
+  const bands = Math.max(...evo.nodes.map((n) => colOf.get(n.id) || 0), 1) + 1;
+  const colX = (b) => padX + b * ((W - 2 * padX) / Math.max(1, bands - 1));
   const cols = Array.from({ length: bands }, () => []);
   evo.nodes.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).forEach((n) => {
-    n.band = EVO_BAND[n.kind] ?? 4;
+    n.band = colOf.get(n.id) ?? 0;
     cols[n.band].push(n);
   });
   const assignY = () => cols.forEach((arr, b) => {
