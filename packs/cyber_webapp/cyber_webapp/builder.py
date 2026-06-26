@@ -15,7 +15,7 @@ from openrange_pack_sdk import (
     TaskSpec,
 )
 
-from cyber_webapp.difficulty import world_difficulty
+from cyber_webapp.difficulty import breach_path, world_difficulty
 from cyber_webapp.families import WebappBuild, WebappPentest
 from cyber_webapp.priors import default_prior
 from cyber_webapp.sampling import (
@@ -113,6 +113,7 @@ class WebappBuilder(ProceduralBuilder):
                 "manifest_keys": sorted(manifest.keys()),
                 "generate": generate,
                 "world_difficulty": float(world_difficulty(graph)),
+                "breach_path": breach_path(graph),
             },
         )
 

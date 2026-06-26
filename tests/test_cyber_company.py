@@ -28,10 +28,12 @@ from cyber_webapp.difficulty import (
     _FANOUT_CAP,
     _W_HOP,
     _entry_ssrf,
+    breach_path,
     world_difficulty,
 )
 from cyber_webapp.invariants import unique_vuln_per_endpoint
 from cyber_webapp.mutation import _oracle_path_targets, available_mutations
+from cyber_webapp.ontology import ONTOLOGY_ID
 from cyber_webapp.realize_admit import classify_service_admission
 from cyber_webapp.reference_solver import solve_chain
 from cyber_webapp.verify import accepts, verdict
@@ -46,6 +48,7 @@ from openrange.core.curriculum import (
     consequence_seed_gate,
 )
 from openrange.core.episode import EpisodeHandle, EpisodeReport, EpisodeService
+from openrange.dashboard.view import _lineage_node
 from openrange.pool import (
     _MAX_PRIORITY,
     EvalPool,
@@ -538,6 +541,57 @@ def test_world_difficulty_rises_with_chain_depth() -> None:
     company = world_difficulty(_admit(_COMPANY_MANIFEST).graph)
     lateral = world_difficulty(_admit(_LATERAL_MANIFEST).graph)
     assert flat < company < lateral
+
+
+def _spine_reaches(graph: WorldGraph, spine: set[str], src: str, dst: str) -> bool:
+    adjacency: dict[str, set[str]] = {nid: set() for nid in spine}
+    for edge in graph.edges.values():
+        if edge.src in adjacency and edge.dst in adjacency:
+            adjacency[edge.src].add(edge.dst)
+            adjacency[edge.dst].add(edge.src)
+    seen, stack = {src}, [src]
+    while stack:
+        for neighbour in adjacency[stack.pop()]:
+            if neighbour not in seen:
+                seen.add(neighbour)
+                stack.append(neighbour)
+    return dst in seen
+
+
+def test_breach_path_connects_the_public_entry_to_the_flag() -> None:
+    graph = _admit(_LATERAL_MANIFEST).graph
+    path = breach_path(graph)
+    assert path is not None
+    assert path["entry"] == _entry_ssrf(graph).id
+    assert graph.nodes[path["flag"]].attrs.get("kind") == "flag"
+    assert all(node_id in graph.nodes for node_id in path["nodes"])
+    assert path["hops"] >= 1
+    assert path["classes"][0] == "ssrf"
+    assert path["classes"][-1] == "credential_gated_flag"
+    assert _spine_reaches(graph, set(path["nodes"]), path["entry"], path["flag"])
+
+    def vuln_pos(kind: str) -> int:
+        vid = next(
+            v.id for v in graph.by_kind("vulnerability") if v.attrs["kind"] == kind
+        )
+        return path["nodes"].index(vid)
+
+    assert vuln_pos("credential_leak") < vuln_pos("credential_gated_flag")
+
+
+def test_breach_path_surfaces_through_the_lineage_node() -> None:
+    snap = _admit(_LATERAL_MANIFEST)
+    node = _lineage_node(snap)
+    surfaced = node["breach_path"]
+    assert surfaced is not None
+    projected = {n["id"] for n in node["graph"]["nodes"]}
+    assert set(surfaced["nodes"]) <= projected
+
+
+def test_breach_path_is_none_without_a_flag() -> None:
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+    graph.add_node(Node("svc_x", "service", attrs={"name": "x", "exposure": "public"}))
+    assert breach_path(graph) is None
 
 
 def _add_off_path_vuln(graph: WorldGraph, i: int) -> None:
@@ -1490,7 +1544,7 @@ def test_whole_world_verdict_rejects_a_sibling_leak() -> None:
     assert "benign endpoint" in outcome.reason
 
 
-def test_evolved_snapshot_persists_world_difficulty(tmp_path: Path) -> None:
+def test_evolved_snapshot_persists_difficulty_and_breach_path(tmp_path: Path) -> None:
     pack = WebappPack()
     seeds = [{**_COMPANY_MANIFEST, "seed": s} for s in range(4)]
     round_no = [0]
@@ -1505,6 +1559,7 @@ def test_evolved_snapshot_persists_world_difficulty(tmp_path: Path) -> None:
         pack,
         seeds,
         difficulty_fn=lambda s: float(world_difficulty(s.graph)),
+        path_fn=lambda s: breach_path(s.graph),
         family="webapp.pentest",
         max_size=5,
     )
@@ -1526,3 +1581,4 @@ def test_evolved_snapshot_persists_world_difficulty(tmp_path: Path) -> None:
     for snap in evolved:
         stamped = snap.lineage.get("world_difficulty")
         assert stamped == pytest.approx(float(world_difficulty(snap.graph)))
+        assert snap.lineage.get("breach_path") == breach_path(snap.graph)

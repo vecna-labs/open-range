@@ -2165,7 +2165,8 @@ const EVO_LABELED = new Set([
 const EVO_LEGEND = [
   ["infrastructure", "#9e8e72"], ["service", "#3d6a8a"], ["endpoint", "#6f9bb5"],
   ["data / records", "#5e7c3d"], ["secret", "#b88521"], ["account / cred", "#6e5a85"],
-  ["vulnerability", "#8d3f3a"], ["added this step", "ring"], ["changed this step", "ring-amber"],
+  ["vulnerability", "#8d3f3a"], ["breach path", "path"],
+  ["added this step", "ring"], ["changed this step", "ring-amber"],
 ];
 
 const evo = {
@@ -2175,8 +2176,8 @@ const evo = {
   mounted: false,
   W: 1280, H: 760,
   nodes: [], edges: [], steps: [],
-  stepNodeSets: [], stepEdgeSets: [], stepAttrs: [],
-  nodeEls: new Map(), edgeEls: new Map(),
+  stepNodeSets: [], stepEdgeSets: [], stepAttrs: [], stepLabels: [],
+  nodeEls: new Map(), edgeEls: new Map(), labelEls: new Map(),
   view: { x: 0, y: 0, k: 1 },
 };
 
@@ -2235,16 +2236,63 @@ function buildEvo() {
     (s.graph.nodes || []).forEach((n) => m.set(n.id, n.attrs || {}));
     return m;
   });
+  // A node's kind can change across steps (a chain hop's terminal flag-read becomes a
+  // relay when the chain deepens), so its label is per-step, not first-appearance.
+  evo.stepLabels = steps.map((s) => {
+    const m = new Map();
+    (s.graph.nodes || []).forEach((n) => m.set(n.id, evoNodeLabel(n)));
+    return m;
+  });
   if (evo.step > steps.length - 1) evo.step = Math.max(0, steps.length - 1);
   layoutEvo();
   evo.mounted = false;
   return true;
 }
 
+// Column per node. When the world records a breach path, columns follow the attack
+// order (one per hop) so the path reads left->right; otherwise fall back to kind bands.
+function evoColumns(byId, nbrs) {
+  let canon = null;
+  evo.steps.forEach((s) => {
+    const bp = s.breach_path;
+    if (bp && Array.isArray(bp.nodes) && (!canon || bp.nodes.length > canon.length)) {
+      canon = bp.nodes;
+    }
+  });
+  const col = new Map();
+  if (!canon) {
+    evo.nodes.forEach((n) => col.set(n.id, EVO_BAND[n.kind] ?? 4));
+    return col;
+  }
+  const LOOT = new Set(["data_store", "record", "secret"]);
+  let hop = -1, maxHop = 0;
+  canon.forEach((id) => {
+    const n = byId.get(id);
+    if (!n || LOOT.has(n.kind)) return;
+    if (n.kind === "service") hop++;   // each service starts a hop
+    col.set(id, Math.max(0, hop));
+    maxHop = Math.max(maxHop, hop);
+  });
+  canon.forEach((id) => {
+    const n = byId.get(id);
+    if (n && LOOT.has(n.kind)) col.set(id, maxHop + 1);   // the loot sits past the last hop
+  });
+  // Hang each off-path node off the column of its nearest on-path neighbour.
+  for (let it = 0; it < 5; it++) {
+    let changed = false;
+    evo.nodes.forEach((n) => {
+      if (col.has(n.id)) return;
+      const cs = nbrs.get(n.id).map((id) => col.get(id)).filter((c) => c != null);
+      if (cs.length) { col.set(n.id, Math.max(...cs)); changed = true; }
+    });
+    if (!changed) break;
+  }
+  evo.nodes.forEach((n) => { if (!col.has(n.id)) col.set(n.id, 0); });
+  return col;
+}
+
 function layoutEvo() {
   const padX = 110, padY = 60, W = evo.W, H = evo.H;
-  const bands = 5;
-  const colX = (b) => padX + b * ((W - 2 * padX) / (bands - 1));
   const byId = new Map(evo.nodes.map((n) => [n.id, n]));
   const nbrs = new Map(evo.nodes.map((n) => [n.id, []]));
   evo.edges.forEach((e) => {
@@ -2253,9 +2301,12 @@ function layoutEvo() {
       nbrs.get(e.dst).push(e.src);
     }
   });
+  const colOf = evoColumns(byId, nbrs);
+  const bands = Math.max(...evo.nodes.map((n) => colOf.get(n.id) || 0), 1) + 1;
+  const colX = (b) => padX + b * ((W - 2 * padX) / Math.max(1, bands - 1));
   const cols = Array.from({ length: bands }, () => []);
   evo.nodes.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).forEach((n) => {
-    n.band = EVO_BAND[n.kind] ?? 4;
+    n.band = colOf.get(n.id) ?? 0;
     cols[n.band].push(n);
   });
   const assignY = () => cols.forEach((arr, b) => {
@@ -2286,6 +2337,7 @@ function mountEvoGraph() {
   svg.innerHTML = "";
   evo.nodeEls.clear();
   evo.edgeEls.clear();
+  evo.labelEls.clear();
 
   const vp = document.createElementNS(SVGNS, "g");
   vp.setAttribute("id", "evo-viewport");
@@ -2328,6 +2380,15 @@ function mountEvoGraph() {
     c.setAttribute("stroke", n.public ? "#4f3a1f" : "#faf7ee");
     c.setAttribute("stroke-width", n.public ? "2.6" : "1.4");
     g.appendChild(c);
+    if (n.kind === "secret") {
+      g.classList.add("is-flag");
+      const star = document.createElementNS(SVGNS, "text");
+      star.setAttribute("class", "flag-glyph");
+      star.setAttribute("text-anchor", "middle");
+      star.setAttribute("y", "3.5");
+      star.textContent = "★";
+      g.appendChild(star);
+    }
     const title = document.createElementNS(SVGNS, "title");
     title.textContent = `${n.id}  ·  ${n.kind}${n.zone ? "  ·  " + n.zone : ""}${n.public ? "  ·  public" : ""}`;
     g.appendChild(title);
@@ -2344,6 +2405,7 @@ function mountEvoGraph() {
       }
       t.textContent = lab;
       g.appendChild(t);
+      evo.labelEls.set(n.id, t);
       let sub = "";
       if (n.kind === "service" && n.zone) sub = n.public ? n.zone + " · public" : n.zone;
       else if (n.kind === "network") sub = "network";
@@ -2374,9 +2436,11 @@ function mountEvoLegend() {
   const el = document.getElementById("evo-legend");
   if (!el) return;
   el.innerHTML = EVO_LEGEND.map(([name, color]) => {
-    const isRing = color === "ring" || color === "ring-amber";
-    const cls = color === "ring-amber" ? " ring amber" : color === "ring" ? " ring" : "";
-    const style = isRing ? "" : ` style="background:${color}"`;
+    const isSwatch = color !== "ring" && color !== "ring-amber" && color !== "path";
+    const cls = color === "ring-amber" ? " ring amber"
+      : color === "ring" ? " ring"
+      : color === "path" ? " path" : "";
+    const style = isSwatch ? ` style="background:${color}"` : "";
     return `<div class="row"><span class="sw${cls}"${style}></span>${escapeHtml(name)}</div>`;
   }).join("");
 }
@@ -2448,6 +2512,17 @@ function evoShortName(vid) {
 const EVO_DIRECTION_WORD = { harden: "harder", soften: "easier", diversify: "varied" };
 function evoDirectionWord(d) { return EVO_DIRECTION_WORD[d] || d || ""; }
 
+function evoBreachBadge(bp, step) {
+  const hops = Number(bp.hops) || 0;
+  const chain = hops === 0 ? "direct read" : hops === 1 ? "1-hop chain" : `${hops}-hop chain`;
+  const classes = Array.isArray(bp.classes) ? bp.classes : [];
+  const entry = classes.length ? String(classes[0]).replace(/_/g, " ") : "exploit";
+  const diff = step.world_difficulty != null
+    ? ` · diff ${Number(step.world_difficulty).toFixed(1)}` : "";
+  return `<span class="evo-path-tag">breach</span>`
+    + `${escapeHtml(chain)} · ${escapeHtml(entry)} → flag${escapeHtml(diff)}`;
+}
+
 function evoSummaryText(node) {
   const ev = node.evolve;
   if (!ev) return node.builder_summary || "";   // initial world
@@ -2497,8 +2572,35 @@ function renderEvoStep() {
     el.classList.toggle("gone", !on && !justRemoved);
     el.classList.toggle("added", on && prevE != null && !prevE.has(id));
   });
+  const labels = evo.stepLabels[i];
+  if (labels) {
+    evo.labelEls.forEach((t, id) => {
+      const lab = labels.get(id);
+      if (lab != null && t.textContent !== lab) t.textContent = lab;
+    });
+  }
 
   const step = evo.steps[i];
+  const svg = document.getElementById("evo-graph");
+  const bp = step.breach_path;
+  const pathSet = bp && Array.isArray(bp.nodes) ? new Set(bp.nodes) : null;
+  if (svg) svg.classList.toggle("show-path", pathSet != null);
+  evo.nodeEls.forEach((el, id) => {
+    const present = ns.has(id);
+    el.classList.toggle("on-path", pathSet != null && present && pathSet.has(id));
+    el.classList.toggle("off-path", pathSet != null && present && !pathSet.has(id));
+  });
+  evo.edges.forEach((e) => {
+    const el = evo.edgeEls.get(e.id);
+    if (!el) return;
+    const present = es.has(e.id);
+    const on = present && pathSet != null && pathSet.has(e.src) && pathSet.has(e.dst);
+    el.classList.toggle("on-path", on);
+    el.classList.toggle("off-path", present && pathSet != null && !on);
+  });
+  const pathEl = document.getElementById("evo-step-path");
+  if (pathEl) pathEl.innerHTML = pathSet ? evoBreachBadge(bp, step) : "";
+
   document.getElementById("evo-step-label").textContent = i === 0 ? "Initial world" : "Evolution " + i;
   document.getElementById("evo-step-snap").textContent = "…" + (step.id || "").slice(-8);
   document.getElementById("evo-step-summary").textContent = evoSummaryText(step);
@@ -2782,6 +2884,7 @@ function wireUI() {
   await safeRefreshRuns();
   await safeRefresh();
   showRailTab("world");
+  setEvoView("evolution");
   setInterval(safeRefreshRuns, 5000);
   setInterval(() => {
     if (runState.activeRun) safeRefresh();

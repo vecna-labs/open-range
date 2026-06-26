@@ -531,7 +531,7 @@ def _flag_store(graph: WorldGraph) -> str | None:
     )
 
 
-def _credential_walk(graph: WorldGraph) -> list[tuple[str, str]]:
+def _credential_chain_vulns(graph: WorldGraph) -> list[Node]:
     enables: dict[str, list[str]] = {}
     for edge in graph.edges.values():
         if edge.kind == "enables":
@@ -544,19 +544,13 @@ def _credential_walk(graph: WorldGraph) -> list[tuple[str, str]]:
         ),
         None,
     )
-    walk: list[tuple[str, str]] = []
+    chain: list[Node] = []
     seen: set[str] = set()
     while current is not None and current.id not in seen:
         seen.add(current.id)
-        kind = str(current.attrs.get("kind", ""))
-        if kind in ("credential_gated_relay", "credential_gated_flag"):
-            endpoint_id = _affects_target_id(graph, current.id)
-            service = _service_of_endpoint(graph, endpoint_id) if endpoint_id else None
-            host = str(service.attrs.get("name", service.id)) if service else ""
-            cred = str(dict(current.attrs.get("params", {})).get("credential", ""))
-            walk.append((host, cred))
-            if kind == "credential_gated_flag":
-                break
+        chain.append(current)
+        if str(current.attrs.get("kind", "")) == "credential_gated_flag":
+            break
         following = sorted(enables.get(current.id, []))
         current = next(
             (
@@ -569,6 +563,22 @@ def _credential_walk(graph: WorldGraph) -> list[tuple[str, str]]:
             ),
             None,
         )
+    return chain
+
+
+def _credential_walk(graph: WorldGraph) -> list[tuple[str, str]]:
+    walk: list[tuple[str, str]] = []
+    for vuln in _credential_chain_vulns(graph):
+        if str(vuln.attrs.get("kind", "")) not in (
+            "credential_gated_relay",
+            "credential_gated_flag",
+        ):
+            continue
+        endpoint_id = _affects_target_id(graph, vuln.id)
+        service = _service_of_endpoint(graph, endpoint_id) if endpoint_id else None
+        host = str(service.attrs.get("name", service.id)) if service else ""
+        cred = str(dict(vuln.attrs.get("params", {})).get("credential", ""))
+        walk.append((host, cred))
     return walk
 
 
