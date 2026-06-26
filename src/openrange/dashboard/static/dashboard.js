@@ -2841,6 +2841,7 @@ function wireUI() {
   await safeRefreshRuns();
   await safeRefresh();
   showRailTab("world");
+  setEvoView("evolution");
   setInterval(safeRefreshRuns, 5000);
   setInterval(() => {
     if (runState.activeRun) safeRefresh();
