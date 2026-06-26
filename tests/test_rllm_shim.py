@@ -32,7 +32,7 @@ from openrange import EpisodeService, SampleResult, run_agent
 from openrange.core.admit import admit
 from openrange.core.sandbox import CommandResult
 
-_SHELL = "```run_shell\necho probe\n```"
+_SHELL = "```bash\necho probe\n```"
 _FINISH = "```finish\ndone\n```"
 
 

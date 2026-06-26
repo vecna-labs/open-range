@@ -132,17 +132,29 @@ def agent_briefing(ctx: EpisodeContext) -> str:
     return "\n\n".join(parts)
 
 
-_ACTION_BLOCK = re.compile(r"```(run_shell|finish)\n(.*?)```", re.DOTALL)
+_ACTION_BLOCK = re.compile(
+    r"```(bash|sh|shell|console|zsh|finish)[ \t]*\n(.*?)```", re.DOTALL
+)
 
 
 def parse_action(text: str) -> AgentAction:
-    """Parse one action from a model reply: a fenced ```run_shell``` / ```finish```
-    block. A reply with no recognized block becomes a ``finish`` carrying the whole
-    text, so a model that ignores the protocol still terminates rather than loops."""
-    match = _ACTION_BLOCK.search(text)
-    if match is None:
+    """Parse the agent's action from its reply: a fenced shell command
+    (```bash / ```sh / ```shell / ```console / ```zsh) or a ```finish``` block.
+
+    Shell actions use the standard markdown code fence a model is trained to
+    emit — executable code as the action, CodeAct-style — rather than a bespoke
+    tool token it only ever sees in our prompt and routinely forgets. The *last*
+    recognized block wins, so an illustrative snippet earlier in the reply is not
+    executed in place of the action the model actually settled on. A reply with
+    no recognized block becomes a ``finish`` carrying the whole text, so a model
+    that ignores the protocol terminates rather than loops."""
+    matches = list(_ACTION_BLOCK.finditer(text))
+    if not matches:
         return AgentAction(tool="finish", command=text.strip())
-    return AgentAction(tool=match.group(1), command=match.group(2).strip())
+    match = matches[-1]
+    lang = match.group(1).lower()
+    tool = "finish" if lang == "finish" else "run_shell"
+    return AgentAction(tool=tool, command=match.group(2).strip())
 
 
 def run_shell(

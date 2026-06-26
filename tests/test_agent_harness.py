@@ -102,7 +102,7 @@ def _finish(answer: str = "done") -> Reply:
 
 
 def _shell(command: str) -> Reply:
-    return lambda _prompt: f"```run_shell\n{command}\n```"
+    return lambda _prompt: f"```bash\n{command}\n```"
 
 
 def _cmdi_snapshot() -> Snapshot:
@@ -140,7 +140,7 @@ def _exploit_reply(snap: Snapshot) -> Reply:
             )
         else:
             curl = f"curl -s '{target}'"
-        return f"```run_shell\n{curl}\n```"
+        return f"```bash\n{curl}\n```"
 
     return reply
 
@@ -250,7 +250,7 @@ def test_arun_rollouts_overlaps_concurrent_episodes(tmp_path: Path) -> None:
 
 
 def test_parse_action_reads_blocks_and_falls_back_to_finish() -> None:
-    shell = parse_action("intro\n```run_shell\ncurl -s http://x/\n```\noutro")
+    shell = parse_action("intro\n```bash\ncurl -s http://x/\n```\noutro")
     assert shell.tool == "run_shell"
     assert shell.command == "curl -s http://x/"
     done = parse_action("```finish\nthe answer\n```")
@@ -259,6 +259,22 @@ def test_parse_action_reads_blocks_and_falls_back_to_finish() -> None:
     bare = parse_action("just prose, no block")
     assert bare.tool == "finish"
     assert bare.command == "just prose, no block"
+
+
+def test_parse_action_accepts_standard_shell_fences_and_takes_the_last() -> None:
+    # A shell action is the markdown code fence the model is trained to emit:
+    # ```bash / ```sh / ```shell / ```console / ```zsh all read as one command.
+    for lang in ("bash", "sh", "shell", "console", "zsh"):
+        act = parse_action(f"thinking...\n```{lang}\nsubmit it\n```")
+        assert act.tool == "run_shell", lang
+        assert act.command == "submit it"
+    # An illustrative block before the real action is not executed in its place —
+    # the last recognized block is the one the model settled on.
+    settled = parse_action(
+        "maybe\n```bash\necho first\n```\non reflection:\n```bash\necho second\n```"
+    )
+    assert settled.tool == "run_shell"
+    assert settled.command == "echo second"
 
 
 def test_run_shell_requires_a_bound_run_capability() -> None:
