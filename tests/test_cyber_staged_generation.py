@@ -487,21 +487,24 @@ def test_live_episode_records_the_flag_leak_as_a_node_id(tmp_path: Path) -> None
     assert "secret_flag" in leaked
 
 
-def test_check_success_surfaces_leak_without_changing_the_reward_rungs() -> None:
+def test_check_success_grades_on_the_leak_not_only_a_submission() -> None:
     from cyber_webapp.families.pentest import WebappPentest
 
     snap = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})
     pentest = next(t for t in snap.tasks if t.meta.get("family") == "webapp.pentest")
     fam = WebappPentest()
+    # A wrong (or absent) submission, but the guarded flag crossed the wire.
     base = {"requests_made": ["/svc"], "flag_from_response": "wrong"}
 
     leaked = fam.check_success(
         snap.graph, pentest, {**base, "leaked_secret_ids": ["secret_flag"]}
     )
     quiet = fam.check_success(snap.graph, pentest, base)
+    # The breach itself is success — no submission needed; without a leak it fails.
+    assert leaked.success is True and quiet.success is False
     assert "leaked" in leaked.reason and "leaked" not in quiet.reason
-    assert leaked.success is False and quiet.success is False
-    # The averaged subgoal set is unchanged, so the trainer's rungs are intact.
+    # The strict-submission subgoal stays a miss even though the breach passed.
+    assert leaked.subgoals["matched_flag"] is False
     assert set(leaked.subgoals) == {
         "reached_endpoint",
         "extracted_anything",
