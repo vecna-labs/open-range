@@ -166,7 +166,88 @@ def test_real_exploit_is_run_and_the_leak_is_observed(tmp_path: Path) -> None:
     assert rollout.steps[-1].command is None
     leaked = rollout.report.final_state.get("leaked_secret_ids") or ()
     assert "secret_flag" in leaked
-    assert isinstance(rollout.success, bool)
+    # The breach leaked the flag, but "recovered" is not the flag value, so the
+    # submission-based grade is a miss — the leak is observed independently.
+    assert rollout.success is False
+
+
+def _finish_with(answer: str) -> Reply:
+    return lambda _prompt: f"```finish\n{answer}\n```"
+
+
+def test_submitting_the_recovered_flag_passes(tmp_path: Path) -> None:
+    # The single-tool loop's submit channel: a finish block carrying the flag is
+    # routed to the result file the grader reads, so a real breach can pass.
+    snap = _cmdi_snapshot()
+    flag = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        rollout = run_agent(
+            svc,
+            snap,
+            _Policy(_exploit_reply(snap), _finish_with(flag)),
+            bind_run=_host_bind,
+            task_id=_pentest_task_id(snap),
+        )
+    finally:
+        svc.close()
+    assert rollout.success is True
+    assert rollout.reward.scalar == 1.0
+    assert rollout.report.final_state["flag_from_response"] == flag
+
+
+def test_submitting_the_flag_as_a_json_envelope_passes(tmp_path: Path) -> None:
+    snap = _cmdi_snapshot()
+    flag = str(snap.graph.nodes["secret_flag"].attrs["value_ref"])
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        rollout = run_agent(
+            svc,
+            snap,
+            _Policy(_exploit_reply(snap), _finish_with(f'{{"flag": "{flag}"}}')),
+            bind_run=_host_bind,
+            task_id=_pentest_task_id(snap),
+        )
+    finally:
+        svc.close()
+    assert rollout.success is True
+
+
+def test_submitting_a_non_flag_json_object_is_a_miss(tmp_path: Path) -> None:
+    # A JSON object without a flag field is not a bare-flag submission; the grader
+    # records no flag rather than treating the envelope text as the answer.
+    snap = _cmdi_snapshot()
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        rollout = run_agent(
+            svc,
+            snap,
+            _Policy(_exploit_reply(snap), _finish_with('{"note": "no flag here"}')),
+            bind_run=_host_bind,
+            task_id=_pentest_task_id(snap),
+        )
+    finally:
+        svc.close()
+    assert rollout.report.final_state.get("flag_from_response") is None
+    assert rollout.success is False
+
+
+def test_finish_without_an_answer_submits_nothing(tmp_path: Path) -> None:
+    snap = _cmdi_snapshot()
+    svc = EpisodeService(WebappPack(), tmp_path)
+    try:
+        rollout = run_agent(
+            svc,
+            snap,
+            _Fixed("```finish\n\n```"),
+            bind_run=_host_bind,
+            task_id=_pentest_task_id(snap),
+        )
+    finally:
+        svc.close()
+    assert rollout.terminal_reason == "finished"
+    assert rollout.report.final_state.get("flag_from_response") is None
+    assert rollout.success is False
 
 
 def test_max_turns_caps_the_loop_and_carries_train_signal(tmp_path: Path) -> None:
@@ -275,6 +356,44 @@ def test_parse_action_accepts_standard_shell_fences_and_takes_the_last() -> None
     )
     assert settled.tool == "run_shell"
     assert settled.command == "echo second"
+
+
+def test_parse_action_reads_the_native_tool_call_form() -> None:
+    # A function-calling model reverts to its native XML tool call under the
+    # fence instruction; the harness honours it rather than reading a give-up.
+    shell = parse_action(
+        "<tool_call>\n<function=bash>\n<parameter=command>\n"
+        "curl -s http://x/\n</parameter>\n</function>\n</tool_call>"
+    )
+    assert shell.tool == "run_shell"
+    assert shell.command == "curl -s http://x/"
+    done = parse_action(
+        "<function=submit><parameter=answer>THEFLAG</parameter></function>"
+    )
+    assert done.tool == "finish"
+    assert done.command == "THEFLAG"
+    # The last action wins across both the fence and the XML form, whichever ends
+    # the reply — an XML call then a fence, or a fence then an XML call.
+    fence_last = parse_action(
+        "<function=bash><parameter=command>echo first</parameter></function>\n"
+        "```bash\necho last\n```"
+    )
+    assert fence_last.command == "echo last"
+    xml_last = parse_action(
+        "```bash\necho first\n```\n"
+        "<function=bash><parameter=command>echo last</parameter></function>"
+    )
+    assert xml_last.tool == "run_shell"
+    assert xml_last.command == "echo last"
+
+
+def test_submit_before_reset_is_rejected() -> None:
+    from cyber_webapp.realize import WebappRuntime
+    from openrange_pack_sdk import OpenRangeError
+
+    runtime = WebappRuntime(_cmdi_snapshot().graph)
+    with pytest.raises(OpenRangeError, match="submit"):
+        runtime.submit("anything")
 
 
 def test_run_shell_requires_a_bound_run_capability() -> None:

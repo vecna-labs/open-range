@@ -100,8 +100,20 @@ class _FilesystemRuntime(ABC):
             raise OpenRangeError("surface() called before reset()")
         return {
             "solver_root": str(self._solver_root),
+            "submit": self.submit,
             **self.surface_extras(),
         }
+
+    def submit(self, content: str) -> None:
+        """Record the agent's final answer where ``collect`` reads it.
+
+        The submit channel for the single-tool agent loop. The runtime owns the
+        path, so it works whether the agent ran on the host or inside a sandbox
+        that can't reach ``solver_root`` — the harness routes the answer here, the
+        agent never writes the file itself."""
+        if self._solver_root is None:
+            raise OpenRangeError("submit() called before reset()")
+        (self._solver_root / self.RESULT_FILE).write_text(content, encoding="utf-8")
 
     def terminal(self) -> tuple[bool, str | None]:
         if self._solver_root is None:
