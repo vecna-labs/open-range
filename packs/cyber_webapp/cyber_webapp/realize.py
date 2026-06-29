@@ -100,12 +100,7 @@ class _WebappRuntime(SubprocessRuntime):
         return tuple(events)
 
     def collect_extras(self) -> Mapping[str, Any]:
-        result = self._read_result()
-        flag = ""
-        if isinstance(result.get("flag"), str):
-            flag = str(result["flag"])
-        elif isinstance(result.get("flag_from_response"), str):
-            flag = str(result["flag_from_response"])
+        flag = self._submitted_flag()
         requests = self._all_requests()
         requests_made = [str(row.get("path", "")) for row in requests if row]
         leaked: set[str] = set()
@@ -119,6 +114,21 @@ class _WebappRuntime(SubprocessRuntime):
             "leaked_secret_ids": sorted(leaked),
             "endpoint_serves_200": self._probe_root_200(),
         }
+
+    def _submitted_flag(self) -> str:
+        result = self._read_result()
+        for key in ("flag", "flag_from_response"):
+            value = result.get(key)
+            if isinstance(value, str) and value:
+                return value
+        # A single-tool agent submits a bare flag, not a {"flag": ...} envelope;
+        # accept the raw result file when it isn't that JSON object.
+        assert self._solver_root is not None
+        try:
+            raw = (self._solver_root / self.RESULT_FILE).read_text("utf-8").strip()
+        except OSError:
+            return ""
+        return raw if not raw.startswith("{") else ""
 
     def checkpoint(self) -> Any:
         state = super().checkpoint()

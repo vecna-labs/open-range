@@ -135,26 +135,41 @@ def agent_briefing(ctx: EpisodeContext) -> str:
 _ACTION_BLOCK = re.compile(
     r"```(bash|sh|shell|console|zsh|finish)[ \t]*\n(.*?)```", re.DOTALL
 )
+# A function-calling model often emits its native tool-call form instead of a
+# fenced block — ``<function=bash><parameter=command>...</parameter>`` (Qwen /
+# Nemotron / Hermes). Read it as the action rather than a give-up ``finish``.
+_XML_CALL = re.compile(
+    r"<function\s*=\s*([\w.]+)\s*>\s*<parameter\s*=\s*[\w.]+\s*>"
+    r"\n?(.*?)\n?\s*</parameter>",
+    re.DOTALL,
+)
+_FINISH_FNS = {"finish", "submit", "answer", "done"}
 
 
 def parse_action(text: str) -> AgentAction:
     """Parse the agent's action from its reply: a fenced shell command
-    (```bash / ```sh / ```shell / ```console / ```zsh) or a ```finish``` block.
+    (```bash / ```sh / ```shell / ```console / ```zsh), a ```finish``` block, or
+    the native ``<function=...><parameter=...>`` tool call a function-calling
+    model emits.
 
-    Shell actions use the standard markdown code fence a model is trained to
-    emit — executable code as the action, CodeAct-style — rather than a bespoke
-    tool token it only ever sees in our prompt and routinely forgets. The *last*
-    recognized block wins, so an illustrative snippet earlier in the reply is not
-    executed in place of the action the model actually settled on. A reply with
-    no recognized block becomes a ``finish`` carrying the whole text, so a model
-    that ignores the protocol terminates rather than loops."""
-    matches = list(_ACTION_BLOCK.finditer(text))
-    if not matches:
+    Shell actions are CodeAct-style — executable code as the action — so the
+    standard markdown fence a model is trained to emit doubles as the action
+    token. A model with strong native function-calling reverts to its XML call
+    instead, so that form is honoured too. The *last* recognized action wins, so
+    an illustrative snippet earlier in the reply is not run in place of the action
+    the model actually settled on. A reply with no recognized action becomes a
+    ``finish`` carrying the whole text, so a model that ignores the protocol
+    terminates rather than loops."""
+    best: tuple[int, str, str] | None = None
+    for match in _ACTION_BLOCK.finditer(text):
+        best = (match.start(), match.group(1).lower(), match.group(2))
+    for match in _XML_CALL.finditer(text):
+        if best is None or match.start() > best[0]:
+            best = (match.start(), match.group(1).lower(), match.group(2))
+    if best is None:
         return AgentAction(tool="finish", command=text.strip())
-    match = matches[-1]
-    lang = match.group(1).lower()
-    tool = "finish" if lang == "finish" else "run_shell"
-    return AgentAction(tool=tool, command=match.group(2).strip())
+    tool = "finish" if best[1] in _FINISH_FNS else "run_shell"
+    return AgentAction(tool=tool, command=best[2].strip())
 
 
 def run_shell(
@@ -212,6 +227,9 @@ async def arun_agent(
             )
             action = parse_action(sample.text)
             if action.tool == "finish":
+                submit = bound.get("submit")
+                if callable(submit) and action.command:
+                    await asyncio.to_thread(submit, action.command)
                 turn = AgentTurn(
                     message=action.command or sample.text,
                     tool_calls=(
