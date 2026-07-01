@@ -1,4 +1,4 @@
-"""AgentBackend protocol + StrandsAgentBackend / CodexAgentBackend tests."""
+"""AgentBackend protocol + StrandsAgentBackend / LLMAgentBackend tests."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from openrange_pack_sdk import (
 )
 
 from openrange.agent_backend import (
-    CodexAgentBackend,
+    LLMAgentBackend,
     StrandsAgentBackend,
 )
 
@@ -66,7 +66,7 @@ def test_strands_backend_builds_agent_when_installed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CodexAgentBackend
+# LLMAgentBackend
 # ---------------------------------------------------------------------------
 
 
@@ -87,8 +87,8 @@ class _RecordingLLMBackend:
 
 
 def test_codex_backend_rejects_tools() -> None:
-    """CodexAgentBackend errors loudly if handed any tools."""
-    backend = CodexAgentBackend(backend=_RecordingLLMBackend())
+    """LLMAgentBackend errors loudly if handed any tools."""
+    backend = LLMAgentBackend(backend=_RecordingLLMBackend())
 
     def some_tool() -> None:
         return None
@@ -100,7 +100,7 @@ def test_codex_backend_rejects_tools() -> None:
 def test_codex_backend_drives_llm_for_tool_less_prompts() -> None:
     """Without tools, build_agent returns a callable that hits the LLM backend."""
     fake = _RecordingLLMBackend()
-    backend = CodexAgentBackend(backend=fake)
+    backend = LLMAgentBackend(backend=fake)
     session = backend.build_agent(system_prompt="be terse", tools=())
     result = session("hello")
     assert isinstance(result, LLMResult)
@@ -112,13 +112,13 @@ def test_codex_backend_drives_llm_for_tool_less_prompts() -> None:
 
 def test_codex_backend_rejects_both_backend_and_model_args() -> None:
     with pytest.raises(AgentBackendError, match="not both"):
-        CodexAgentBackend(backend=_RecordingLLMBackend(), model="some-model")
+        LLMAgentBackend(backend=_RecordingLLMBackend(), model="some-model")
 
 
 def test_codex_backend_preflight_delegates_to_custom_llm_backend() -> None:
     """A caller-supplied LLMBackend gets its own preflight called."""
     fake = _RecordingLLMBackend()
-    backend = CodexAgentBackend(backend=fake)
+    backend = LLMAgentBackend(backend=fake)
     backend.preflight()
     assert fake.preflight_calls == 1
 
@@ -131,7 +131,7 @@ def test_codex_backend_preflight_surfaces_custom_llm_backend_failures() -> None:
         def preflight(self) -> None:
             raise LLMBackendError("custom probe failed")
 
-    backend = CodexAgentBackend(backend=_BadBackend())
+    backend = LLMAgentBackend(backend=_BadBackend())
     with pytest.raises(AgentBackendError, match="custom probe failed"):
         backend.preflight()
 
@@ -142,6 +142,6 @@ def test_codex_backend_preflight_errors_if_codex_cli_missing(tmp_path: Any) -> N
     from openrange.llm import CodexBackend
 
     nonexistent = tmp_path / "codex_does_not_exist"
-    backend = CodexAgentBackend(backend=CodexBackend(command=nonexistent))
+    backend = LLMAgentBackend(backend=CodexBackend(command=nonexistent))
     with pytest.raises(AgentBackendError, match="codex CLI not found"):
         backend.preflight()

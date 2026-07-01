@@ -82,7 +82,7 @@ class LLMBackend(Protocol):
 
     Concrete backends MAY also define a ``preflight()`` method to validate
     binaries/credentials once. Callers that need preflight (e.g.,
-    CodexAgentBackend) check for it via ``hasattr`` and call it
+    LLMAgentBackend) check for it via ``hasattr`` and call it
     defensively — the Protocol does not require it so a minimal in-process
     fake stays free of boilerplate."""
 

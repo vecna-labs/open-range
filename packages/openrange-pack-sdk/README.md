@@ -63,7 +63,7 @@ Two real semantic changes to know about:
   in-process fakes no longer need a no-op `preflight`.
 
 Concrete classes (`CodexBackend`, `StrandsAgentBackend`,
-`CodexAgentBackend`, the `admit()` function, `AdmissionFailure`,
+`LLMAgentBackend`, the `admit()` function, `AdmissionFailure`,
 `PackRegistry`, `NPCRegistry`, the `EpisodeService` runtime) STAY in
 `openrange`. Packs should never need them — the runtime supplies any
 concrete backend via `RunConfig.npc_agent_backend` and the harness drives
