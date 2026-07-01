@@ -1,0 +1,38 @@
+techniques:
+  T1046:
+    name: Network Service Discovery
+    keywords:
+      - nmap
+      - netstat
+      - masscan
+      - portscan
+
+  T1190:
+    name: Exploit Public-Facing Application
+    keywords:
+      - sqlmap
+      - nikto
+      - wpscan
+
+  T1059:
+    name: Command and Scripting Interpreter
+    keywords:
+      - bash
+      - python
+      - powershell
+      - cmd
+
+  T1078:
+    name: Valid Accounts
+    keywords:
+      - ssh
+      - login
+      - credential
+
+  T1110:
+    name: Brute Force
+    keywords:
+      - hydra
+      - medusa
+      - bruteforce
+      - crack

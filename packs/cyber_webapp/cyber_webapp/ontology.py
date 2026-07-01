@@ -154,6 +154,10 @@ def webapp_ontology() -> Ontology:
                         AttrType.JSON,
                         description="vuln-specific tuning",
                     ),
+                    "technique_id": s(
+                        AttrType.STRING,
+                        description="MITRE ATT&CK technique ID (e.g. T1046)",
+                    ),
                 },
                 description="an exploitable defect; always Visibility.HIDDEN at "
                 "construction",
