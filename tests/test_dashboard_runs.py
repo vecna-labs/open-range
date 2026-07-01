@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import cast
 
 from cyber_webapp import WebappPack
-from openrange_pack_sdk import Snapshot
+from openrange_pack_sdk import EpisodeResult, Snapshot
 
 from openrange.core.admit import admit
 from openrange.dashboard.events import DashboardEvent
@@ -377,6 +377,7 @@ def test_lineage_chain_grows_across_evolution() -> None:
 
     class _Report:
         passed = True
+        episode_result = EpisodeResult(True)
         final_state: dict[str, list[str]] = {"requests_made": []}
 
     pack = WebappPack()

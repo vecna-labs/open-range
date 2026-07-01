@@ -34,6 +34,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from openrange_pack_sdk import RewardAdapter
+
 from openrange.core.episode import AgentTurn, EpisodeReport
 
 
@@ -95,15 +97,27 @@ class Trajectory:
         }
 
 
-def episode_reward(report: EpisodeReport) -> Reward:
+def episode_reward(
+    report: EpisodeReport,
+    adapter: RewardAdapter | None = None,
+) -> Reward:
     """Shape an ``EpisodeReport`` into a dense, trainer-agnostic ``Reward``.
 
     ``components`` maps each subgoal to ``1.0`` / ``0.0``. ``scalar`` is ``1.0``
     for a solved episode; otherwise the fraction of subgoals that passed (partial
     credit), or ``0.0`` when the pack reports no subgoals.
+
+    Pass a pack's ``adapter`` (e.g. ``pack.default_reward_adapter()``) to source
+    the ``scalar`` from the pack's own reward shape instead. A ``float`` adapter
+    output is the scalar directly, keeping the per-subgoal ``components``; a
+    ``Sequence[float]`` (a multi-objective vector) becomes an indexed
+    ``components`` map whose mean is the ``scalar``. With ``adapter=None`` the
+    result is byte-for-byte the historical harness default.
     """
     subgoals = report.episode_result.subgoals
     components = {str(k): (1.0 if v else 0.0) for k, v in subgoals.items()}
+    if adapter is not None:
+        return _adapter_reward(report, adapter, components)
     if report.passed:
         scalar = 1.0
     elif components:
@@ -113,16 +127,35 @@ def episode_reward(report: EpisodeReport) -> Reward:
     return Reward(scalar=scalar, components=components)
 
 
+def _adapter_reward(
+    report: EpisodeReport,
+    adapter: RewardAdapter,
+    subgoal_components: Mapping[str, float],
+) -> Reward:
+    value = adapter.reward(report)
+    if isinstance(value, Sequence):
+        vector = [float(v) for v in value]
+        scalar = sum(vector) / len(vector) if vector else 0.0
+        return Reward(
+            scalar=scalar,
+            components={str(i): v for i, v in enumerate(vector)},
+        )
+    return Reward(scalar=float(value), components=dict(subgoal_components))
+
+
 def episode_trajectory(
     report: EpisodeReport,
     turns: Sequence[AgentTurn] | None = None,
+    adapter: RewardAdapter | None = None,
 ) -> Trajectory:
     """Assemble a ``Trajectory`` from a report and the turns the harness recorded.
 
     ``EpisodeReport`` keeps only the last agent message (``agent_summary``), so
     the per-step record is rebuilt from ``turns`` — the same ``AgentTurn`` objects
     the harness passed to ``record_turn``. With no turns the trajectory still
-    carries the terminal reward + outcome (a degenerate zero-step episode).
+    carries the terminal reward + outcome (a degenerate zero-step episode). An
+    optional ``adapter`` is forwarded to :func:`episode_reward` so the trajectory
+    carries the pack's own reward shape.
     """
     steps = tuple(
         TrajectoryStep(
@@ -138,7 +171,7 @@ def episode_trajectory(
         snapshot_id=report.snapshot_id,
         task_id=report.task_id,
         steps=steps,
-        reward=episode_reward(report),
+        reward=episode_reward(report, adapter),
         success=report.passed,
         reason=report.episode_result.reason,
     )

@@ -20,6 +20,7 @@ from graphschema import (
 )
 from openrange_pack_sdk import (
     EpisodeReportLike,
+    EpisodeResult,
     LLMBackend,
     LLMError,
     LLMRequest,
@@ -385,6 +386,7 @@ def test_enrich_mutations_reads_request_log_from_reports() -> None:
 
     class _Report:
         passed = False
+        episode_result = EpisodeResult(False)
         final_state: Mapping[str, object] = {
             "requests": [
                 {

@@ -58,21 +58,58 @@ class PoolableRuntime(Protocol):
 
 @runtime_checkable
 class EpisodeReportLike(Protocol):
-    """The slice of an episode report that families read.
+    """The slice of an episode report that families and reward adapters read.
 
-    ``passed`` is the gate the curriculum policy reads. ``final_state`` is
-    the runtime-emitted bag of facts the family's mutation/grading logic
-    interrogates (which records were touched, which requests fired, etc).
-    The contract is intentionally narrow — anything beyond these two
-    fields is a concrete-report concern and packs reach for it at their
-    own risk.
+    ``passed`` is the gate the curriculum policy reads. ``episode_result`` is
+    the structured outcome a :class:`RewardAdapter` shapes into a scalar —
+    its ``subgoals`` are the partial-credit signal. ``final_state`` is the
+    runtime-emitted bag of facts the family's mutation/grading logic
+    interrogates (which records were touched, which requests fired, etc), and
+    the raw substrate a future numeric-domain adapter reads. The contract is
+    intentionally narrow — anything beyond these is a concrete-report concern
+    and packs reach for it at their own risk.
     """
 
     @property
     def passed(self) -> bool: ...
 
     @property
+    def episode_result(self) -> EpisodeResult: ...
+
+    @property
     def final_state(self) -> Mapping[str, Any]: ...
+
+
+class RewardAdapter(ABC):
+    """Maps an episode's structured outcome into a trainer-facing reward.
+
+    A pack's ``check_success`` returns an :class:`EpisodeResult` — a boolean
+    plus per-subgoal flags — and deliberately never a scalar. Turning that
+    into the ``float`` (or multi-objective ``Sequence[float]``) a training loop
+    consumes is domain knowledge that belongs to the pack, not the trainer:
+    cyber's exploit-chain ladder, trading's risk-adjusted return, robotics'
+    success-plus-smoothness. Each pack ships its natural adapter via
+    :meth:`Pack.default_reward_adapter`; training loops consume the adapter and
+    stay domain-agnostic.
+    """
+
+    @abstractmethod
+    def reward(self, report: EpisodeReportLike) -> float | Sequence[float]: ...
+
+
+class SubgoalFractionRewardAdapter(RewardAdapter):
+    """The domain-agnostic default: ``1.0`` for a solved episode, otherwise the
+    fraction of subgoals that passed (partial credit), or ``0.0`` when the pack
+    reports no subgoals. This is the mapping the harness applied before packs
+    could own their reward shape."""
+
+    def reward(self, report: EpisodeReportLike) -> float:
+        if report.passed:
+            return 1.0
+        subgoals = report.episode_result.subgoals
+        if subgoals:
+            return sum(1 for hit in subgoals.values() if hit) / len(subgoals)
+        return 0.0
 
 
 @runtime_checkable
@@ -314,6 +351,14 @@ class Pack(ABC):
         prior's ``difficulty`` returns its default prior here, letting core step
         that difficulty up/down and re-admit a freshly-built world."""
         return None
+
+    def default_reward_adapter(self) -> RewardAdapter:
+        """The pack's natural ``EpisodeResult`` → reward mapping. Defaults to
+        the domain-agnostic subgoal-fraction shaping; a pack with a real reward
+        shape (cyber's exploit ladder, trading's P&L) overrides this so training
+        loops get a meaningful scalar without baking domain knowledge into the
+        trainer."""
+        return SubgoalFractionRewardAdapter()
 
 
 class NPC(ABC):
