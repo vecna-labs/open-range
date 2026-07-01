@@ -18,6 +18,7 @@ import re
 import shlex
 import sqlite3
 import xml.sax
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from jinja2.sandbox import SandboxedEnvironment
 from pathlib import Path
@@ -109,17 +110,79 @@ def _value_variants(value):
     return {value, b64, b64.rstrip("="), raw.hex(), quote(value, safe="")}
 
 
+class _AhoCorasick:
+    # Pure-Python multi-pattern substring matcher. Mirrors
+    # cyber_webapp._ahocorasick.AhoCorasick (the offline verifier) — this template
+    # renders into a standalone container and cannot import the pack, so the
+    # matcher is inlined here; keep the two behavior-identical. A match is exactly
+    # ``pattern in text``, so scanning is equivalent to the old per-secret loop.
+    __slots__ = ("_children", "_fail", "_out")
+
+    def __init__(self):
+        self._children = [{}]
+        self._fail = [0]
+        self._out = [[]]
+
+    def add(self, pattern, payload):
+        if not pattern:
+            return
+        node = 0
+        for ch in pattern:
+            child = self._children[node]
+            nxt = child.get(ch)
+            if nxt is None:
+                nxt = len(self._children)
+                self._children.append({})
+                self._fail.append(0)
+                self._out.append([])
+                child[ch] = nxt
+            node = nxt
+        self._out[node].append(payload)
+
+    def build(self):
+        queue = deque(self._children[0].values())
+        while queue:
+            node = queue.popleft()
+            for ch, nxt in self._children[node].items():
+                queue.append(nxt)
+                fail = self._fail[node]
+                while fail and ch not in self._children[fail]:
+                    fail = self._fail[fail]
+                dest = self._children[fail].get(ch, 0)
+                self._fail[nxt] = dest if dest != nxt else 0
+                self._out[nxt].extend(self._out[self._fail[nxt]])
+
+    def scan(self, text):
+        found = set()
+        children = self._children
+        fail = self._fail
+        out = self._out
+        node = 0
+        for ch in text:
+            while node and ch not in children[node]:
+                node = fail[node]
+            node = children[node].get(ch, 0)
+            if out[node]:
+                found.update(out[node])
+        return found
+
+
 def _scan_leaks(body, guarded):
     # Which guarded (HIDDEN) values reached this response. Records node IDS ONLY —
     # never the secret value — so the request log cannot be grepped for the flag.
+    # One automaton over every guarded value's encodings, scanned once, replaces
+    # the per-secret substring loop (O(secrets) -> O(patterns + text); #262).
     # Mirrors cyber_webapp.consequence.value_variants (literal + base64/hex/url) so
     # the live verdict matches the offline one; containment de-dup is offline-only.
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
-    return sorted(
-        nid
-        for nid, value in guarded.items()
-        if value and any(var in text for var in _value_variants(value))
-    )
+    matcher = _AhoCorasick()
+    for nid, value in guarded.items():
+        if not value:
+            continue
+        for var in _value_variants(value):
+            matcher.add(var, nid)
+    matcher.build()
+    return sorted(matcher.scan(text))
 
 
 {% for handler in handlers %}

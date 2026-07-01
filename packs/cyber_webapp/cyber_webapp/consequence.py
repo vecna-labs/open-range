@@ -34,6 +34,8 @@ from dataclasses import dataclass
 
 from graphschema import Visibility, WorldGraph
 
+from cyber_webapp._ahocorasick import AhoCorasick
+
 # Guarded values are matched by unanchored substring search, so a short value_ref
 # would collide with ordinary response text (HTML, openapi.json, decoys). Real
 # secrets clear this comfortably; a degenerate one is excluded rather than allowed
@@ -97,10 +99,16 @@ def detect_leak(graph: WorldGraph, responses: Iterable[str]) -> LeakVerdict:
     guarded = guarded_values(graph)
     if not guarded:
         return LeakVerdict(frozenset())
-    bodies = list(responses)
-    leaked = {
-        node_id
-        for node_id, value in guarded.items()
-        if any(var in body for var in value_variants(value) for body in bodies)
-    }
+    # One automaton over every guarded value's encodings, scanned once per body,
+    # replaces the per-secret substring loop (O(secrets) -> O(patterns + text);
+    # OpenRange #262). An Aho-Corasick hit is exactly ``var in body``, so a node
+    # leaks iff any of its variants occurs in any body — identical to the loop.
+    matcher = AhoCorasick()
+    for node_id, value in guarded.items():
+        for variant in value_variants(value):
+            matcher.add(variant, node_id)
+    matcher.build()
+    leaked: set[str] = set()
+    for body in responses:
+        leaked |= matcher.scan(body)
     return LeakVerdict(_drop_contained(leaked, guarded))
