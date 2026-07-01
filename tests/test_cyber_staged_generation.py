@@ -562,6 +562,7 @@ def test_rendered_app_scanner_agrees_with_consequence() -> None:
     exec(compile(_realize_graph(graph)["app.py"], "<app>", "exec"), namespace)
     app_scan = namespace["_scan_leaks"]
     guarded = dict(guarded_values(graph))
+    matcher = namespace["_build_leak_matcher"](guarded)
     b64 = base64.b64encode(flag.encode()).decode()
     bodies = [
         flag,
@@ -571,7 +572,7 @@ def test_rendered_app_scanner_agrees_with_consequence() -> None:
         "clean nothing here",
     ]
     for body in bodies:
-        assert app_scan(body.encode(), guarded) == sorted(
+        assert app_scan(body.encode(), matcher) == sorted(
             detect_leak(graph, [body]).leaked
         ), body
 
@@ -594,11 +595,46 @@ def test_rendered_app_scans_leaks_to_node_ids_not_values() -> None:
     namespace: dict[str, Any] = {}
     exec(compile(_realize_graph(snap.graph)["app.py"], "<app>", "exec"), namespace)
     scan = namespace["_scan_leaks"]
-    assert scan(b"prefix SECRETVAL suffix", {"secret_flag": "SECRETVAL"}) == [
-        "secret_flag"
-    ]
-    assert scan("plain-str SECRETVAL", {"secret_flag": "SECRETVAL"}) == ["secret_flag"]
-    assert scan(b"nothing in here", {"secret_flag": "SECRETVAL"}) == []
+    matcher = namespace["_build_leak_matcher"]({"secret_flag": "SECRETVAL"})
+    assert scan(b"prefix SECRETVAL suffix", matcher) == ["secret_flag"]
+    assert scan("plain-str SECRETVAL", matcher) == ["secret_flag"]
+    assert scan(b"nothing in here", matcher) == []
+
+
+def test_rendered_app_builds_leak_matcher_once_not_per_response() -> None:
+    # #262 regression guard: the pure-Python automaton must be built ONCE per
+    # guarded set (at startup, into server state) and only scanned per response —
+    # never rebuilt inside _scan_leaks. Rebuilding per response makes the live
+    # many-secrets path ~20x SLOWER than the old per-secret loop, the opposite of
+    # the goal. We count _AhoCorasick.build() calls across many scans.
+    snap = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})
+    namespace: dict[str, Any] = {}
+    exec(compile(_realize_graph(snap.graph)["app.py"], "<app>", "exec"), namespace)
+
+    builds = {"n": 0}
+    real_build = namespace["_AhoCorasick"].build
+
+    def counting_build(self: Any) -> None:
+        builds["n"] += 1
+        real_build(self)
+
+    namespace["_AhoCorasick"].build = counting_build
+
+    guarded = {"secret_flag": "SECRETVAL"}
+    matcher = namespace["_build_leak_matcher"](guarded)
+    assert builds["n"] == 1  # one build for the guarded set
+
+    scan = namespace["_scan_leaks"]
+    for _ in range(50):
+        scan(b"prefix SECRETVAL suffix", matcher)
+        scan(b"nothing in here", matcher)
+    # 50 responses (x2 bodies) later, still exactly the one startup build.
+    assert builds["n"] == 1
+
+    # And the startup state install builds it once, exposing it on server state.
+    seed = json.loads(_realize_graph(snap.graph)["seed.json"])
+    assert seed["guarded"]  # startup has a guarded set to build from
+    assert "leak_matcher" not in seed  # matcher lives on runtime state, not the seed
 
 
 def test_live_episode_records_the_flag_leak_as_a_node_id(tmp_path: Path) -> None:

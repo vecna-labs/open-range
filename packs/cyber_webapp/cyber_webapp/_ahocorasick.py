@@ -11,9 +11,12 @@ match reported at every occurrence), so swapping the per-secret
 only faster as the pattern count grows.
 
 The generated runtime (``codegen/templates/app.py.j2``) inlines a matcher of
-the same shape in ``_scan_leaks`` because the template renders into a
-standalone container and cannot import this pack. The two MUST stay
-behavior-identical: any change here should be mirrored there.
+the same shape because the template renders into a standalone container and
+cannot import this pack. Like :func:`cyber_webapp.consequence.detect_leak`
+here, the runtime builds one automaton per guarded set (``_build_leak_matcher``,
+at startup — the guarded set is lifetime-constant server state) and reuses it
+across every response; its ``_scan_leaks`` only scans, never rebuilds. The two
+MUST stay behavior-identical: any change here should be mirrored there.
 """
 
 from __future__ import annotations
