@@ -9,6 +9,7 @@ from openrange_pack_sdk import (
     Builder,
     Pack,
     PackPrior,
+    RewardAdapter,
     RuntimeHandle,
     TaskFamily,
 )
@@ -34,6 +35,7 @@ from cyber_webapp.realize import (
     WebappRuntime,
     WebappRuntimeError,
 )
+from cyber_webapp.reward import CyberPentestRewardAdapter
 from cyber_webapp.sampling import _is_networked as _is_networked  # re-export
 
 
@@ -85,10 +87,14 @@ class WebappPack(Pack):
     def task_families(self) -> list[TaskFamily]:
         return [WebappBuild(), WebappPentest()]
 
+    def default_reward_adapter(self) -> RewardAdapter:
+        return CyberPentestRewardAdapter()
+
 
 __all__ = [
     "ONTOLOGY_ID",
     "ContainerWebappRuntime",
+    "CyberPentestRewardAdapter",
     "NetworkedContainerWebappRuntime",
     "WebappBuild",
     "WebappBuilder",

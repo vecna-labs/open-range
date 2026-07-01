@@ -8,9 +8,9 @@ records, and the JSON / JSONL export a trainer consumes.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
-from openrange_pack_sdk import EpisodeResult
+from openrange_pack_sdk import EpisodeReportLike, EpisodeResult, RewardAdapter
 
 from openrange.core.episode import AgentTurn, EpisodeReport
 from openrange.training import (
@@ -136,6 +136,58 @@ class TestEpisodeRun:
         assert run.success is False
         assert run.reward.scalar == 0.0
         assert run.trajectory.steps == ()
+
+
+class _ConstantAdapter(RewardAdapter):
+    """Returns a fixed scalar regardless of the report."""
+
+    def __init__(self, value: float) -> None:
+        self._value = value
+
+    def reward(self, report: EpisodeReportLike) -> float:
+        del report
+        return self._value
+
+
+class _VectorAdapter(RewardAdapter):
+    """Returns a fixed multi-objective vector."""
+
+    def __init__(self, vector: Sequence[float]) -> None:
+        self._vector = list(vector)
+
+    def reward(self, report: EpisodeReportLike) -> Sequence[float]:
+        del report
+        return self._vector
+
+
+class TestRewardAdapterParam:
+    def test_scalar_adapter_sources_scalar_keeps_subgoal_components(self) -> None:
+        report = _report(success=False, subgoals={"t1": True, "t2": False})
+        reward = episode_reward(report, _ConstantAdapter(0.42))
+        assert reward.scalar == 0.42
+        # components stay the per-subgoal 1/0 vector, independent of the scalar.
+        assert reward.components == {"t1": 1.0, "t2": 0.0}
+
+    def test_none_adapter_preserves_default_behavior(self) -> None:
+        report = _report(success=False, subgoals={"t1": True, "t2": False})
+        assert episode_reward(report, None) == episode_reward(report)
+
+    def test_vector_adapter_means_scalar_and_indexes_components(self) -> None:
+        report = _report(success=True, subgoals={"t1": True})
+        reward = episode_reward(report, _VectorAdapter([0.2, 0.8]))
+        assert reward.scalar == 0.5
+        assert reward.components == {"0": 0.2, "1": 0.8}
+
+    def test_empty_vector_adapter_is_zero(self) -> None:
+        report = _report(success=True, subgoals={"t1": True})
+        reward = episode_reward(report, _VectorAdapter([]))
+        assert reward.scalar == 0.0
+        assert reward.components == {}
+
+    def test_trajectory_threads_adapter_into_reward(self) -> None:
+        report = _report(success=False, subgoals={"t1": False})
+        traj = episode_trajectory(report, None, _ConstantAdapter(0.9))
+        assert traj.reward.scalar == 0.9
 
 
 def test_to_jsonl_one_line_per_trajectory() -> None:

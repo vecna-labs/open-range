@@ -21,7 +21,7 @@ from cyber_webapp.mutation import (
 from cyber_webapp.sampling import _INTERNAL_ONLY_KINDS
 from cyber_webapp.vulnerabilities import CATALOG as VULN_CATALOG
 from graphschema import GraphPatch, WorldGraph, apply_patch
-from openrange_pack_sdk import EpisodeReportLike, Mutation, Snapshot
+from openrange_pack_sdk import EpisodeReportLike, EpisodeResult, Mutation, Snapshot
 
 
 def _build_snapshot(seed: int = 0) -> Snapshot:
@@ -56,6 +56,7 @@ class _ReportShim:
 
     passed: bool
     final_state: Mapping[str, Any] = field(default_factory=dict)
+    episode_result: EpisodeResult = field(default_factory=lambda: EpisodeResult(False))
 
 
 def _report_with_paths(

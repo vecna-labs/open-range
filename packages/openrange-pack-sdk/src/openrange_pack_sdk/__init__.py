@@ -39,7 +39,9 @@ from openrange_pack_sdk._protocols import (
     LLMBackend,
     Pack,
     PoolableRuntime,
+    RewardAdapter,
     RuntimeHandle,
+    SubgoalFractionRewardAdapter,
     TaskFamily,
 )
 from openrange_pack_sdk._runtime import (
@@ -97,9 +99,11 @@ __all__ = [
     "PackPrior",
     "PoolableRuntime",
     "ProceduralBuilder",
+    "RewardAdapter",
     "RuntimeHandle",
     "SandboxResult",
     "Snapshot",
+    "SubgoalFractionRewardAdapter",
     "SubprocessRuntime",
     "TaskFamily",
     "TaskSeed",

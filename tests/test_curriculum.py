@@ -63,16 +63,19 @@ from openrange.core.episode import EpisodeService
 
 @dataclass(frozen=True)
 class _Report:
-    """Concrete `EpisodeReportLike` — `passed` + `final_state`.
+    """Concrete `EpisodeReportLike` — `passed`, `episode_result`, `final_state`.
 
     Tests use this so they don't depend on the runtime ``EpisodeReport``
     class. ``final_state`` defaults to ``{}`` because the curriculum
     policy under test only reads ``passed``; pack-side mutation heuristics
-    that interrogate final_state pass it explicitly.
+    that interrogate final_state pass it explicitly. ``episode_result``
+    defaults to an empty structured outcome — the protocol requires it, but
+    the curriculum policy never reads it.
     """
 
     passed: bool
     final_state: Mapping[str, object] = field(default_factory=dict)
+    episode_result: EpisodeResult = field(default_factory=lambda: EpisodeResult(False))
 
 
 def test_direction_none_when_no_reports() -> None:
@@ -111,6 +114,7 @@ def test_direction_treats_missing_passed_as_failure() -> None:
 
     class _MissingPassed:
         final_state: Mapping[str, object] = {}
+        episode_result: EpisodeResult = EpisodeResult(False)
 
         @property
         def passed(self) -> bool:
