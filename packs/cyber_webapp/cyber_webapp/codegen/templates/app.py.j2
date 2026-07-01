@@ -18,6 +18,7 @@ import re
 import shlex
 import sqlite3
 import xml.sax
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from jinja2.sandbox import SandboxedEnvironment
 from pathlib import Path
@@ -94,12 +95,18 @@ def _load_seed_and_init_state(seed_path: Path) -> dict:
         _materialize_files(files)
         files = _RealFiles()
 
+    guarded = payload.get("guarded", {})
     return {
         "db": db,
         "secrets": payload["secrets"],
         "files": files,
         "schema": schema,
-        "guarded": payload.get("guarded", {}),
+        "guarded": guarded,
+        # Built ONCE here from the lifetime-constant guarded set, so the
+        # pure-Python automaton build is paid at startup and amortized across
+        # every response — never rebuilt per response (#262). _scan_leaks then
+        # only scans.
+        "leak_matcher": _build_leak_matcher(guarded),
     }
 
 
@@ -109,17 +116,95 @@ def _value_variants(value):
     return {value, b64, b64.rstrip("="), raw.hex(), quote(value, safe="")}
 
 
-def _scan_leaks(body, guarded):
+class _AhoCorasick:
+    # Pure-Python multi-pattern substring matcher. Mirrors
+    # cyber_webapp._ahocorasick.AhoCorasick (the offline verifier) — this template
+    # renders into a standalone container and cannot import the pack, so the
+    # matcher is inlined here; keep the two behavior-identical. A match is exactly
+    # ``pattern in text``, so scanning is equivalent to the old per-secret loop.
+    # Built once per guarded set (via _build_leak_matcher, at startup) and reused
+    # across every response — like the offline detect_leak, not per response.
+    __slots__ = ("_children", "_fail", "_out")
+
+    def __init__(self):
+        self._children = [{}]
+        self._fail = [0]
+        self._out = [[]]
+
+    def add(self, pattern, payload):
+        if not pattern:
+            return
+        node = 0
+        for ch in pattern:
+            child = self._children[node]
+            nxt = child.get(ch)
+            if nxt is None:
+                nxt = len(self._children)
+                self._children.append({})
+                self._fail.append(0)
+                self._out.append([])
+                child[ch] = nxt
+            node = nxt
+        self._out[node].append(payload)
+
+    def build(self):
+        queue = deque(self._children[0].values())
+        while queue:
+            node = queue.popleft()
+            for ch, nxt in self._children[node].items():
+                queue.append(nxt)
+                fail = self._fail[node]
+                while fail and ch not in self._children[fail]:
+                    fail = self._fail[fail]
+                dest = self._children[fail].get(ch, 0)
+                self._fail[nxt] = dest if dest != nxt else 0
+                self._out[nxt].extend(self._out[self._fail[nxt]])
+
+    def scan(self, text):
+        found = set()
+        children = self._children
+        fail = self._fail
+        out = self._out
+        node = 0
+        for ch in text:
+            while node and ch not in children[node]:
+                node = fail[node]
+            node = children[node].get(ch, 0)
+            if out[node]:
+                found.update(out[node])
+        return found
+
+
+def _build_leak_matcher(guarded):
+    # Build the multi-pattern automaton ONCE from the guarded (HIDDEN) values —
+    # called at startup from _load_seed_and_init_state, not per response. The
+    # guarded set is lifetime-constant server state, so the pure-Python build cost
+    # is paid once and amortized; rebuilding it on every response would dominate
+    # and regress the many-secrets path (#262). Mirrors
+    # cyber_webapp.consequence.detect_leak, which likewise builds one automaton
+    # and scans all bodies, and cyber_webapp.consequence.value_variants (literal +
+    # base64/hex/url) so the live verdict matches the offline one.
+    matcher = _AhoCorasick()
+    for nid, value in guarded.items():
+        if not value:
+            continue
+        for var in _value_variants(value):
+            matcher.add(var, nid)
+    matcher.build()
+    return matcher
+
+
+def _scan_leaks(body, matcher):
     # Which guarded (HIDDEN) values reached this response. Records node IDS ONLY —
     # never the secret value — so the request log cannot be grepped for the flag.
-    # Mirrors cyber_webapp.consequence.value_variants (literal + base64/hex/url) so
-    # the live verdict matches the offline one; containment de-dup is offline-only.
+    # The automaton is prebuilt once per guarded set (see _build_leak_matcher), so
+    # this only decodes and scans: O(text), not O(secrets), per response (#262).
+    # An Aho-Corasick hit is exactly ``pattern in body``, so this matches the old
+    # per-secret substring loop; containment de-dup is offline-only.
+    if matcher is None:
+        return []
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
-    return sorted(
-        nid
-        for nid, value in guarded.items()
-        if value and any(var in text for var in _value_variants(value))
-    )
+    return sorted(matcher.scan(text))
 
 
 {% for handler in handlers %}
@@ -238,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(status, headers, body)
 
     def respond(self, status, headers, body):
-        leaked = _scan_leaks(body, self.server.state.get("guarded", {}))
+        leaked = _scan_leaks(body, self.server.state.get("leak_matcher"))
         self.server.log_access(self.command, self.path, status, leaked)
         content_type = headers.get("Content-Type", "application/octet-stream")
         self.send_response(status)

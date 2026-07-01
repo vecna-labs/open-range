@@ -420,6 +420,137 @@ def test_detect_leak_drops_contained_values() -> None:
     assert detect_leak(graph, ["x SHORTSECRET y"]).leaked == frozenset({"short"})
 
 
+def test_ahocorasick_scan_matches_substring_reference_fuzz() -> None:
+    # The multi-pattern automaton (#262) must be a drop-in for the per-secret
+    # ``pattern in text`` loop it replaces: for random pattern/payload sets and
+    # random texts, scan() must return exactly the payloads whose pattern is a
+    # substring of the text.
+    import random
+
+    from cyber_webapp._ahocorasick import AhoCorasick
+
+    alphabet = "ab"  # tiny alphabet -> frequent overlaps / shared suffixes
+    rng = random.Random(2620)
+    for _ in range(300):
+        patterns = {
+            "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 5))): f"p{i}"
+            for i in range(rng.randint(1, 8))
+        }
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 20)))
+
+        matcher = AhoCorasick()
+        for pattern, payload in patterns.items():
+            matcher.add(pattern, payload)
+        matcher.build()
+
+        expected = {
+            payload for pattern, payload in patterns.items() if pattern in text
+        }
+        assert matcher.scan(text) == expected, (patterns, text)
+
+
+def test_ahocorasick_shared_and_empty_patterns() -> None:
+    # Distinct payloads may share one pattern, one payload may span several
+    # patterns, and empty patterns are ignored (never fire).
+    from cyber_webapp._ahocorasick import AhoCorasick
+
+    matcher = AhoCorasick()
+    matcher.add("cat", "a")
+    matcher.add("cat", "b")  # same pattern, second payload
+    matcher.add("dog", "a")  # same payload, second pattern
+    matcher.add("", "z")  # ignored
+    matcher.build()
+
+    assert matcher.scan("the cat sat") == {"a", "b"}
+    assert matcher.scan("a lone dog") == {"a"}
+    assert matcher.scan("nothing here") == set()
+
+
+def _naive_leak(graph: WorldGraph, bodies: list[str]) -> frozenset[str]:
+    # The pre-#262 reference: one substring search per secret variant per body,
+    # then the offline containment de-dup. detect_leak must match this exactly.
+    from cyber_webapp.consequence import (
+        _drop_contained,
+        guarded_values,
+        value_variants,
+    )
+
+    guarded = guarded_values(graph)
+    if not guarded:
+        return frozenset()
+    leaked = {
+        node_id
+        for node_id, value in guarded.items()
+        if any(var in body for var in value_variants(value) for body in bodies)
+    }
+    return _drop_contained(leaked, guarded)
+
+
+def test_detect_leak_matches_naive_reference_fuzz() -> None:
+    # Equivalence over randomized worlds: the Aho-Corasick detect_leak returns the
+    # same leaked node-id set as the old per-secret loop, including containment
+    # de-dup, shared values, and encoded exfil.
+    import random
+
+    from cyber_webapp.consequence import value_variants
+    from cyber_webapp.ontology import ONTOLOGY_ID
+    from graphschema import Node, Visibility
+
+    rng = random.Random(262262)
+    secret_alphabet = "AB"  # tiny -> secrets collide/contain each other often
+    for _ in range(120):
+        graph = WorldGraph(ontology=ONTOLOGY_ID)
+        secrets: list[str] = []
+        for i in range(rng.randint(1, 6)):
+            # >= _MIN_GUARDED_LEN so guarded_values keeps them; small alphabet so
+            # some become substrings of others (exercises containment).
+            length = rng.randint(8, 12)
+            secret = "".join(rng.choice(secret_alphabet) for _ in range(length))
+            secrets.append(secret)
+            graph.add_node(
+                Node(
+                    id=f"n{i}",
+                    kind="secret",
+                    attrs={"value_ref": secret},
+                    visibility=Visibility.HIDDEN,
+                )
+            )
+        # Bodies: junk plus, sometimes, an encoded variant of a random secret.
+        bodies: list[str] = []
+        for _ in range(rng.randint(0, 4)):
+            piece = "".join(rng.choice("AB xy") for _ in range(rng.randint(0, 8)))
+            if secrets and rng.random() < 0.6:
+                variant = rng.choice(sorted(value_variants(rng.choice(secrets))))
+                piece = f"{piece}{variant}{rng.choice('xy ')}"
+            bodies.append(piece)
+
+        assert detect_leak(graph, bodies).leaked == _naive_leak(graph, bodies)
+
+
+def test_detect_leak_scales_to_many_secrets() -> None:
+    # The multi-pattern path with hundreds of secrets: only the leaked node is
+    # reported, the rest stay silent, and it agrees with the naive reference.
+    from cyber_webapp.ontology import ONTOLOGY_ID
+    from graphschema import Node, Visibility
+
+    graph = WorldGraph(ontology=ONTOLOGY_ID)
+    for i in range(500):
+        graph.add_node(
+            Node(
+                id=f"secret_{i}",
+                kind="secret",
+                attrs={"value_ref": f"SECRETVALUE_{i:04d}"},
+                visibility=Visibility.HIDDEN,
+            )
+        )
+    body = "noise before SECRETVALUE_0327 noise after"
+    verdict = detect_leak(graph, [body])
+    assert verdict.leaked == frozenset({"secret_327"})
+    assert verdict.leaked == _naive_leak(graph, [body])
+    # Nothing leaks when no secret is present.
+    assert not detect_leak(graph, ["entirely benign body"]).occurred
+
+
 def test_rendered_app_scanner_agrees_with_consequence() -> None:
     import base64
     import urllib.parse as _url
@@ -431,6 +562,7 @@ def test_rendered_app_scanner_agrees_with_consequence() -> None:
     exec(compile(_realize_graph(graph)["app.py"], "<app>", "exec"), namespace)
     app_scan = namespace["_scan_leaks"]
     guarded = dict(guarded_values(graph))
+    matcher = namespace["_build_leak_matcher"](guarded)
     b64 = base64.b64encode(flag.encode()).decode()
     bodies = [
         flag,
@@ -440,7 +572,7 @@ def test_rendered_app_scanner_agrees_with_consequence() -> None:
         "clean nothing here",
     ]
     for body in bodies:
-        assert app_scan(body.encode(), guarded) == sorted(
+        assert app_scan(body.encode(), matcher) == sorted(
             detect_leak(graph, [body]).leaked
         ), body
 
@@ -463,11 +595,46 @@ def test_rendered_app_scans_leaks_to_node_ids_not_values() -> None:
     namespace: dict[str, Any] = {}
     exec(compile(_realize_graph(snap.graph)["app.py"], "<app>", "exec"), namespace)
     scan = namespace["_scan_leaks"]
-    assert scan(b"prefix SECRETVAL suffix", {"secret_flag": "SECRETVAL"}) == [
-        "secret_flag"
-    ]
-    assert scan("plain-str SECRETVAL", {"secret_flag": "SECRETVAL"}) == ["secret_flag"]
-    assert scan(b"nothing in here", {"secret_flag": "SECRETVAL"}) == []
+    matcher = namespace["_build_leak_matcher"]({"secret_flag": "SECRETVAL"})
+    assert scan(b"prefix SECRETVAL suffix", matcher) == ["secret_flag"]
+    assert scan("plain-str SECRETVAL", matcher) == ["secret_flag"]
+    assert scan(b"nothing in here", matcher) == []
+
+
+def test_rendered_app_builds_leak_matcher_once_not_per_response() -> None:
+    # #262 regression guard: the pure-Python automaton must be built ONCE per
+    # guarded set (at startup, into server state) and only scanned per response —
+    # never rebuilt inside _scan_leaks. Rebuilding per response makes the live
+    # many-secrets path ~20x SLOWER than the old per-secret loop, the opposite of
+    # the goal. We count _AhoCorasick.build() calls across many scans.
+    snap = _admit("db", vuln={"pin": [{"kind": "sql_injection"}]})
+    namespace: dict[str, Any] = {}
+    exec(compile(_realize_graph(snap.graph)["app.py"], "<app>", "exec"), namespace)
+
+    builds = {"n": 0}
+    real_build = namespace["_AhoCorasick"].build
+
+    def counting_build(self: Any) -> None:
+        builds["n"] += 1
+        real_build(self)
+
+    namespace["_AhoCorasick"].build = counting_build
+
+    guarded = {"secret_flag": "SECRETVAL"}
+    matcher = namespace["_build_leak_matcher"](guarded)
+    assert builds["n"] == 1  # one build for the guarded set
+
+    scan = namespace["_scan_leaks"]
+    for _ in range(50):
+        scan(b"prefix SECRETVAL suffix", matcher)
+        scan(b"nothing in here", matcher)
+    # 50 responses (x2 bodies) later, still exactly the one startup build.
+    assert builds["n"] == 1
+
+    # And the startup state install builds it once, exposing it on server state.
+    seed = json.loads(_realize_graph(snap.graph)["seed.json"])
+    assert seed["guarded"]  # startup has a guarded set to build from
+    assert "leak_matcher" not in seed  # matcher lives on runtime state, not the seed
 
 
 def test_live_episode_records_the_flag_leak_as_a_node_id(tmp_path: Path) -> None:
