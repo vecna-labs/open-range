@@ -26,7 +26,7 @@ from openrange_pack_sdk import (
 )
 
 from openrange.agent import agent_briefing
-from openrange.agent_backend import CodexAgentBackend
+from openrange.agent_backend import LLMAgentBackend
 from openrange.core import PACKS, auto_evolve, consequence_gate
 from openrange.core.episode import AgentTurn, EpisodeReport
 from openrange.llm import CodexBackend
@@ -104,7 +104,7 @@ def main() -> None:
     npc_backend = (
         None
         if args.no_npc_llm
-        else CodexAgentBackend(
+        else LLMAgentBackend(
             backend=CodexBackend(
                 command=args.codex_command,
                 model=args.model,
