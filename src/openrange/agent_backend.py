@@ -1,4 +1,4 @@
-"""Concrete agent backends. `StrandsAgentBackend` + `CodexAgentBackend` ship.
+"""Concrete agent backends. `StrandsAgentBackend` + `LLMAgentBackend` ship.
 
 The ``AgentBackend`` Protocol and ``AgentBackendError`` live in
 ``openrange_pack_sdk``.
@@ -72,8 +72,9 @@ class StrandsAgentBackend:
         return Agent
 
 
-class CodexAgentBackend:
-    """Wraps an `LLMBackend` (Codex CLI) for single-shot, tool-less agents.
+class LLMAgentBackend:
+    """Wraps any `LLMBackend` for single-shot, tool-less agents.
+    Defaults to `CodexBackend` when no backend is given.
     Raises on non-empty `tools`."""
 
     def __init__(
@@ -84,7 +85,7 @@ class CodexAgentBackend:
     ) -> None:
         if backend is not None and model is not None:
             raise AgentBackendError(
-                "CodexAgentBackend: pass either 'backend' or 'model', not both",
+                "LLMAgentBackend: pass either 'backend' or 'model', not both",
             )
         self._backend: LLMBackend = (
             backend if backend is not None else CodexBackend(model=model)
@@ -101,7 +102,7 @@ class CodexAgentBackend:
             backend_preflight()
         except LLMBackendError as exc:
             raise AgentBackendError(
-                f"CodexAgentBackend: backend preflight failed: {exc}",
+                f"LLMAgentBackend: backend preflight failed: {exc}",
             ) from exc
 
     def build_agent(
@@ -112,7 +113,7 @@ class CodexAgentBackend:
     ) -> AgentSession:
         if tools:
             raise AgentBackendError(
-                "CodexAgentBackend does not support tool injection. "
+                "LLMAgentBackend does not support tool injection. "
                 "Use StrandsAgentBackend for NPCs that need tool dispatch.",
             )
         backend = self._backend

@@ -31,7 +31,7 @@ from openrange.agent import (
     run_rollouts,
 )
 from openrange.agent_backend import (
-    CodexAgentBackend,
+    LLMAgentBackend,
     StrandsAgentBackend,
 )
 from openrange.core import (
@@ -108,7 +108,6 @@ __all__ = [
     "AgentTurn",
     "AttrSpec",
     "AttrType",
-    "CodexAgentBackend",
     "CodexBackend",
     "CurriculumPolicy",
     "DashboardServerHandle",
@@ -128,6 +127,7 @@ __all__ = [
     "EvalPool",
     "GraphPatch",
     "Issue",
+    "LLMAgentBackend",
     "LiteLLMBackend",
     "NPCS",
     "NPCRegistry",

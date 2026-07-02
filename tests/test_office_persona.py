@@ -8,7 +8,7 @@ Two backend shapes get exercised:
 
 * ``_PermissiveBackend`` — accepts any ``tools`` argument.
 * ``_CodexLikeBackend`` — rejects non-empty ``tools``; confirms the
-  persona works against :class:`CodexAgentBackend`.
+  persona works against :class:`LLMAgentBackend`.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ class _PermissiveBackend:
 
 
 class _CodexLikeBackend:
-    """Rejects non-empty ``tools`` — mimics real ``CodexAgentBackend``.
+    """Rejects non-empty ``tools`` — mimics real ``LLMAgentBackend``.
 
     The OfficePersona must build_agent with empty tools; if it doesn't,
     this fixture surfaces the same AgentBackendError that broke
@@ -86,7 +86,7 @@ class _CodexLikeBackend:
     ) -> Any:
         if tools:
             raise AgentBackendError(
-                "CodexAgentBackend does not support tool injection.",
+                "LLMAgentBackend does not support tool injection.",
             )
         self.builds.append((system_prompt, []))
         return self._session
@@ -279,7 +279,7 @@ def test_persona_records_speech_and_visit_via_single_shot(
     npc.step(_interface(http_calls))
 
     # build_agent must be called with EMPTY tools — that's what makes
-    # the persona compatible with CodexAgentBackend.
+    # the persona compatible with LLMAgentBackend.
     assert backend.builds, "build_agent should fire on first step"
     _system_prompt, tools = backend.builds[0]
     assert tools == [], "single-shot persona must not inject tools"
@@ -300,9 +300,9 @@ def test_persona_ignores_codex_like_backend_when_episode_runs() -> None:
     """End-to-end smoke: codex-shape backend → no broken_reason set.
 
     Mirrors what happens when ``RunConfig.npc_agent_backend`` is a
-    ``CodexAgentBackend`` and the runtime invokes ``start()`` then
+    ``LLMAgentBackend`` and the runtime invokes ``start()`` then
     ``step()`` repeatedly. Was failing before the AgentNPC → NPC
-    refactor with: "CodexAgentBackend does not support tool injection".
+    refactor with: "LLMAgentBackend does not support tool injection".
     """
     backend = _CodexLikeBackend(response='{"speak": "ok", "visit": "/"}')
     npc = OfficePersona(
