@@ -30,6 +30,7 @@ from openrange_pack_sdk import (
     surface_mailbox,
 )
 from openrange_pack_sdk.npcs.persona_agent import (
+    _as_tool,
     _comms_adapter,
     _wrap_action,
     factory,
@@ -71,10 +72,13 @@ class _RecordingBackend:
 
 
 def _run(npc: PersonaAgent, *, run_id: str = "run-1") -> _RecordingBackend:
-    """Start + first-tick an NPC with a fresh recording backend."""
+    """Start an NPC with a fresh recording backend, ready to act on the next
+    step. (start() phase-staggers the cooldown; these tests exercise the acting
+    path, so we clear it — the stagger has its own dedicated test.)"""
     backend = _RecordingBackend()
     npc._backend_override = backend
     npc.start({"episode_id": run_id, "agent_backend": backend})
+    npc._cooldown = 0
     return backend
 
 
@@ -203,8 +207,6 @@ def test_action_tool_invokes_exactly_once() -> None:
 
 
 def test_multi_arg_tool_gets_real_strands_schema() -> None:
-    from openrange_pack_sdk.npcs.persona_agent import _as_tool
-
     def sql(table: str, where: str = "") -> str:
         return "ok"
 
@@ -492,6 +494,7 @@ def test_tool_reject_backend_marks_broken() -> None:
     backend = _RejectTools()
     npc._backend_override = backend
     npc.start({"episode_id": "r", "agent_backend": backend})
+    npc._cooldown = 0
     npc.step({"http_get": lambda p: "ok"})
     assert npc.broken_reason is not None
     assert "failed to construct agent" in npc.broken_reason
@@ -672,9 +675,10 @@ def test_ten_thousand_personas_construct_lazily() -> None:
     assert all(n._agent is None for n in roster)
 
 
-def test_cadence_gating_bounds_actors_after_cold_start() -> None:
-    """After a cold first tick where everyone acts once, cadence spreads action
-    over C ticks: 900 NPCs at cadence 9 do nothing for the next 8 ticks."""
+def test_cadence_stagger_spreads_actions_no_thundering_herd() -> None:
+    """A population on the same cadence must NOT act in lockstep. The
+    deterministic phase-stagger spreads first actions across the whole cadence
+    window, so no single tick sees the entire population act."""
     shared = _CountingBackend()
     npcs = []
     for i in range(900):
@@ -682,13 +686,30 @@ def test_cadence_gating_bounds_actors_after_cold_start() -> None:
         n._backend_override = shared
         n.start({"episode_id": "scale", "agent_backend": shared})
         npcs.append(n)
-    for n in npcs:
-        n.step({})
-    assert shared.invocations == 900  # cold start: all act once
-    for _ in range(8):
+    per_tick = []
+    for _ in range(9):  # one full cadence window
+        before = shared.invocations
         for n in npcs:
             n.step({})
-    assert shared.invocations == 900  # gated by cadence -> no further action
+        per_tick.append(shared.invocations - before)
+    assert sum(per_tick) == 900  # everyone acts exactly once over the window
+    assert max(per_tick) < 250  # but spread out — never the whole herd at once
+    assert all(c > 0 for c in per_tick)  # every tick does some work
+
+
+def test_cadence_stagger_is_deterministic() -> None:
+    # same run_id + actor -> same phase offset (replayable)
+    a = PersonaAgent(config={"name": "x", "tools": [], "cadence_ticks": 7})
+    b = PersonaAgent(config={"name": "x", "tools": [], "cadence_ticks": 7})
+    _run_no_reset(a, "ep")
+    _run_no_reset(b, "ep")
+    assert a._cooldown == b._cooldown
+
+
+def _run_no_reset(npc: PersonaAgent, run_id: str) -> None:
+    backend = _RecordingBackend()
+    npc._backend_override = backend
+    npc.start({"episode_id": run_id, "agent_backend": backend})
 
 
 class _CountingBackend:
@@ -708,3 +729,144 @@ class _CountingBackend:
             return {"message": "ok"}
 
         return agent
+
+
+# --------------------------------------------------------------------------- #
+# Second-pass refinements — regression guards                                 #
+# --------------------------------------------------------------------------- #
+
+
+class _FlakyBackend:
+    """Records every prompt; its agent raises on the first N calls."""
+
+    def __init__(self, fail_ticks: int) -> None:
+        self.calls = 0
+        self.fail_ticks = fail_ticks
+        self.prompts: list[str] = []
+
+    def preflight(self) -> None:
+        pass
+
+    def build_agent(
+        self, *, system_prompt: str, tools: Sequence[Callable[..., Any]] = ()
+    ) -> Any:
+        return self
+
+    def __call__(self, prompt: str) -> object:
+        self.prompts.append(prompt)
+        self.calls += 1
+        if self.calls <= self.fail_ticks:
+            raise RuntimeError("model hiccup")
+        return {"message": "ok"}
+
+
+def test_pending_comms_survives_a_failed_tick() -> None:
+    # a message read on a tick whose LLM call fails must be re-shown, not lost
+    mbox, chat = MailboxStore(), ChatStore()
+    shared = _world_surface(mbox, chat)
+    b = _FlakyBackend(fail_ticks=1)
+    npc = PersonaAgent(config={"name": "B", "tools": ["mail_read"], "cadence_ticks": 1})
+    npc._backend_override = b
+    npc.start({"episode_id": "ep", "agent_backend": b})
+    npc._cooldown = 0
+    mbox.send(sender="A", to="B", body="urgent thing")
+    npc.step(shared)  # reads it, builds prompt, agent RAISES -> buffer kept
+    npc.step(shared)  # no new mail (cursor advanced) but buffer re-shows it; succeeds
+    assert "urgent thing" in b.prompts[1]
+
+
+def test_persona_does_not_read_its_own_mail() -> None:
+    mbox = MailboxStore()
+    npc = PersonaAgent(
+        config={"name": "Dana", "tools": ["mail_send", "mail_read"], "cadence_ticks": 1}
+    )
+    b = _run(npc)
+    npc.step(surface_mailbox(mbox))
+    mbox.send(sender="Dana", to="Dana", body="note to self")
+    mbox.send(sender="Sam", to="Dana", body="from sam")
+    npc.step(surface_mailbox(mbox))
+    prompt = b.agent.prompts[-1]
+    assert "from sam" in prompt
+    assert "note to self" not in prompt  # own mail is skipped
+
+
+def test_bad_message_id_does_not_break_the_reader() -> None:
+    npc = PersonaAgent(config={"name": "B", "tools": ["mail_read"], "cadence_ticks": 1})
+    _run(npc)
+
+    def bad_reader(box: str, since: int = 0) -> list[dict[str, object]]:
+        return [{"id": None, "sender": "A", "body": "x"}]
+
+    npc.step({"mail_read": bad_reader})  # must not raise
+    assert not npc.broken_reason
+
+
+def test_memory_matches_across_adjacent_punctuation() -> None:
+    mem = DictMemory()
+    mem.store("s", "reconciled the finance, portal.")
+    mem.store("s", "unrelated note about the coffee machine")
+    hits = mem.retrieve("s", "finance")
+    assert hits[0] == "reconciled the finance, portal."  # overlap, not recency
+
+
+def test_persona_renders_social_grounding() -> None:
+    prompt = render_persona(
+        {
+            "name": "Dana",
+            "role": "accountant",
+            "contacts": ["Sam", "exec"],
+            "channels": ["finance"],
+            "example_line": "ugh not again",
+        }
+    )
+    assert "People you deal with here: Sam, exec" in prompt
+    assert "Chat channels you use: finance" in prompt
+    assert "ugh not again" in prompt
+
+
+def test_persona_grammar_is_clean() -> None:
+    prompt = render_persona(
+        {"name": "Ana", "role": "accountant", "traits": {"blunt": True}}
+    )
+    assert "an accountant" in prompt  # article agreement
+    assert "You come across as blunt" in prompt
+    assert "You You" not in prompt
+
+
+def test_user_prompt_is_diegetic() -> None:
+    npc = PersonaAgent(
+        config={
+            "name": "U",
+            "tools": ["http_get"],
+            "goal": "file expenses",
+            "cadence_ticks": 1,
+        }
+    )
+    b = _run(npc)
+    npc.step({"http_get": lambda p: "ok"})
+    prompt = b.agent.prompts[-1]
+    assert "It's your turn" not in prompt  # no fourth-wall / game-speak
+    assert "using a tool" not in prompt
+    assert "file expenses" in prompt
+
+
+def test_reserved_param_names_still_build_a_usable_tool() -> None:
+    from openrange_pack_sdk.npcs.persona_agent import _wrap_action
+
+    def notify(self: str, msg: str) -> str:  # 'self' is a strands-reserved name
+        return f"{self}:{msg}"
+
+    tool: Any = _as_tool(_wrap_action("notify", notify), "notify")
+    props = tool.tool_spec["inputSchema"]["json"]["properties"]
+    assert "msg" in props  # msg survives; self is sanitized to arg0
+    raw = _wrap_action("notify", notify)
+    assert raw(arg0="A", msg="hi") == "A:hi"
+
+
+def test_chat_read_without_channels_warns(caplog: Any) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        npc = PersonaAgent(config={"name": "U", "tools": ["chat_read"]})
+        _run(npc)
+    assert any("chat_read but no channels" in r.message for r in caplog.records)

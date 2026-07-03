@@ -192,6 +192,51 @@ a human-like persona answering questions
 a background process writing logs
 ```
 
+### Adding a persona NPC (no per-pack code)
+
+`PersonaAgent` (in `openrange_pack_sdk.npcs.persona_agent`) is a generic,
+config-driven NPC that works in any pack: it wraps whatever callables your pack
+surfaces into the per-tick interface, so you define a believable inhabitant with
+data, not code. Register it once and declare instances in the manifest:
+
+```toml
+# your pack's pyproject.toml
+[project.entry-points."openrange.npcs"]
+"mypack.persona" = "openrange_pack_sdk.npcs.persona_agent:factory"
+```
+
+```json
+{"npc": [{"type": "mypack.persona", "count": 3, "config": {
+  "name": "Dana", "role": "accountant",
+  "goal": "reconcile invoices via the finance portal",
+  "tools": ["http_get", "mail_send", "mail_read"],
+  "contacts": ["Sam", "the CFO"], "channels": ["finance"],
+  "cadence_ticks": 5}}]}
+```
+
+Config keys:
+
+| key | meaning |
+|-----|---------|
+| `name`, `role`, `backstory`, `tone` | who the persona is (rendered to the system prompt) |
+| `goal` | its own independent objective (what stops assistant-like helpfulness) |
+| `traits`, `behavior_axes` | e.g. `{"terse": true, "skeptical": true}` — style |
+| `contacts`, `channels`, `example_line` | social grounding so it doesn't invent recipients |
+| `tools` | which surface keys it may use; only the ones your pack actually provides are bound |
+| `cadence_ticks` | acts once every N ticks (auto phase-staggered across a population) |
+| `long_term_memory` | opt-in scoped note store (default off) |
+
+Comms are through the world: your pack surfaces `mail_send`/`mail_read`/
+`chat_post`/`chat_read` from `surface_extras()` (see
+`openrange_pack_sdk.comms.surface_mailbox`/`surface_chat`) and drains the stores
+in `collect_extras()` for grading — the persona injects its own identity as the
+sender, so cover traffic is attributable and unspoofable.
+
+**Model:** a persona needs an `AgentBackend`. `RunConfig.npc_llm_model` (a
+provider string) drives the default Bedrock backend; to run a **local** model,
+pass a custom `RunConfig.npc_agent_backend` wrapping e.g.
+`strands.models.OllamaModel` — see `examples/persona_eval.py` for the shape.
+
 ## Episode checks and rewards
 
 OpenRange checks what happened. It does not define the training reward.

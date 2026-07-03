@@ -14,7 +14,9 @@ bound one layer up, NPC-side, where each persona injects its own ``actor_id``
 by construction and a persona cannot forge another's identity.
 
 Everything here is deterministic (monotonic ids, insertion order, no clock or
-randomness) so a fixed seed replays identically.
+randomness) so a fixed seed replays identically. The stores are NOT thread-safe;
+the harness steps NPCs on a single thread today, so a lock would be dead weight
+(add one if parallel/async stepping ever lands).
 """
 
 from __future__ import annotations

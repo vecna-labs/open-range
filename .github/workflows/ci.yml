@@ -39,7 +39,9 @@ jobs:
         run: uv run mypy src tests examples main.py packages/openrange-trl/src packages/openrange-rllm/src
 
       - name: Test with coverage
-        run: uv run coverage run -m pytest tests
+        # No positional path: honor `testpaths` (pyproject) so the pack-SDK and
+        # graphschema suites gate CI too, not just top-level tests/.
+        run: uv run coverage run -m pytest
 
       - name: Enforce coverage
         run: uv run coverage report

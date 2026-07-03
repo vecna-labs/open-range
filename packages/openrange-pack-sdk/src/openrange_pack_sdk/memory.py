@@ -12,9 +12,12 @@ fixed seed replays identically.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
+
+_WORD = re.compile(r"[a-z0-9]+")
 
 
 @runtime_checkable
@@ -27,7 +30,8 @@ class ScopedMemory(Protocol):
 
 
 def _terms(text: str) -> set[str]:
-    return {t for t in text.lower().split() if t}
+    # Word tokens, so adjacent punctuation ("finance,") still matches "finance".
+    return set(_WORD.findall(text.lower()))
 
 
 @dataclass

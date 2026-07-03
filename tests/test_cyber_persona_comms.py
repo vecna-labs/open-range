@@ -7,12 +7,14 @@ identity-neutral mail/chat callables into ``surface_extras()`` and drains them
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 from cyber_webapp import WebappPack
 from cyber_webapp.realize import WebappRuntime
 from graphschema import WorldGraph
-from openrange_pack_sdk import ChatStore, MailboxStore
+from openrange_pack_sdk import ChatStore, MailboxStore, PersonaAgent
 
 
 def _sample_graph(seed: int = 0) -> WorldGraph:
@@ -47,3 +49,57 @@ def test_webapp_surfaces_and_drains_npc_comms(tmp_path: Path) -> None:
     runtime.reset_episode()
     assert runtime._mailbox.all() == []
     assert runtime._chat.all() == []
+
+
+class _RecBackend:
+    """Records prompts; stands in for the LLM (satisfies the AgentBackend
+    protocol structurally)."""
+
+    def __init__(self) -> None:
+        self.tools: tuple[Callable[..., Any], ...] = ()
+        self.prompts: list[str] = []
+
+    def preflight(self) -> None:
+        pass
+
+    def build_agent(
+        self, *, system_prompt: str, tools: Sequence[Callable[..., Any]] = ()
+    ) -> Callable[[str], object]:
+        self.tools = tuple(tools)
+        return self
+
+    def __call__(self, prompt: str) -> object:
+        self.prompts.append(prompt)
+        return {"message": "ok"}
+
+
+def test_persona_drives_the_real_runtime_surface_and_is_graded(tmp_path: Path) -> None:
+    """End-to-end over the REAL WebappRuntime surface: a PersonaAgent binds the
+    pack's surfaced mail tool, sends through it, and the runtime's collect_extras
+    attributes the message by the persona's actor id — the grading path."""
+    runtime = WebappRuntime(_sample_graph())
+    runtime._base_url = "http://world.local"
+    surface = dict(runtime.surface_extras())
+
+    npc = PersonaAgent(
+        config={"name": "Dana", "tools": ["mail_send"], "cadence_ticks": 1}
+    )
+    backend = _RecBackend()
+    npc._backend_override = backend
+    npc.start({"episode_id": "ep", "agent_backend": backend})
+    npc._cooldown = 0
+    npc.step(surface)  # builds the mail_send tool over the runtime's real surface
+
+    mail_send = next(
+        t for t in backend.tools if getattr(t, "__name__", "") == "mail_send"
+    )
+    # invoke the raw adapter (the model would call the decorated form the same way)
+    raw = next(f for f in npc._tool_functions(surface) if f.__name__ == "mail_send")
+    raw(to="Sam", subject="Q3", body="approve the batch")
+    assert getattr(mail_send, "__name__", "") == "mail_send"
+
+    runtime._base_url = None
+    runtime._solver_root = tmp_path
+    graded = runtime.collect_extras()
+    assert graded["npc_mail"][0]["sender"] == "Dana"  # attributed to the persona
+    assert graded["npc_mail"][0]["body"] == "approve the batch"

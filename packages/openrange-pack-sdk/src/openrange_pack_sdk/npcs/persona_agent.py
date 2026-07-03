@@ -21,28 +21,35 @@ and declares instances in a manifest::
         "tools": ["http_get"], "cadence_ticks": 5}}]
 
 ``tools`` names the surface keys the persona may use; ``_build_tools`` wraps only
-those the pack actually provided (fail-soft on the rest). The standard comms keys
-(``mail_send``/``chat_post``/``speak``) get typed adapters that inject the
-persona's own ``actor_id`` as the sender, so the model can never forge identity;
-incoming mail/chat is read (with a per-NPC cursor) and injected into the prompt.
-Any other surfaced callable is exposed as a tool whose signature mirrors the
-pack's own — invoked exactly once, so a side-effecting affordance never
-double-fires.
+those the pack actually provided (fail-soft on the rest). The directed comms keys
+(``mail_send``/``chat_post``) get typed adapters that inject the persona's own
+``actor_id`` as the sender, so the model can never forge identity; incoming
+mail/chat is read (with a per-NPC cursor) and injected into the prompt, and
+survives a failed tick so nothing is dropped. Any other surfaced callable is
+exposed as a tool whose signature mirrors the pack's own — invoked exactly once,
+so a side-effecting affordance never double-fires.
 """
 
 from __future__ import annotations
 
 import inspect
+import logging
+import zlib
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 from openrange_pack_sdk._protocols import NPC, AgentBackend, AgentNPC
 from openrange_pack_sdk.memory import DictMemory, ScopedMemory
 
+_log = logging.getLogger(__name__)
+
 # Read-side comms keys: consumed for prompt context, never exposed as tools.
 _MAIL_READ = "mail_read"
 _CHAT_READ = "chat_read"
 _READ_KEYS = (_MAIL_READ, _CHAT_READ)
+
+# Cap on unseen comms lines carried into a prompt (older ones are summarized).
+_MAX_PENDING = 20
 
 
 def _as_list(value: object) -> list[object]:
@@ -69,7 +76,8 @@ def render_persona(config: Mapping[str, object]) -> str:
     traits = config.get("traits", {})
     axes = config.get("behavior_axes", {})
 
-    lines: list[str] = [f"You are {name}, a {role}."]
+    article = "an" if role[:1].lower() in "aeiou" else "a"
+    lines: list[str] = [f"You are {name}, {article} {role}."]
     if backstory:
         lines.append(backstory)
     if tone:
@@ -77,6 +85,17 @@ def render_persona(config: Mapping[str, object]) -> str:
     style = _style_directives(traits, axes)
     if style:
         lines.append(style)
+    # Social grounding: knowing who/what you can reach keeps a persona from
+    # inventing recipients and reads far more human.
+    contacts = [str(c) for c in _as_list(config.get("contacts", []))]
+    if contacts:
+        lines.append("People you deal with here: " + ", ".join(contacts) + ".")
+    channels = [str(c) for c in _as_list(config.get("channels", []))]
+    if channels:
+        lines.append("Chat channels you use: " + ", ".join(channels) + ".")
+    example = str(config.get("example_line", "")).strip()
+    if example:
+        lines.append(f'When you write, you sound like: "{example}"')
     lines.append(f"Your own goal right now: {goal}.")
     lines.append(
         "CONSTRAINTS:\n"
@@ -86,6 +105,8 @@ def render_persona(config: Mapping[str, object]) -> str:
         "mood dictate; push back, deflect, or ignore when it suits you.\n"
         "- Only assert things your tools actually returned. If unsure, find out "
         "or say you don't know.\n"
+        f"- Write the way {name} actually would — plain and human, no formal "
+        "sign-offs, no narrating which tool you use.\n"
         "- Take ONE small, realistic action per turn with a tool, then stop."
     )
     return "\n".join(lines)
@@ -96,7 +117,7 @@ def _style_directives(traits: object, axes: object) -> str:
     if isinstance(traits, Mapping):
         named = ", ".join(str(k) for k, v in traits.items() if v)
         if named:
-            out.append(f"You come across as {named}")
+            out.append(f"come across as {named}")
     if isinstance(axes, Mapping):
         if axes.get("terse"):
             out.append("you keep messages short and clipped")
@@ -144,7 +165,10 @@ def _wrap_action(name: str, fn: Callable[..., Any]) -> Callable[..., str]:
     schema_to_orig: dict[str, str] = {}
     defaults: dict[str, object] = {}
     for i, p in enumerate(params):
-        schema = p.name if not p.name.startswith("_") else f"arg{i}"
+        # Sanitize names pydantic/strands reject as tool-schema fields (leading
+        # underscore) or reserve (self/cls/agent); forward under the real name.
+        reserved = p.name.startswith("_") or p.name in {"self", "cls", "agent"}
+        schema = f"arg{i}" if reserved else p.name
         while schema in schema_to_orig:
             schema = f"{schema}_"
         schema_to_orig[schema] = p.name
@@ -220,6 +244,10 @@ class PersonaAgent(AgentNPC):
         self._chat_channels = [str(c) for c in _as_list(config.get("channels", []))]
         self._mail_cursor = 0
         self._chat_cursors: dict[str, int] = {}
+        # Buffer of unseen-by-the-model comms lines. Filled as cursors advance,
+        # cleared only after a successful tick, so a failed LLM call never drops
+        # a message; capped so it can't grow without bound over a long episode.
+        self._pending: list[str] = []
 
         cadence = config.get("cadence_ticks", 5)
         if isinstance(cadence, bool) or not isinstance(cadence, int):
@@ -235,6 +263,14 @@ class PersonaAgent(AgentNPC):
         # Scope from the uniqueness-guaranteed actor_id property, not a raw field,
         # so an empty/blank name still isolates memory per instance.
         self._scope = f"{run_id}:{self.actor_id}"
+        # Phase-stagger the first action deterministically so a population on the
+        # same cadence doesn't act in lockstep (a thundering herd every N ticks).
+        self._cooldown = zlib.crc32(self._scope.encode()) % self._cadence_ticks
+        if _CHAT_READ in self._tool_names and not self._chat_channels:
+            _log.warning(
+                "NPC %s declares chat_read but no channels; it will perceive no chat",
+                self.actor_id,
+            )
         super().start(context)
 
     # -- tools ---------------------------------------------------------------
@@ -281,23 +317,37 @@ class PersonaAgent(AgentNPC):
 
     # -- per-tick prompt -----------------------------------------------------
 
+    def _invoke_agent(self, prompt: str) -> None:
+        # Clear the pending-comms buffer ONLY after the LLM call succeeds. If it
+        # raises (AgentNPC swallows it and retries next cadence), the buffer is
+        # kept and the messages are re-shown, so nothing is lost.
+        super()._invoke_agent(prompt)
+        self._pending.clear()
+
     def _user_prompt(self, interface: Mapping[str, Any]) -> str:
         pending = self._pending_comms(interface)
-        head = f"Since your last turn:\n{pending}\n\n" if pending else ""
-        goal = f" ({self._goal})" if self._goal else ""
+        head = f"Since you last checked:\n{pending}\n\n" if pending else ""
+        goal = self._goal or "your normal work"
         return (
-            f"{head}It's your turn. Pursue your goal{goal}. "
-            "Take ONE realistic action, in character, using a tool."
+            f"{head}Carry on with your day. Right now you want to: {goal}. "
+            "Do the next small, realistic thing, then stop."
         )
 
     def _pending_comms(self, interface: Mapping[str, Any]) -> str:
-        lines: list[str] = []
+        new: list[str] = []
         if _MAIL_READ in self._tool_names:
-            lines.extend(self._read_mail(interface.get(_MAIL_READ)))
+            new.extend(self._read_mail(interface.get(_MAIL_READ)))
         if _CHAT_READ in self._tool_names:
             for channel in self._chat_channels:
-                lines.extend(self._read_chat(interface.get(_CHAT_READ), channel))
-        return "\n".join(lines)
+                new.extend(self._read_chat(interface.get(_CHAT_READ), channel))
+        self._pending.extend(new)
+        if len(self._pending) > _MAX_PENDING:
+            dropped = len(self._pending) - _MAX_PENDING
+            self._pending = [
+                f"(+{dropped} earlier messages)",
+                *self._pending[-_MAX_PENDING:],
+            ]
+        return "\n".join(self._pending)
 
     def _read_mail(self, reader: Any) -> list[str]:
         if not callable(reader):
@@ -308,12 +358,19 @@ class PersonaAgent(AgentNPC):
             return []
         out: list[str] = []
         for m in _as_list(msgs):
-            if isinstance(m, Mapping):
-                self._mail_cursor = max(self._mail_cursor, int(m.get("id", 0)))
-                out.append(
-                    f"- mail from {m.get('sender', '?')}: "
-                    f"{m.get('subject', '')} {m.get('body', '')}".strip()[:200]
-                )
+            if not isinstance(m, Mapping):
+                continue
+            try:
+                mid = int(m.get("id", 0))
+            except (TypeError, ValueError):
+                continue  # a malformed id must not brick the reader
+            self._mail_cursor = max(self._mail_cursor, mid)
+            if str(m.get("sender", "")) == self.actor_id:
+                continue  # don't show a persona its own mail as incoming news
+            out.append(
+                f"- mail from {m.get('sender', '?')}: "
+                f"{m.get('subject', '')} {m.get('body', '')}".strip()[:200]
+            )
         return out
 
     def _read_chat(self, reader: Any, channel: str) -> list[str]:
@@ -326,21 +383,28 @@ class PersonaAgent(AgentNPC):
             return []
         out: list[str] = []
         for m in _as_list(msgs):
-            if isinstance(m, Mapping):
-                self._chat_cursors[channel] = max(
-                    self._chat_cursors.get(channel, 0), int(m.get("id", 0))
-                )
-                line = f"- [{channel}] {m.get('sender', '?')}: {m.get('body', '')}"
-                out.append(line[:200])
+            if not isinstance(m, Mapping):
+                continue
+            try:
+                mid = int(m.get("id", 0))
+            except (TypeError, ValueError):
+                continue
+            self._chat_cursors[channel] = max(self._chat_cursors.get(channel, 0), mid)
+            if str(m.get("sender", "")) == self.actor_id:
+                continue  # skip our own posts
+            line = f"- [{channel}] {m.get('sender', '?')}: {m.get('body', '')}"
+            out.append(line[:200])
         return out
 
 
 def _comms_adapter(
     key: str, fn: Callable[..., Any], actor_id: str
 ) -> Callable[..., Any] | None:
-    """Typed tool adapters for the standard write-side comms vocabulary. Each
-    injects the persona's own ``actor_id`` as ``sender`` and omits ``sender``
-    from the model-facing signature, so identity is bound and unspoofable."""
+    """Typed tool adapters for the standard write-side comms vocabulary. The
+    directed verbs (``mail_send``/``chat_post``) inject the persona's own
+    ``actor_id`` as ``sender`` and omit ``sender`` from the model-facing
+    signature, so identity is bound and unspoofable; ``speak`` is inherently
+    self-authored and carries no sender."""
 
     if key == "mail_send":
 
