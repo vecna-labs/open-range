@@ -33,6 +33,7 @@ so a side-effecting affordance never double-fires.
 from __future__ import annotations
 
 import inspect
+import itertools
 import logging
 import zlib
 from collections.abc import Callable, Mapping, Sequence
@@ -42,6 +43,10 @@ from openrange_pack_sdk._protocols import NPC, AgentBackend, AgentNPC
 from openrange_pack_sdk.memory import DictMemory, ScopedMemory
 
 _log = logging.getLogger(__name__)
+
+# Monotonic ids for unnamed personas, so two blank-name NPCs never collide (the
+# base-class fallback masks id() to 16 bits and can clash).
+_anon_ids = itertools.count(1)
 
 # Read-side comms keys: consumed for prompt context, never exposed as tools.
 _MAIL_READ = "mail_read"
@@ -232,10 +237,11 @@ class PersonaAgent(AgentNPC):
     ) -> None:
         suffix = str(config.get("_replication_suffix", ""))
         name = str(config.get("name", "")).strip()
-        # Empty name -> leave _actor_id unset so AgentNPC.actor_id falls back to a
-        # unique per-instance id rather than a shared blank.
-        if name or suffix:
-            self._actor_id = f"{name}{suffix}"
+        # Named -> readable, dashboard-aligned id; unnamed -> a monotonic unique
+        # id so two blank personas never share a scope (and thus memory).
+        self._actor_id = (
+            f"{name}{suffix}" if (name or suffix) else f"persona-{next(_anon_ids)}"
+        )
         self._tool_names = [str(t) for t in _as_list(config.get("tools", []))]
         self._goal = str(config.get("goal", "")).strip()
         self._long_term = bool(config.get("long_term_memory", False))

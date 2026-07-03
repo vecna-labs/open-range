@@ -207,6 +207,8 @@ def test_action_tool_invokes_exactly_once() -> None:
 
 
 def test_multi_arg_tool_gets_real_strands_schema() -> None:
+    pytest.importorskip("strands")  # tool_spec only exists once decorated
+
     def sql(table: str, where: str = "") -> str:
         return "ok"
 
@@ -851,16 +853,17 @@ def test_user_prompt_is_diegetic() -> None:
 
 
 def test_reserved_param_names_still_build_a_usable_tool() -> None:
-    from openrange_pack_sdk.npcs.persona_agent import _wrap_action
-
     def notify(self: str, msg: str) -> str:  # 'self' is a strands-reserved name
         return f"{self}:{msg}"
 
+    # the raw tool is usable regardless of the optional strands extra
+    raw = _wrap_action("notify", notify)
+    assert raw(arg0="A", msg="hi") == "A:hi"  # self -> arg0, msg preserved
+
+    pytest.importorskip("strands")
     tool: Any = _as_tool(_wrap_action("notify", notify), "notify")
     props = tool.tool_spec["inputSchema"]["json"]["properties"]
-    assert "msg" in props  # msg survives; self is sanitized to arg0
-    raw = _wrap_action("notify", notify)
-    assert raw(arg0="A", msg="hi") == "A:hi"
+    assert "msg" in props and "self" not in props
 
 
 def test_chat_read_without_channels_warns(caplog: Any) -> None:
