@@ -40,7 +40,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 from openrange_pack_sdk._protocols import NPC, AgentBackend, AgentNPC
-from openrange_pack_sdk.memory import DictMemory, ScopedMemory
+from openrange_pack_sdk.memory import DictMemory
 
 _log = logging.getLogger(__name__)
 
@@ -78,8 +78,6 @@ def render_persona(config: Mapping[str, object]) -> str:
     backstory = str(config.get("backstory", "")).strip()
     goal = str(config.get("goal", "go about a normal working day")).strip()
     tone = str(config.get("tone", "")).strip()
-    traits = config.get("traits", {})
-    axes = config.get("behavior_axes", {})
 
     article = "an" if role[:1].lower() in "aeiou" else "a"
     lines: list[str] = [f"You are {name}, {article} {role}."]
@@ -87,20 +85,14 @@ def render_persona(config: Mapping[str, object]) -> str:
         lines.append(backstory)
     if tone:
         lines.append(f"Your manner is {tone}.")
-    style = _style_directives(traits, axes)
+    style = _style_directives(config.get("traits", {}))
     if style:
         lines.append(style)
-    # Social grounding: knowing who/what you can reach keeps a persona from
-    # inventing recipients and reads far more human.
-    contacts = [str(c) for c in _as_list(config.get("contacts", []))]
-    if contacts:
-        lines.append("People you deal with here: " + ", ".join(contacts) + ".")
+    # Social grounding: knowing which channels you use keeps a persona from
+    # inventing places to post and reads more human.
     channels = [str(c) for c in _as_list(config.get("channels", []))]
     if channels:
         lines.append("Chat channels you use: " + ", ".join(channels) + ".")
-    example = str(config.get("example_line", "")).strip()
-    if example:
-        lines.append(f'When you write, you sound like: "{example}"')
     lines.append(f"Your own goal right now: {goal}.")
     lines.append(
         "CONSTRAINTS:\n"
@@ -117,20 +109,11 @@ def render_persona(config: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _style_directives(traits: object, axes: object) -> str:
-    out: list[str] = []
-    if isinstance(traits, Mapping):
-        named = ", ".join(str(k) for k, v in traits.items() if v)
-        if named:
-            out.append(f"come across as {named}")
-    if isinstance(axes, Mapping):
-        if axes.get("terse"):
-            out.append("you keep messages short and clipped")
-        if axes.get("skeptical"):
-            out.append("you question requests before acting on them")
-        if axes.get("frustrated"):
-            out.append("you are easily irritated by friction")
-    return ("You " + "; ".join(out) + ".") if out else ""
+def _style_directives(traits: object) -> str:
+    if not isinstance(traits, Mapping):
+        return ""
+    named = ", ".join(str(k) for k, v in traits.items() if v)
+    return f"You come across as {named}." if named else ""
 
 
 def _tool_string(result: object) -> str:
@@ -233,7 +216,7 @@ class PersonaAgent(AgentNPC):
         *,
         config: Mapping[str, object],
         agent_backend: AgentBackend | None = None,
-        memory: ScopedMemory | None = None,
+        memory: DictMemory | None = None,
     ) -> None:
         suffix = str(config.get("_replication_suffix", ""))
         name = str(config.get("name", "")).strip()
@@ -245,7 +228,7 @@ class PersonaAgent(AgentNPC):
         self._tool_names = [str(t) for t in _as_list(config.get("tools", []))]
         self._goal = str(config.get("goal", "")).strip()
         self._long_term = bool(config.get("long_term_memory", False))
-        self._memory: ScopedMemory = memory if memory is not None else DictMemory()
+        self._memory = memory if memory is not None else DictMemory()
         self._scope = f":{self.actor_id}"  # finalized with the run id at start()
         self._chat_channels = [str(c) for c in _as_list(config.get("channels", []))]
         self._mail_cursor = 0
@@ -347,12 +330,8 @@ class PersonaAgent(AgentNPC):
             for channel in self._chat_channels:
                 new.extend(self._read_chat(interface.get(_CHAT_READ), channel))
         self._pending.extend(new)
-        if len(self._pending) > _MAX_PENDING:
-            dropped = len(self._pending) - _MAX_PENDING
-            self._pending = [
-                f"(+{dropped} earlier messages)",
-                *self._pending[-_MAX_PENDING:],
-            ]
+        # Keep only the most recent, so a burst of traffic can't bloat the prompt.
+        self._pending = self._pending[-_MAX_PENDING:]
         return "\n".join(self._pending)
 
     def _read_mail(self, reader: Any) -> list[str]:
@@ -406,11 +385,10 @@ class PersonaAgent(AgentNPC):
 def _comms_adapter(
     key: str, fn: Callable[..., Any], actor_id: str
 ) -> Callable[..., Any] | None:
-    """Typed tool adapters for the standard write-side comms vocabulary. The
-    directed verbs (``mail_send``/``chat_post``) inject the persona's own
-    ``actor_id`` as ``sender`` and omit ``sender`` from the model-facing
-    signature, so identity is bound and unspoofable; ``speak`` is inherently
-    self-authored and carries no sender."""
+    """Typed tool adapters for the directed comms verbs (``mail_send``/
+    ``chat_post``): they inject the persona's own ``actor_id`` as ``sender`` and
+    omit ``sender`` from the model-facing signature, so identity is bound and
+    unspoofable. Other surfaced callables fall through to ``_wrap_action``."""
 
     if key == "mail_send":
 
@@ -427,14 +405,6 @@ def _comms_adapter(
             return str(fn(actor_id, channel, text))
 
         return chat_post
-
-    if key == "speak":
-
-        def speak(text: str) -> str:
-            """Say something out loud in your vicinity. Args: text."""
-            return str(fn(text))
-
-        return speak
 
     return None
 

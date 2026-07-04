@@ -118,18 +118,17 @@ def test_render_persona_minimal_config_is_valid() -> None:
     assert "CONSTRAINTS" in prompt
 
 
-def test_render_persona_folds_in_style_axes() -> None:
+def test_render_persona_folds_in_tone_and_traits() -> None:
     prompt = render_persona(
         {
             "name": "Sam",
             "role": "sysadmin",
             "tone": "brusque",
-            "behavior_axes": {"terse": True, "skeptical": True},
+            "traits": {"terse": True, "skeptical": True},
         }
     )
     assert "brusque" in prompt
-    assert "short and clipped" in prompt
-    assert "question requests" in prompt
+    assert "You come across as terse, skeptical" in prompt
 
 
 # --------------------------------------------------------------------------- #
@@ -811,19 +810,11 @@ def test_memory_matches_across_adjacent_punctuation() -> None:
     assert hits[0] == "reconciled the finance, portal."  # overlap, not recency
 
 
-def test_persona_renders_social_grounding() -> None:
+def test_persona_renders_channel_grounding() -> None:
     prompt = render_persona(
-        {
-            "name": "Dana",
-            "role": "accountant",
-            "contacts": ["Sam", "exec"],
-            "channels": ["finance"],
-            "example_line": "ugh not again",
-        }
+        {"name": "Dana", "role": "accountant", "channels": ["finance", "ops"]}
     )
-    assert "People you deal with here: Sam, exec" in prompt
-    assert "Chat channels you use: finance" in prompt
-    assert "ugh not again" in prompt
+    assert "Chat channels you use: finance, ops" in prompt
 
 
 def test_persona_grammar_is_clean() -> None:

@@ -210,8 +210,7 @@ data, not code. Register it once and declare instances in the manifest:
   "name": "Dana", "role": "accountant",
   "goal": "reconcile invoices via the finance portal",
   "tools": ["http_get", "mail_send", "mail_read"],
-  "contacts": ["Sam", "the CFO"], "channels": ["finance"],
-  "cadence_ticks": 5}}]}
+  "channels": ["finance"], "cadence_ticks": 5}}]}
 ```
 
 Config keys:
@@ -220,8 +219,8 @@ Config keys:
 |-----|---------|
 | `name`, `role`, `backstory`, `tone` | who the persona is (rendered to the system prompt) |
 | `goal` | its own independent objective (what stops assistant-like helpfulness) |
-| `traits`, `behavior_axes` | e.g. `{"terse": true, "skeptical": true}` — style |
-| `contacts`, `channels`, `example_line` | social grounding so it doesn't invent recipients |
+| `traits` | e.g. `{"terse": true, "skeptical": true}` — how it comes across |
+| `channels` | chat channels it uses (grounds `chat_post`/`chat_read`) |
 | `tools` | which surface keys it may use; only the ones your pack actually provides are bound |
 | `cadence_ticks` | acts once every N ticks (auto phase-staggered across a population) |
 | `long_term_memory` | opt-in scoped note store (default off) |

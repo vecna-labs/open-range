@@ -69,11 +69,10 @@ from openrange_pack_sdk._types import (
 from openrange_pack_sdk.comms import (
     ChatStore,
     MailboxStore,
-    Message,
     surface_chat,
     surface_mailbox,
 )
-from openrange_pack_sdk.memory import DictMemory, ScopedMemory
+from openrange_pack_sdk.memory import DictMemory
 from openrange_pack_sdk.npcs import PersonaAgent, render_persona
 
 __all__ = [
@@ -91,9 +90,7 @@ __all__ = [
     "EpisodeResult",
     "FeasibilityVerdict",
     "MailboxStore",
-    "Message",
     "PersonaAgent",
-    "ScopedMemory",
     "render_persona",
     "surface_chat",
     "surface_mailbox",

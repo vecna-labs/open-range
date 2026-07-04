@@ -1,9 +1,6 @@
 """Per-persona scoped memory for NPCs.
 
-Training-free and dependency-free by default: ``DictMemory`` is a keyword-ranked
-note store. The ``ScopedMemory`` protocol is the seam to drop in a vector
-backend later without touching the NPC.
-
+Training-free and dependency-free: ``DictMemory`` is a keyword-ranked note store.
 The ``scope`` is a stable ``"{run}:{actor}"`` string INJECTED by the NPC wrapper,
 never chosen by the model, so one persona can never read another persona's (or
 the SUT's) notes. Ranking is deterministic (term overlap, then recency) so a
@@ -13,20 +10,9 @@ fixed seed replays identically.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
 
 _WORD = re.compile(r"[a-z0-9]+")
-
-
-@runtime_checkable
-class ScopedMemory(Protocol):
-    """A note store partitioned by an opaque ``scope`` string."""
-
-    def store(self, scope: str, content: str) -> None: ...
-
-    def retrieve(self, scope: str, query: str, k: int = 5) -> list[str]: ...
 
 
 def _terms(text: str) -> set[str]:
@@ -63,6 +49,3 @@ class DictMemory:
             if hits:
                 return hits[:k]
         return list(reversed(items))[:k]
-
-    def scopes(self) -> Iterable[str]:
-        return tuple(self._items)
