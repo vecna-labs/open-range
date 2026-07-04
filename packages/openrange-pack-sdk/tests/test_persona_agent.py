@@ -912,3 +912,87 @@ def test_sampled_persona_drives_a_real_persona_agent() -> None:
 def test_sample_persona_requires_roles() -> None:
     with pytest.raises(ValueError):
         sample_persona(0, roles=[])
+
+
+# --------------------------------------------------------------------------- #
+# Robustness / scale hardening (real defects found by scale+edge probing)     #
+# --------------------------------------------------------------------------- #
+
+
+def test_keyword_only_affordance_builds_a_usable_tool() -> None:
+    # a defaulted-positional + keyword-only signature must not raise when the
+    # schema is rebuilt (required params are sorted first)
+    def act(a: str = "x", *, b: str) -> str:
+        return f"{a}{b}"
+
+    wrapped = _wrap_action("act", act)
+    assert wrapped(b="Y") == "xY"
+    npc = PersonaAgent(config={"name": "U", "tools": ["act"], "cadence_ticks": 1})
+    backend = _run(npc)
+    npc.step({"act": act})  # must not brick the NPC
+    assert not npc.broken_reason
+    assert _tool_named(backend.agent, "act")(b="Z") == "xZ"
+
+
+def test_sampled_small_names_pool_stays_unique() -> None:
+    pop = [sample_persona(i, roles=["clerk"], names=["Sam", "Dana"]) for i in range(50)]
+    assert len({p["name"] for p in pop}) == 50  # seed-suffixed -> no scope collision
+
+
+def test_sample_persona_negative_num_traits_is_safe() -> None:
+    cfg = sample_persona(0, roles=["clerk"], num_traits=-1)
+    assert cfg["traits"] == {}
+
+
+def test_duplicate_tools_are_deduped() -> None:
+    npc = PersonaAgent(config={"name": "U", "tools": ["http_get", "http_get"]})
+    backend = _run(npc)
+    npc.step({"http_get": lambda p: "ok"})
+    names = [getattr(t, "__name__", "") for t in backend.agent.tools]
+    assert names.count("http_get") == 1
+
+
+def test_missing_declared_tool_warns_once(caplog: Any) -> None:
+    import logging
+
+    npc = PersonaAgent(config={"name": "U", "tools": ["http_get", "nope"]})
+    _run(npc)
+    with caplog.at_level(logging.WARNING):
+        npc.step({"http_get": lambda p: "ok"})
+        npc.step({"http_get": lambda p: "ok"})  # second tick must not re-warn
+    warnings = [r for r in caplog.records if "didn't surface" in r.message]
+    assert len(warnings) == 1
+    assert "nope" in warnings[0].message
+
+
+def test_dict_memory_caps_note_length_and_count() -> None:
+    from openrange_pack_sdk.memory import _MAX_NOTE_CHARS, _MAX_NOTES
+
+    mem = DictMemory()
+    mem.store("s", "z" * (_MAX_NOTE_CHARS + 5000))
+    assert len(mem.retrieve("s", "z")[0]) == _MAX_NOTE_CHARS  # note truncated
+    for i in range(_MAX_NOTES + 50):
+        mem.store("s", f"note {i}")
+    assert len(mem._items["s"]) == _MAX_NOTES  # oldest evicted
+
+
+def test_presence_event_emitted_on_start() -> None:
+    events: list[dict[str, object]] = []
+    npc = PersonaAgent(config={"name": "Dana", "role": "accountant", "goal": "recon"})
+    backend = _RecordingBackend()
+    npc._backend_override = backend
+    npc.start(
+        {"episode_id": "ep", "agent_backend": backend, "record_action": events.append}
+    )
+    assert events and events[0]["present"] is True
+    assert events[0]["actor_kind"] == "npc"
+    assert events[0]["display_name"] == "Dana"
+
+
+def test_chat_post_identity_is_also_bound() -> None:
+    chat = ChatStore()
+    adapter = _comms_adapter("chat_post", surface_chat(chat)["chat_post"], "bob")
+    assert adapter is not None
+    assert "sender" not in inspect.signature(adapter).parameters
+    adapter(channel="ops", text="hi")
+    assert chat.all()[0].sender == "bob"

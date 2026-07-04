@@ -42,6 +42,8 @@ from cyber_webapp.container import (
 
 _CONTAINER_LOG_PATH = "/app/requests.jsonl"
 _CONTAINER_PORT = "8000"
+# Most recent NPC comms lines surfaced to the grader (bounds a chatty episode).
+_MAX_COLLECTED_COMMS = 200
 
 
 class WebappRuntimeError(OpenRangeError):
@@ -135,8 +137,12 @@ class _WebappRuntime(SubprocessRuntime):
             "endpoint_serves_200": self._probe_root_200(),
             # NPC cover traffic, each line attributed to its sender actor id so a
             # grader can subtract known decoys from anything the SUT emitted.
-            "npc_mail": [m.as_dict() for m in self._mailbox.all()],
-            "npc_chat": [m.as_dict() for m in self._chat.all()],
+            # Tail-bounded so a long, chatty episode can't bloat the graded state
+            # (and the dashboard turn that embeds it).
+            "npc_mail": [
+                m.as_dict() for m in self._mailbox.all()[-_MAX_COLLECTED_COMMS:]
+            ],
+            "npc_chat": [m.as_dict() for m in self._chat.all()[-_MAX_COLLECTED_COMMS:]],
         }
 
     def checkpoint(self) -> Any:

@@ -54,7 +54,7 @@ _MAIL_READ = "mail_read"
 _CHAT_READ = "chat_read"
 _READ_KEYS = (_MAIL_READ, _CHAT_READ)
 
-# Cap on unseen comms lines carried into a prompt (older ones are summarized).
+# Cap on unseen comms lines carried into a prompt (older ones are dropped).
 _MAX_PENDING = 20
 
 
@@ -80,7 +80,7 @@ def render_persona(config: Mapping[str, object]) -> str:
     goal = str(config.get("goal", "go about a normal working day")).strip()
     tone = str(config.get("tone", "")).strip()
 
-    article = "an" if role[:1].lower() in "aeiou" else "a"
+    article = "an" if role[:1].lower() in ("a", "e", "i", "o", "u") else "a"
     lines: list[str] = [f"You are {name}, {article} {role}."]
     if backstory:
         lines.append(backstory)
@@ -176,7 +176,11 @@ def _wrap_action(name: str, fn: Callable[..., Any]) -> Callable[..., str]:
             schema = f"{schema}_"
         schema_to_orig[schema] = p.name
         defaults[schema] = p.default
-    schema_names = list(schema_to_orig)
+    # Required params must precede defaulted ones or inspect.Signature raises;
+    # forwarding is by name, so reordering the schema is harmless.
+    schema_names = sorted(
+        schema_to_orig, key=lambda s: defaults[s] is not inspect.Parameter.empty
+    )
 
     def action(*args: str, **kwargs: str) -> str:
         bound = dict(kwargs)
@@ -240,7 +244,12 @@ class PersonaAgent(AgentNPC):
         self._actor_id = (
             f"{name}{suffix}" if (name or suffix) else f"persona-{next(_anon_ids)}"
         )
-        self._tool_names = [str(t) for t in _as_list(config.get("tools", []))]
+        self._name = name
+        self._role = str(config.get("role", "")).strip()
+        # dict.fromkeys dedups while preserving order (a repeated tool is a no-op).
+        self._tool_names = list(
+            dict.fromkeys(str(t) for t in _as_list(config.get("tools", [])))
+        )
         self._goal = str(config.get("goal", "")).strip()
         self._long_term = bool(config.get("long_term_memory", False))
         self._memory = memory if memory is not None else DictMemory()
@@ -248,6 +257,8 @@ class PersonaAgent(AgentNPC):
         self._chat_channels = [str(c) for c in _as_list(config.get("channels", []))]
         self._mail_cursor = 0
         self._chat_cursors: dict[str, int] = {}
+        self._record: Callable[..., Any] | None = None
+        self._warned_missing = False
         # Buffer of unseen-by-the-model comms lines. Filled as cursors advance,
         # cleared only after a successful tick, so a failed LLM call never drops
         # a message; capped so it can't grow without bound over a long episode.
@@ -275,6 +286,20 @@ class PersonaAgent(AgentNPC):
                 "NPC %s declares chat_read but no channels; it will perceive no chat",
                 self.actor_id,
             )
+        # Announce presence so the persona is seated on the dashboard, like the
+        # pack's own NPCs (the record hook is a no-op when there's no dashboard).
+        rec = context.get("record_action")
+        self._record = rec if callable(rec) else None
+        if self._record is not None:
+            self._record(
+                {
+                    "present": True,
+                    "actor_kind": "npc",
+                    "display_name": self._name or self.actor_id,
+                    "role": self._role,
+                    "goal": self._goal,
+                }
+            )
         super().start(context)
 
     # -- tools ---------------------------------------------------------------
@@ -294,6 +319,19 @@ class PersonaAgent(AgentNPC):
             fns.append(comms if comms is not None else _wrap_action(key, fn))
         if self._long_term:
             fns.extend(self._memory_functions())
+        if not self._warned_missing:
+            missing = [
+                k
+                for k in self._tool_names
+                if k not in _READ_KEYS and interface.get(k) is None
+            ]
+            if missing:
+                _log.warning(
+                    "NPC %s declares tools the pack didn't surface: %s",
+                    self.actor_id,
+                    missing,
+                )
+            self._warned_missing = True
         return fns
 
     def _build_tools(
@@ -481,9 +519,12 @@ def sample_persona(
         raise ValueError("sample_persona needs a non-empty 'roles' vocabulary")
     rng = random.Random(seed)
     pool = list(traits) if traits else list(_TRAIT_POOL)
-    chosen = rng.sample(pool, k=min(num_traits, len(pool)))
+    chosen = rng.sample(pool, k=max(0, min(num_traits, len(pool))))
+    # Suffix the seed so a small ``names`` pool still yields unique actor ids
+    # (else two personas would share a memory scope).
+    base = rng.choice(list(names)) if names else "person"
     return {
-        "name": rng.choice(list(names)) if names else f"person-{seed}",
+        "name": f"{base}-{seed}",
         "role": rng.choice(list(roles)),
         "goal": goal,
         "traits": {t: round(rng.uniform(0.3, 1.0), 1) for t in chosen},

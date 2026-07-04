@@ -14,6 +14,10 @@ from dataclasses import dataclass, field
 
 _WORD = re.compile(r"[a-z0-9]+")
 
+# Bound a persona's note store so recall can't grow the prompt without limit.
+_MAX_NOTE_CHARS = 2000
+_MAX_NOTES = 500
+
 
 def _terms(text: str) -> set[str]:
     # Word tokens, so adjacent punctuation ("finance,") still matches "finance".
@@ -33,7 +37,9 @@ class DictMemory:
 
     def store(self, scope: str, content: str) -> None:
         if content:
-            self._items.setdefault(scope, []).append(content)
+            items = self._items.setdefault(scope, [])
+            items.append(content[:_MAX_NOTE_CHARS])
+            del items[:-_MAX_NOTES]  # keep only the most recent notes per scope
 
     def retrieve(self, scope: str, query: str, k: int = 5) -> list[str]:
         items = self._items.get(scope, [])
