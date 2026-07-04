@@ -1072,6 +1072,8 @@ def test_assistant_tell_detector_and_persona_prompt_is_in_character() -> None:
     from openrange_pack_sdk.npcs.metrics import assistant_tell_rate
 
     assert assistant_tell_rate(["As an AI language model, how can I help?"]) == 1.0
+    # a real small model leaked its reasoning as prose — the detector must catch it
+    assert assistant_tell_rate(["Okay, the user wants me to act as Dana."]) == 1.0
     assert assistant_tell_rate(["ugh, not another invoice batch"]) == 0.0
     # the generated persona prompt itself must not read like an assistant
     prompt = render_persona({"name": "Dana", "role": "accountant", "goal": "recon"})

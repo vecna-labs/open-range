@@ -13,7 +13,11 @@ import re
 from collections import Counter
 from collections.abc import Iterable
 
-# Phrases a helpful-assistant emits but an in-character persona should not.
+# Phrases a helpful-assistant or a model reasoning out loud emits, but an
+# in-character persona should not. The meta-reasoning group (the second block)
+# was added after a small local model leaked its chain of thought as prose
+# ("the user wants me to act as Dana...") — a real believability failure the
+# helpful-assistant patterns alone missed.
 _ASSISTANT_TELLS = (
     re.compile(r"\bas an ai\b"),
     re.compile(r"\blanguage model\b"),
@@ -22,6 +26,10 @@ _ASSISTANT_TELLS = (
     re.compile(r"\bi'?m (happy|glad) to help\b"),
     re.compile(r"^#{1,6}\s", re.MULTILINE),  # markdown headers
     re.compile(r"\b(best regards|sincerely|kind regards)\b"),
+    re.compile(r"\bthe user\b"),
+    re.compile(r"\bact(ing)? as\b"),
+    re.compile(r"\b(stay|staying|stick|in) (in )?character\b"),
+    re.compile(r"\bmy (character|persona|role|goal is)\b"),
 )
 
 
