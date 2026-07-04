@@ -208,10 +208,21 @@ data, not code. Register it once and declare instances in the manifest:
 ```json
 {"npc": [{"type": "mypack.persona", "count": 3, "config": {
   "name": "Dana", "role": "accountant",
-  "goal": "reconcile invoices via the finance portal",
-  "tools": ["http_get", "mail_send", "mail_read"],
+  "goal": "reconcile invoices with a colleague",
+  "tools": ["mail_send", "mail_read"],
   "channels": ["finance"], "cadence_ticks": 5}}]}
 ```
+
+Every persona entry needs a non-empty `name` — the dashboard seats and animates
+personas by that name (an anonymous persona still runs but isn't seated).
+
+On a **graded** run, give personas only the world-mediated comms tools
+(`mail_send`/`mail_read`/`chat_post`/`chat_read`), not `http_get`: comms are
+attributed to the sender and drained separately, but persona `http_get` traffic
+lands in the same request log as the system-under-test — unattributed — so it
+pollutes `requests_made`/`leaked_secret_ids` and the pentest `reached_endpoint`
+subgoal (per-actor request tagging is deferred; see the PR). It's fine for a
+non-graded/demo world.
 
 Config keys:
 
@@ -245,6 +256,15 @@ sender, so cover traffic is attributable and unspoofable.
 provider string) drives the default Bedrock backend; to run a **local** model,
 pass a custom `RunConfig.npc_agent_backend` wrapping e.g.
 `strands.models.OllamaModel` — see `examples/persona_eval.py` for the shape.
+
+The cyber webapp registers both `cyber.persona` (this generic class) and the
+older bespoke `cyber.office_persona`; prefer `cyber.persona` for new worlds.
+
+Deterministic properties are CI-gated (population diversity via role entropy,
+comms sender is never forgeable, the persona prompt doesn't read like an
+assistant — see `openrange_pack_sdk.npcs.metrics`). Live believability against a
+real model, a non-degeneracy NPC-on/off A/B, and per-actor HTTP tagging are
+deferred to a follow-up.
 
 ## Episode checks and rewards
 

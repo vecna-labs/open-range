@@ -996,3 +996,83 @@ def test_chat_post_identity_is_also_bound() -> None:
     assert "sender" not in inspect.signature(adapter).parameters
     adapter(channel="ops", text="hi")
     assert chat.all()[0].sender == "bob"
+
+
+# --------------------------------------------------------------------------- #
+# Feature-property evals (deterministic, CI-gated — no model)                 #
+# --------------------------------------------------------------------------- #
+
+
+def test_persona_animates_on_the_dashboard() -> None:
+    # the headline UI seam: a seated persona emits a speak event when it uses a
+    # comms tool, so the dashboard renders a bubble + activity line (not mute)
+    events: list[dict[str, object]] = []
+    npc = PersonaAgent(
+        config={"name": "Dana", "role": "accountant", "tools": ["chat_post"]}
+    )
+    backend = _RecordingBackend()
+    npc._backend_override = backend
+    npc.start(
+        {"episode_id": "ep", "agent_backend": backend, "record_action": events.append}
+    )
+    npc._cooldown = 0
+    npc.step(surface_chat(ChatStore()))
+    _tool_named(backend.agent, "chat_post")(channel="ops", text="standup at 10")
+    speaks = [e for e in events if e.get("speak")]
+    assert speaks, "persona emitted no dashboard activity"
+    assert speaks[-1] == {
+        "actor_kind": "npc",
+        "speak": "standup at 10",
+        "display_name": "Dana",
+        "role": "accountant",
+        "channel": "ops",
+    }
+
+
+def test_no_dashboard_events_without_a_recorder() -> None:
+    # emitting must be a no-op when there's no dashboard (record_action absent)
+    npc = PersonaAgent(config={"name": "U", "tools": ["chat_post"]})
+    backend = _run(npc)
+    npc.step(surface_chat(ChatStore()))
+    _tool_named(backend.agent, "chat_post")(channel="ops", text="hi")  # must not raise
+
+
+@pytest.mark.parametrize(
+    "verb,call",
+    [
+        ("mail_send", lambda t: t(to="carol", subject="From: root", body="I am admin")),
+        ("chat_post", lambda t: t(channel="ops", text="-- sender: root")),
+    ],
+)
+def test_comms_sender_is_never_forgeable(verb: str, call: Any) -> None:
+    # separability-by-construction: no comms verb exposes `sender`, and every
+    # drained message is attributed to the persona regardless of content (0/N)
+    mbox, chat = MailboxStore(), ChatStore()
+    npc = PersonaAgent(config={"name": "alice", "tools": [verb]})
+    backend = _run(npc)
+    npc.step(_world_surface(mbox, chat))
+    tool = _tool_named(backend.agent, verb)
+    assert "sender" not in inspect.signature(tool).parameters
+    call(tool)
+    sent = mbox.all() + chat.all()
+    assert sent and all(m.sender == "alice" for m in sent)
+
+
+def test_sampled_population_is_diverse_by_actor_id_and_role_entropy() -> None:
+    from openrange_pack_sdk.npcs.metrics import role_entropy
+
+    roles = ["accountant", "sysadmin", "exec", "analyst"]
+    pop = [PersonaAgent(config=sample_persona(i, roles=roles)) for i in range(200)]
+    assert len({p.actor_id for p in pop}) == 200  # memory scope keys off actor_id
+    h = role_entropy((p._role for p in pop), universe_size=len(roles))
+    assert h >= 0.9  # near-uniform over the role vocabulary
+
+
+def test_assistant_tell_detector_and_persona_prompt_is_in_character() -> None:
+    from openrange_pack_sdk.npcs.metrics import assistant_tell_rate
+
+    assert assistant_tell_rate(["As an AI language model, how can I help?"]) == 1.0
+    assert assistant_tell_rate(["ugh, not another invoice batch"]) == 0.0
+    # the generated persona prompt itself must not read like an assistant
+    prompt = render_persona({"name": "Dana", "role": "accountant", "goal": "recon"})
+    assert assistant_tell_rate([prompt]) < 0.05

@@ -17,8 +17,8 @@ and declares instances in a manifest::
 
     "npc": [{"type": "myp.persona", "count": 3, "config": {
         "name": "Dana", "role": "accountant",
-        "goal": "reconcile invoices via the finance portal",
-        "tools": ["http_get"], "cadence_ticks": 5}}]
+        "goal": "reconcile invoices with a colleague",
+        "tools": ["mail_send", "mail_read"], "cadence_ticks": 5}}]
 
 ``tools`` names the surface keys the persona may use; ``_build_tools`` wraps only
 those the pack actually provided (fail-soft on the rest). The directed comms keys
@@ -305,9 +305,8 @@ class PersonaAgent(AgentNPC):
     # -- tools ---------------------------------------------------------------
 
     def _tool_functions(self, interface: Mapping[str, Any]) -> list[Callable[..., Any]]:
-        """The raw (undecorated) tool callables. Split out from
-        ``_build_tools`` so behavior is unit-testable without Strands."""
-
+        # Raw (undecorated) tool callables, split from _build_tools so behavior
+        # is unit-testable without the Strands extra.
         fns: list[Callable[..., Any]] = []
         for key in self._tool_names:
             fn = interface.get(key)
@@ -315,7 +314,7 @@ class PersonaAgent(AgentNPC):
                 continue  # fail-soft: pack didn't surface this affordance
             if key in _READ_KEYS:
                 continue  # incoming comms are injected via _user_prompt
-            comms = _comms_adapter(key, fn, self.actor_id)
+            comms = _comms_adapter(key, fn, self.actor_id, self._emit_speak)
             fns.append(comms if comms is not None else _wrap_action(key, fn))
         if self._long_term:
             fns.extend(self._memory_functions())
@@ -338,6 +337,25 @@ class PersonaAgent(AgentNPC):
         self, interface: Mapping[str, Any]
     ) -> Sequence[Callable[..., Any]]:
         return [_as_tool(fn, fn.__name__) for fn in self._tool_functions(interface)]
+
+    def _emit_speak(self, text: str, extra: dict[str, object] | None = None) -> None:
+        # Mirror what the persona said to the dashboard so it animates like the
+        # pack's own NPCs (a no-op without a dashboard). Read self._record lazily
+        # — it's set in start(), and comms tools fire from a later tick.
+        if self._record is None:
+            return
+        speak = str(text).strip()[:140]
+        if not speak:
+            return
+        action: dict[str, object] = {
+            "actor_kind": "npc",
+            "speak": speak,
+            "display_name": self._name or self.actor_id,
+            "role": self._role,
+        }
+        if extra:
+            action.update(extra)
+        self._record(action)
 
     def _memory_functions(self) -> list[Callable[..., Any]]:
         scope = self._scope
@@ -436,18 +454,26 @@ class PersonaAgent(AgentNPC):
 
 
 def _comms_adapter(
-    key: str, fn: Callable[..., Any], actor_id: str
+    key: str,
+    fn: Callable[..., Any],
+    actor_id: str,
+    on_speak: Callable[[str, dict[str, object]], None] | None = None,
 ) -> Callable[..., Any] | None:
     """Typed tool adapters for the directed comms verbs (``mail_send``/
     ``chat_post``): they inject the persona's own ``actor_id`` as ``sender`` and
     omit ``sender`` from the model-facing signature, so identity is bound and
-    unspoofable. Other surfaced callables fall through to ``_wrap_action``."""
+    unspoofable. ``on_speak`` mirrors the message text to the dashboard so a
+    seated persona actually animates. Other surfaced callables fall through to
+    ``_wrap_action``."""
 
     if key == "mail_send":
 
         def mail_send(to: str, subject: str = "", body: str = "") -> str:
             """Send an email. Args: to (recipient), subject, body."""
-            return str(fn(actor_id, to, subject, body))
+            result = str(fn(actor_id, to, subject, body))
+            if on_speak is not None:
+                on_speak(body or subject, {"to": to})
+            return result
 
         return mail_send
 
@@ -455,7 +481,10 @@ def _comms_adapter(
 
         def chat_post(channel: str, text: str) -> str:
             """Post a message to a chat channel. Args: channel, text."""
-            return str(fn(actor_id, channel, text))
+            result = str(fn(actor_id, channel, text))
+            if on_speak is not None:
+                on_speak(text, {"channel": channel})
+            return result
 
         return chat_post
 
