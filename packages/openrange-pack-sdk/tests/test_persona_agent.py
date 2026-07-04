@@ -26,6 +26,7 @@ from openrange_pack_sdk import (
     MailboxStore,
     PersonaAgent,
     render_persona,
+    sample_persona,
     surface_chat,
     surface_mailbox,
 )
@@ -864,3 +865,50 @@ def test_chat_read_without_channels_warns(caplog: Any) -> None:
         npc = PersonaAgent(config={"name": "U", "tools": ["chat_read"]})
         _run(npc)
     assert any("chat_read but no channels" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# Numeric trait intensity + procedural persona diversity                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_numeric_traits_render_intensity() -> None:
+    prompt = render_persona(
+        {"name": "Ana", "role": "clerk", "traits": {"curious": 0.9, "patient": 0.3}}
+    )
+    assert "very curious" in prompt
+    assert "a little patient" in prompt
+
+
+def test_bool_traits_still_render_plain() -> None:
+    prompt = render_persona({"name": "Ana", "role": "clerk", "traits": {"blunt": True}})
+    assert "You come across as blunt." in prompt
+
+
+def test_sample_persona_is_deterministic() -> None:
+    a = sample_persona(7, roles=["clerk", "admin", "exec"])
+    b = sample_persona(7, roles=["clerk", "admin", "exec"])
+    assert a == b  # same seed -> identical config (replay-safe)
+
+
+def test_sample_persona_population_is_diverse() -> None:
+    roles = ["clerk", "admin", "exec", "analyst"]
+    pop = [sample_persona(i, roles=roles) for i in range(50)]
+    # distinct identities, and more than one role + trait-set actually appears
+    assert len({p["name"] for p in pop}) == 50
+    assert len({p["role"] for p in pop}) > 1
+    assert len({tuple(sorted(p["traits"])) for p in pop}) > 5  # varied trait vectors
+
+
+def test_sampled_persona_drives_a_real_persona_agent() -> None:
+    cfg = sample_persona(3, roles=["accountant"], goal="reconcile invoices")
+    npc = PersonaAgent(config={**cfg, "tools": ["http_get"], "cadence_ticks": 1})
+    backend = _run(npc)
+    npc.step({"http_get": lambda p: "ok"})
+    assert not npc.broken_reason
+    assert cfg["role"] in backend.built_prompt  # type: ignore[operator]
+
+
+def test_sample_persona_requires_roles() -> None:
+    with pytest.raises(ValueError):
+        sample_persona(0, roles=[])

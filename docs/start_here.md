@@ -219,11 +219,21 @@ Config keys:
 |-----|---------|
 | `name`, `role`, `backstory`, `tone` | who the persona is (rendered to the system prompt) |
 | `goal` | its own independent objective (what stops assistant-like helpfulness) |
-| `traits` | e.g. `{"terse": true, "skeptical": true}` — how it comes across |
+| `traits` | how it comes across — flags `{"terse": true}` or numeric intensities `{"curious": 0.9, "patient": 0.3}` |
 | `channels` | chat channels it uses (grounds `chat_post`/`chat_read`) |
 | `tools` | which surface keys it may use; only the ones your pack actually provides are bound |
 | `cadence_ticks` | acts once every N ticks (auto phase-staggered across a population) |
 | `long_term_memory` | opt-in scoped note store (default off) |
+
+For a **diverse population** instead of `count=n` clones, generate configs with
+`sample_persona` (deterministic, no model) and pass your pack's own role
+vocabulary:
+
+```python
+from openrange_pack_sdk import sample_persona
+roster = [sample_persona(i, roles=["accountant", "it admin", "exec"]) for i in range(50)]
+# each gets a distinct name, role, and a numeric trait vector
+```
 
 Comms are through the world: your pack surfaces `mail_send`/`mail_read`/
 `chat_post`/`chat_read` from `surface_extras()` (see

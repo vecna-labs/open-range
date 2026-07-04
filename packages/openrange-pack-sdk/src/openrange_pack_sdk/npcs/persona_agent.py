@@ -35,6 +35,7 @@ from __future__ import annotations
 import inspect
 import itertools
 import logging
+import random
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
@@ -112,8 +113,22 @@ def render_persona(config: Mapping[str, object]) -> str:
 def _style_directives(traits: object) -> str:
     if not isinstance(traits, Mapping):
         return ""
-    named = ", ".join(str(k) for k, v in traits.items() if v)
-    return f"You come across as {named}." if named else ""
+    parts = [p for k, v in traits.items() if (p := _trait_phrase(str(k), v))]
+    return f"You come across as {', '.join(parts)}." if parts else ""
+
+
+def _trait_phrase(name: str, value: object) -> str:
+    """A trait's phrase. A numeric value in [0,1] renders an intensity (so a
+    sampled trait vector reads with variety); any other truthy value is plain."""
+    if isinstance(value, bool):
+        return name if value else ""
+    if isinstance(value, (int, float)):
+        if value >= 0.75:
+            return f"very {name}"
+        if value >= 0.4:
+            return name
+        return f"a little {name}" if value > 0 else ""
+    return name if value else ""
 
 
 def _tool_string(result: object) -> str:
@@ -425,3 +440,51 @@ def factory(config: Mapping[str, object]) -> NPC:
     every persona instance is pure config."""
 
     return PersonaAgent(config=config)
+
+
+# A small generic adjective pool for sampled personas. A pack that wants
+# domain-flavored variety passes its own ``traits=`` / ``roles=`` / ``names=``.
+_TRAIT_POOL = (
+    "curious",
+    "cautious",
+    "blunt",
+    "friendly",
+    "impatient",
+    "meticulous",
+    "chatty",
+    "reserved",
+    "skeptical",
+    "easygoing",
+    "anxious",
+    "confident",
+)
+
+
+def sample_persona(
+    seed: int,
+    *,
+    roles: Sequence[str],
+    goal: str = "go about your normal work",
+    names: Sequence[str] | None = None,
+    traits: Sequence[str] | None = None,
+    num_traits: int = 3,
+) -> dict[str, object]:
+    """Deterministically sample a diverse persona config from a seed.
+
+    A population built as ``[sample_persona(i, roles=...) for i in range(n)]`` is
+    diverse-by-construction — different name, role, and a numeric trait vector —
+    instead of ``count=n`` clones that share everything but an id. No model, no
+    training; the pack supplies its own ``roles`` (and optionally ``names``/
+    ``traits``) vocabulary so it stays domain-neutral.
+    """
+    if not roles:
+        raise ValueError("sample_persona needs a non-empty 'roles' vocabulary")
+    rng = random.Random(seed)
+    pool = list(traits) if traits else list(_TRAIT_POOL)
+    chosen = rng.sample(pool, k=min(num_traits, len(pool)))
+    return {
+        "name": rng.choice(list(names)) if names else f"person-{seed}",
+        "role": rng.choice(list(roles)),
+        "goal": goal,
+        "traits": {t: round(rng.uniform(0.3, 1.0), 1) for t in chosen},
+    }
