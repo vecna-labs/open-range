@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import logging
 import threading
 import time
 import uuid
@@ -31,6 +32,8 @@ from openrange_pack_sdk import (
 from openrange.agent_backend import StrandsAgentBackend
 from openrange.core.turn import ActorTurn
 from openrange.npc import resolve_manifest_npcs
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from openrange.dashboard import DashboardView
@@ -650,7 +653,21 @@ class EpisodeService:
         }
         for key, value in running.surface_cache.items():
             base_context.setdefault(str(key), value)
+        seen: set[str] = set()
+        started: list[NPC] = []
         for npc in npcs:
+            if npc.actor_id in seen:
+                # Two NPCs sharing an actor_id would share dashboard rows and any
+                # id-scoped state; skip the duplicate rather than silently alias.
+                self._record_system(
+                    running,
+                    {"npc_duplicate": npc.actor_id},
+                    observation={
+                        "reason": f"duplicate actor_id {npc.actor_id!r}; skipped"
+                    },
+                )
+                continue
+            seen.add(npc.actor_id)
             ctx = dict(base_context)
             ctx["record_action"] = self._make_npc_recorder(running, npc)
             if npc.requires_llm:
@@ -658,7 +675,8 @@ class EpisodeService:
             npc.start(MappingProxyType(ctx))
             if npc.broken_reason is not None:
                 self._record_npc_broken(running, npc)
-        running.npcs = npcs
+            started.append(npc)
+        running.npcs = started
 
     def _step_npcs(self, running: _RunningEpisode) -> None:
         if not running.npcs:
@@ -731,6 +749,11 @@ class EpisodeService:
             return
         running.tick_stop.set()
         running.tick_thread.join(timeout=5)
+        if running.tick_thread.is_alive():
+            # A tick outran the join window; leave the daemon to exit on its own
+            # rather than nulling the Event out from under the live loop.
+            _log.warning("auto-tick daemon still draining after stop; leaving it")
+            return
         running.tick_thread = None
         running.tick_stop = None
 
@@ -834,10 +857,13 @@ def _auto_tick_loop(
     running: _RunningEpisode,
     rate_hz: float,
 ) -> None:
-    if running.tick_stop is None:
+    stop = running.tick_stop
+    if stop is None:
         return
+    # Bind the Event once: _stop_auto_tick may null running.tick_stop while this
+    # loop is still draining, and re-reading it would crash on None.wait.
     interval = 1.0 / rate_hz
-    while not running.tick_stop.wait(interval):
+    while not stop.wait(interval):
         try:
             svc.tick(running.handle)
         except EpisodeError:
