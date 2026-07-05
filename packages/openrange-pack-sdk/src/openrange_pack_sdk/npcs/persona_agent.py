@@ -297,7 +297,6 @@ class PersonaAgent(AgentNPC):
                     "actor_kind": "npc",
                     "display_name": self._name or self.actor_id,
                     "role": self._role,
-                    "goal": self._goal,
                 }
             )
         super().start(context)
@@ -472,7 +471,7 @@ def _comms_adapter(
             """Send an email. Args: to (recipient), subject, body."""
             result = str(fn(actor_id, to, subject, body))
             if on_speak is not None:
-                on_speak(body or subject, {"to": to})
+                on_speak(body or subject, {"to": to, "kind": "mail"})
             return result
 
         return mail_send

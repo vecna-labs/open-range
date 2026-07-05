@@ -100,3 +100,75 @@ def test_stop_auto_tick_keeps_event_while_daemon_still_alive(tmp_path: Path) -> 
         assert running.tick_thread is not None
     finally:
         svc.close()
+
+
+class _ToolCallingBackend:
+    """An NPC backend whose agent actually invokes the bound comms tools, so the
+    persona's _emit_speak fires (a text-only fake would record nothing)."""
+
+    def preflight(self) -> None:
+        pass
+
+    def build_agent(self, *, system_prompt: str, tools: Any = ()) -> Any:
+        by_name = {getattr(t, "__name__", ""): t for t in tools}
+
+        def agent(prompt: str) -> object:
+            if "chat_post" in by_name:
+                by_name["chat_post"](channel="ops", text="standup at 10")
+            if "mail_send" in by_name:
+                by_name["mail_send"](to="sam", subject="q3", body="need the numbers")
+            return {"message": "ok"}
+
+        return agent
+
+
+def test_persona_seats_and_speaks_on_the_dashboard(tmp_path: Path) -> None:
+    # front-back regression: a persona emits present (seat) on start and a speak
+    # event when it uses a comms tool, both attributed to its actor_id — asserted
+    # through the REAL DashboardView bridge, not the backend's belief.
+    from openrange.dashboard import DashboardView
+
+    entry = {
+        "type": "cyber.persona",
+        "config": {
+            "name": "Dana",
+            "role": "accountant",
+            "tools": ["chat_post", "mail_send"],
+            "cadence_ticks": 1,
+        },
+    }
+    snap, task = _admit([entry])
+    run_root = tmp_path / "ep"
+    run_root.mkdir()
+    dash = DashboardView(
+        snap,
+        event_log_path=run_root / "dashboard.events.jsonl",
+        state_path=run_root / "dashboard.json",
+        reset_artifacts=True,
+    )
+    svc = EpisodeService(
+        WebappPack(), run_root, dashboard=dash, npc_agent_backend=_ToolCallingBackend()
+    )
+    try:
+        handle = svc.start_episode(snap, task.id)
+        svc.tick(handle)  # persona acts -> uses comms tools -> speaks
+        svc.stop_episode(handle)
+    finally:
+        svc.close()
+
+    actions: list[dict[str, Any]] = []
+    for event in dash.bridge.snapshot_buffer():
+        e = event.as_dict()
+        data = e.get("data")
+        if e.get("actor") == "Dana" and isinstance(data, dict):
+            action = data.get("action")
+            if data.get("actor_kind") == "npc" and isinstance(action, dict):
+                actions.append(action)
+    assert actions, "no npc events attributed to the seated persona 'Dana'"
+    # the persona seats (present) and then speaks a callout, both as 'Dana'
+    assert any(a.get("present") is True for a in actions)
+    speaks = [a for a in actions if a.get("speak")]
+    assert any(a["speak"] == "standup at 10" for a in speaks)
+    assert all(a["display_name"] == "Dana" for a in speaks)
+    # mail derives the 'email' callout class via kind (P2 render fix)
+    assert any(a.get("kind") == "mail" for a in actions)

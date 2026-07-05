@@ -1102,7 +1102,9 @@ function applySimulationEvent(event) {
       personaId: actorId,
       displayName: action.display_name || actorId,
       activity: action.activity || (action.move ? "walking" : "speaking"),
-      channel: action.channel || (action.kind === "mail" ? "email" : "chat"),
+      // callout style is a known class (email/chat); the channel name is not a
+      // CSS variant, so derive from kind rather than the raw channel string.
+      channel: action.kind === "mail" ? "email" : "chat",
       text: action.speak,
     });
     pushToast({
@@ -2011,7 +2013,7 @@ function renderWorldNetwork(root) {
 
 function renderWorldCast(root) {
   const personas = model.topology.green_personas || [];
-  if (!personas.length) return root.innerHTML = emptyCard("No personas seated. Add cyber.office_persona NPCs to the manifest.");
+  if (!personas.length) return root.innerHTML = emptyCard("No personas seated. Add cyber.persona NPCs to the manifest.");
   root.innerHTML = personas.map(p => `
     <div class="persona-row">
       <span class="name">${escapeHtml(p.display_name || p.id)}</span>

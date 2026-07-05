@@ -213,8 +213,11 @@ data, not code. Register it once and declare instances in the manifest:
   "channels": ["finance"], "cadence_ticks": 5}}]}
 ```
 
-Every persona entry needs a non-empty `name` — the dashboard seats and animates
-personas by that name (an anonymous persona still runs but isn't seated).
+Every persona entry needs a non-empty `name` — the dashboard seats a persona at
+a desk by that name and animates it (a speech bubble + activity line) each time
+it uses a comms tool; a persona with no comms tool is seated but silent, and it
+doesn't walk between desks. An anonymous persona still runs but isn't pre-seated
+(it late-spawns at the chat hub when it first acts).
 
 On a **graded** run, give personas only the world-mediated comms tools
 (`mail_send`/`mail_read`/`chat_post`/`chat_read`), not `http_get`: comms are

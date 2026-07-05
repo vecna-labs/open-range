@@ -135,10 +135,10 @@ class _WebappRuntime(SubprocessRuntime):
             "requests_made": requests_made,
             "leaked_secret_ids": sorted(leaked),
             "endpoint_serves_200": self._probe_root_200(),
-            # NPC cover traffic, each line attributed to its sender actor id so a
-            # grader can subtract known decoys from anything the SUT emitted.
-            # Tail-bounded so a long, chatty episode can't bloat the graded state
-            # (and the dashboard turn that embeds it).
+            # NPC cover traffic, each line attributed to its sender actor id and
+            # available to a grader that wants to separate decoy noise from the
+            # SUT (no family reads it yet). Tail-bounded so a long, chatty episode
+            # can't bloat the graded state (and the dashboard turn that embeds it).
             "npc_mail": [
                 m.as_dict() for m in self._mailbox.all()[-_MAX_COLLECTED_COMMS:]
             ],
