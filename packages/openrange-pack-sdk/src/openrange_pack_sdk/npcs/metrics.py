@@ -1,10 +1,6 @@
-"""Deterministic, model-free metrics for a persona population.
-
-These make the feature's claims measurable in CI (no model needed): a sampled
-population is diverse (role entropy), and the persona prompt doesn't read like an
-assistant (tell rate). Live believability against a real model — an LLM-judge
-adherence score, a non-degeneracy A/B — is a separate, model-gated follow-up.
-"""
+"""Deterministic, model-free metrics for a persona population: whether a sampled
+population is diverse (role entropy) and whether the persona prompt reads like an
+assistant rather than a character (tell rate)."""
 
 from __future__ import annotations
 
@@ -13,11 +9,8 @@ import re
 from collections import Counter
 from collections.abc import Iterable
 
-# Phrases a helpful-assistant or a model reasoning out loud emits, but an
-# in-character persona should not. The meta-reasoning group (the second block)
-# was added after a small local model leaked its chain of thought as prose
-# ("the user wants me to act as Dana...") — a real believability failure the
-# helpful-assistant patterns alone missed.
+# Phrases a helpful assistant, or a model reasoning out loud, emits — an
+# in-character persona should not.
 _ASSISTANT_TELLS = (
     re.compile(r"\bas an ai\b"),
     re.compile(r"\blanguage model\b"),
