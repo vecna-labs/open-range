@@ -18,8 +18,12 @@ from urllib.request import urlopen
 
 from graphschema import WorldGraph
 from openrange_pack_sdk import (
+    ChatStore,
+    MailboxStore,
     OpenRangeError,
     SubprocessRuntime,
+    surface_chat,
+    surface_mailbox,
 )
 
 from cyber_webapp.codegen import _realize_graph
@@ -38,6 +42,8 @@ from cyber_webapp.container import (
 
 _CONTAINER_LOG_PATH = "/app/requests.jsonl"
 _CONTAINER_PORT = "8000"
+# Most recent NPC comms lines surfaced to the grader (bounds a chatty episode).
+_MAX_COLLECTED_COMMS = 200
 
 
 class WebappRuntimeError(OpenRangeError):
@@ -59,6 +65,12 @@ class _WebappRuntime(SubprocessRuntime):
         super().__init__(graph)
         self._base_url: str | None = None
         self._log_offset: int = 0
+        # In-process comms channels for NPC cover traffic. Identity-neutral:
+        # each persona injects its own sender NPC-side, so the drained log below
+        # attributes every message and a grader can separate NPC noise from the
+        # SUT by actor id.
+        self._mailbox = MailboxStore()
+        self._chat = ChatStore()
 
     def surface_extras(self) -> Mapping[str, Any]:
         base_url = self._base_url
@@ -71,7 +83,12 @@ class _WebappRuntime(SubprocessRuntime):
         def http_get_json(path: object) -> object:
             return json.loads(http_get(path).decode())
 
-        return {"http_get": http_get, "http_get_json": http_get_json}
+        return {
+            "http_get": http_get,
+            "http_get_json": http_get_json,
+            **surface_mailbox(self._mailbox),
+            **surface_chat(self._chat),
+        }
 
     def poll_events(self) -> tuple[Mapping[str, Any], ...]:
         raw = self._read_log_bytes()
@@ -118,6 +135,14 @@ class _WebappRuntime(SubprocessRuntime):
             "requests_made": requests_made,
             "leaked_secret_ids": sorted(leaked),
             "endpoint_serves_200": self._probe_root_200(),
+            # NPC cover traffic, each line attributed to its sender actor id and
+            # available to a grader that wants to separate decoy noise from the
+            # SUT (no family reads it yet). Tail-bounded so a long, chatty episode
+            # can't bloat the graded state (and the dashboard turn that embeds it).
+            "npc_mail": [
+                m.as_dict() for m in self._mailbox.all()[-_MAX_COLLECTED_COMMS:]
+            ],
+            "npc_chat": [m.as_dict() for m in self._chat.all()[-_MAX_COLLECTED_COMMS:]],
         }
 
     def checkpoint(self) -> Any:
@@ -144,6 +169,10 @@ class _WebappRuntime(SubprocessRuntime):
     def reset_episode(self) -> None:
         self._clear_request_logs()
         self._log_offset = 0
+        # Fresh comms per episode so a warm-pooled world never leaks NPC traffic
+        # across episodes.
+        self._mailbox = MailboxStore()
+        self._chat = ChatStore()
         if self._solver_root is not None:
             (self._solver_root / self.RESULT_FILE).unlink(missing_ok=True)
 

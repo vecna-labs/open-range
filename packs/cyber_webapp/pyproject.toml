@@ -25,6 +25,8 @@ dependencies = [
 "cyber.curious_employee" = "cyber_webapp.npcs.curious_employee:factory"
 "cyber.office_chatter" = "cyber_webapp.npcs.office_chatter:factory"
 "cyber.office_persona" = "cyber_webapp.npcs.office_persona:factory"
+# generic persona NPC lives in the shared SDK; the pack only binds it
+"cyber.persona" = "openrange_pack_sdk.npcs.persona_agent:factory"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cyber_webapp"]

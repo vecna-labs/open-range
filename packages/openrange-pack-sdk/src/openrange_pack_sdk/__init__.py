@@ -66,6 +66,14 @@ from openrange_pack_sdk._types import (
     TaskSpec,
     resolve_backing,
 )
+from openrange_pack_sdk.comms import (
+    ChatStore,
+    MailboxStore,
+    surface_chat,
+    surface_mailbox,
+)
+from openrange_pack_sdk.memory import DictMemory
+from openrange_pack_sdk.npcs import PersonaAgent, render_persona, sample_persona
 
 __all__ = [
     "AgentBackend",
@@ -76,9 +84,17 @@ __all__ = [
     "BuildEvent",
     "BuildResult",
     "Builder",
+    "ChatStore",
+    "DictMemory",
     "EpisodeReportLike",
     "EpisodeResult",
     "FeasibilityVerdict",
+    "MailboxStore",
+    "PersonaAgent",
+    "render_persona",
+    "sample_persona",
+    "surface_chat",
+    "surface_mailbox",
     "LLMBackend",
     "LLMBackendError",
     "LLMError",

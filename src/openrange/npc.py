@@ -6,9 +6,12 @@ The ``NPC`` / ``AgentNPC`` ABCs and the ``NPCError`` exception live in
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 
 from openrange_pack_sdk import NPC, NPCError
+
+_log = logging.getLogger(__name__)
 
 NPC_ENTRY_POINT_GROUP = "openrange.npcs"
 
@@ -108,5 +111,15 @@ def resolve_manifest_npcs(
                 slot_config = dict(config_raw, _replication_suffix=f"-{index + 1}")
             else:
                 slot_config = config_raw
-            npcs.append(reg.resolve(npc_type, slot_config))
+            try:
+                npcs.append(reg.resolve(npc_type, slot_config))
+            except NPCError:
+                raise  # unknown type / bad factory contract — authoring error
+            except Exception as exc:  # noqa: BLE001 — one bad slot must not kill the run
+                _log.warning(
+                    "npc %r slot %d failed to construct (%s); skipping",
+                    npc_type,
+                    index,
+                    exc,
+                )
     return npcs

@@ -39,7 +39,7 @@ jobs:
         run: uv run mypy src tests examples main.py packages/openrange-trl/src packages/openrange-rllm/src
 
       - name: Test with coverage
-        run: uv run coverage run -m pytest tests
+        run: uv run coverage run -m pytest
 
       - name: Enforce coverage
         run: uv run coverage report

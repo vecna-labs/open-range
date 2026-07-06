@@ -192,6 +192,76 @@ a human-like persona answering questions
 a background process writing logs
 ```
 
+### Adding a persona NPC (no per-pack code)
+
+`PersonaAgent` (in `openrange_pack_sdk.npcs.persona_agent`) is a generic,
+config-driven NPC that works in any pack: it wraps whatever callables your pack
+surfaces into the per-tick interface, so you define a believable inhabitant with
+data, not code. Register it once and declare instances in the manifest:
+
+```toml
+# your pack's pyproject.toml
+[project.entry-points."openrange.npcs"]
+"mypack.persona" = "openrange_pack_sdk.npcs.persona_agent:factory"
+```
+
+```json
+{"npc": [{"type": "mypack.persona", "count": 3, "config": {
+  "name": "Dana", "role": "accountant",
+  "goal": "reconcile invoices with a colleague",
+  "tools": ["mail_send", "mail_read"],
+  "channels": ["finance"], "cadence_ticks": 5}}]}
+```
+
+Every persona entry needs a non-empty `name` — the dashboard seats a persona at
+a desk by that name and animates it (a speech bubble + activity line) each time
+it uses a comms tool; a persona with no comms tool is seated but silent, and it
+doesn't walk between desks. An anonymous persona still runs but isn't pre-seated
+(it late-spawns at the chat hub when it first acts).
+
+On a **graded** run, give personas only the world-mediated comms tools
+(`mail_send`/`mail_read`/`chat_post`/`chat_read`), not `http_get`: comms are
+attributed to the sender and drained separately, but persona `http_get` traffic
+lands in the same request log as the system-under-test — unattributed — so it
+pollutes `requests_made`/`leaked_secret_ids` and the pentest `reached_endpoint`
+subgoal. It's fine for a non-graded/demo world.
+
+Config keys:
+
+| key | meaning |
+|-----|---------|
+| `name`, `role`, `backstory`, `tone` | who the persona is (rendered to the system prompt) |
+| `goal` | its own independent objective (what stops assistant-like helpfulness) |
+| `traits` | how it comes across — flags `{"terse": true}` or numeric intensities `{"curious": 0.9, "patient": 0.3}` |
+| `channels` | chat channels it uses (grounds `chat_post`/`chat_read`) |
+| `tools` | which surface keys it may use; only the ones your pack actually provides are bound |
+| `cadence_ticks` | acts once every N ticks (auto phase-staggered across a population) |
+| `long_term_memory` | opt-in scoped note store (default off) |
+
+For a **diverse population** instead of `count=n` clones, generate configs with
+`sample_persona` (deterministic, no model) and pass your pack's own role
+vocabulary:
+
+```python
+from openrange_pack_sdk import sample_persona
+roster = [sample_persona(i, roles=["accountant", "it admin", "exec"]) for i in range(50)]
+# each gets a distinct name, role, and a numeric trait vector
+```
+
+Comms are through the world: your pack surfaces `mail_send`/`mail_read`/
+`chat_post`/`chat_read` from `surface_extras()` (see
+`openrange_pack_sdk.comms.surface_mailbox`/`surface_chat`) and drains the stores
+in `collect_extras()` for grading — the persona injects its own identity as the
+sender, so cover traffic is attributable and unspoofable.
+
+**Model:** a persona needs an `AgentBackend`. `RunConfig.npc_llm_model` (a
+provider string) drives the default Bedrock backend; to run a **local** model,
+pass a custom `RunConfig.npc_agent_backend` wrapping e.g.
+`strands.models.OllamaModel`.
+
+The cyber webapp registers both `cyber.persona` (this generic class) and the
+older bespoke `cyber.office_persona`; prefer `cyber.persona` for new worlds.
+
 ## Episode checks and rewards
 
 OpenRange checks what happened. It does not define the training reward.
