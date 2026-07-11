@@ -155,6 +155,23 @@ def _openapi(query, state):
     )
 
 
+# A shared team chat board. NPCs post cover traffic (and, in a leak scenario, a
+# secret) via POST; a direct request reads it back via GET. This is how an NPC's
+# in-world message becomes observable to an agent that can only reach the app.
+def _team_chat(query, state):
+    del query
+    return (200, {"Content-Type": "application/json"},
+            json.dumps(state.setdefault("team_chat", [])).encode())
+
+
+def _team_chat_post(query, state):
+    text = (query.get("text") or [""])[0]
+    if text:
+        state.setdefault("team_chat", []).append(
+            {"sender": (query.get("sender") or ["anon"])[0], "text": text})
+    return (200, {"Content-Type": "application/json"}, b'{"ok": true}')
+
+
 ROUTES = {
 {% for route in routes %}
     {{ route.path | tojson }}: {{ route.handler }},
@@ -162,6 +179,8 @@ ROUTES = {
 }
 ROUTES.setdefault("/", _index)
 ROUTES.setdefault("/openapi.json", _openapi)
+ROUTES.setdefault("/team/chat", _team_chat)
+ROUTES.setdefault("/team/chat/post", _team_chat_post)
 
 # Internal endpoints, dispatched to only by the SSRF proxy — never served to a direct
 # request. This table enforces network segmentation when one process holds the whole
@@ -180,6 +199,7 @@ _ROUTE_METHODS = {
     {{ route.path | tojson }}: {{ (route.method | default("GET")) | tojson }},
 {% endfor %}
 }
+_ROUTE_METHODS.setdefault("/team/chat/post", "POST")
 
 
 class Handler(BaseHTTPRequestHandler):

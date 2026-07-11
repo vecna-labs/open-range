@@ -15,7 +15,7 @@ from openrange_pack_sdk import (
 
 from cyber_webapp.builder import WebappBuilder
 from cyber_webapp.container import minimum_backing
-from cyber_webapp.families import WebappBuild, WebappPentest
+from cyber_webapp.families import WebappBuild, WebappPentest, WebappSecretLeak
 from cyber_webapp.invariants import (
     credential_reuse_binding,
     credential_value_binding,
@@ -83,7 +83,7 @@ class WebappPack(Pack):
         return minimum_backing(graph)
 
     def task_families(self) -> list[TaskFamily]:
-        return [WebappBuild(), WebappPentest()]
+        return [WebappBuild(), WebappPentest(), WebappSecretLeak()]
 
 
 __all__ = [
@@ -95,6 +95,7 @@ __all__ = [
     "WebappPack",
     "WebappPentest",
     "WebappRuntimeError",
+    "WebappSecretLeak",
     "WebappRuntime",
     "credential_reuse_binding",
     "credential_value_binding",

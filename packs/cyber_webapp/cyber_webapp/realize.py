@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 from urllib.error import URLError
+from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from graphschema import WorldGraph
@@ -83,11 +84,27 @@ class _WebappRuntime(SubprocessRuntime):
         def http_get_json(path: object) -> object:
             return json.loads(http_get(path).decode())
 
+        chat = dict(surface_chat(self._chat))
+        store_post = chat["chat_post"]
+
+        def chat_post(sender: object, channel: object, text: object) -> object:
+            # Mirror the message onto the served /team/chat board so an agent that
+            # can only reach the app observes it. The in-process store stays the
+            # attributed source of truth; forwarding is best-effort.
+            result = store_post(sender, channel, text)
+            try:
+                body = urlencode({"sender": str(sender), "text": str(text)}).encode()
+                urlopen(base_url + "/team/chat/post", data=body, timeout=5).read()
+            except OSError:
+                pass
+            return result
+
+        chat["chat_post"] = chat_post
         return {
             "http_get": http_get,
             "http_get_json": http_get_json,
             **surface_mailbox(self._mailbox),
-            **surface_chat(self._chat),
+            **chat,
         }
 
     def poll_events(self) -> tuple[Mapping[str, Any], ...]:

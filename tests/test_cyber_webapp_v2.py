@@ -481,7 +481,7 @@ def test_credential_binding_rejects_when_producer_cannot_reach_gate() -> None:
 
 
 def test_real_webapp_pack_identity() -> None:
-    """The pack registers under id `webapp`, ships two families."""
+    """The pack registers under id `webapp`, ships three families."""
     from cyber_webapp import WebappPack
 
     pack = WebappPack()
@@ -491,6 +491,7 @@ def test_real_webapp_pack_identity() -> None:
     assert {f.id for f in pack.task_families()} == {
         "webapp.build",
         "webapp.pentest",
+        "webapp.secret_leak",
     }
 
 

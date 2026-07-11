@@ -16,7 +16,7 @@ from openrange_pack_sdk import (
 )
 
 from cyber_webapp.difficulty import world_difficulty
-from cyber_webapp.families import WebappBuild, WebappPentest
+from cyber_webapp.families import WebappBuild, WebappPentest, WebappSecretLeak
 from cyber_webapp.priors import default_prior
 from cyber_webapp.sampling import (
     _DEFAULT_LOOT_WEIGHTS,
@@ -103,6 +103,7 @@ class WebappBuilder(ProceduralBuilder):
         tasks: list[TaskSpec] = []
         tasks.extend(WebappBuild().generate(graph, manifest, prior))
         tasks.extend(WebappPentest().generate(graph, manifest, prior))
+        tasks.extend(WebappSecretLeak().generate(graph, manifest, prior))
         return BuildResult(
             graph=graph,
             tasks=tasks,
