@@ -84,6 +84,10 @@ class SweFix(TaskFamily):
         all_ids = [*f2p, *p2p]
 
         gold_report = run_tests({**base, **gold}, test_files, all_ids)
+        if gold_report.error:
+            return FeasibilityVerdict(
+                False, f"gold suite never reported: {gold_report.error}"
+            )
         if not gold_report.all_pass(all_ids):
             return FeasibilityVerdict(
                 False,
@@ -92,6 +96,12 @@ class SweFix(TaskFamily):
             )
 
         base_report = run_tests(base, test_files, all_ids)
+        # An unreported suite is all-False, which *satisfies* all_fail — the world
+        # would admit with its bug never demonstrated. Admission fails closed.
+        if base_report.error:
+            return FeasibilityVerdict(
+                False, f"base suite never reported: {base_report.error}"
+            )
         if not base_report.all_fail(f2p):
             return FeasibilityVerdict(
                 False,
@@ -133,6 +143,11 @@ class SweFix(TaskFamily):
         return EpisodeResult(
             success=resolved,
             subgoals={tid: report.results.get(tid, False) for tid in all_ids},
+            error=report.error,
+            # pass_to_pass is green before the agent edits anything —
+            # check_feasibility rejects the task otherwise — so it is a
+            # precondition to preserve, not partial credit to collect.
+            baseline=dict.fromkeys(p2p, True),
             reason=(
                 "all held-out tests pass"
                 if resolved

@@ -15,9 +15,11 @@ This is the reference half of the training-integration standard
 is the first consumer. Three choices keep it trainer-agnostic:
 
 - **Dense by default.** ``episode_reward`` gives a solved episode ``1.0`` and an
-  unsolved one the *fraction* of its subgoals that passed — partial credit a
-  trainer can learn from — with no per-domain knowledge. A pack that wants
-  bespoke shaping writes its own function returning a ``Reward``.
+  unsolved one the *fraction* of its still-in-play subgoals that passed — those
+  the result's ``baseline`` did not already grant — and ``0.0`` when a
+  precondition regressed. Partial credit a trainer can learn from, with no
+  per-domain knowledge. A pack that wants bespoke shaping writes its own
+  function returning a ``Reward``.
 - **The curriculum dimension rides along.** Each ``Trajectory`` is tagged with
   the ``snapshot_id`` it ran against, so trajectories logged across an
   ``evolve(...)`` curriculum stay attributable to the exact (hardened) world
@@ -41,7 +43,9 @@ from openrange.core.episode import AgentTurn, EpisodeReport
 class Reward:
     """A shaped reward. ``scalar`` (in ``[0, 1]``) is what a scalar-reward
     trainer reads; ``components`` is the per-subgoal vector for trainers that
-    consume structured signals."""
+    consume structured signals, each also in ``[0, 1]`` and covering the
+    subgoals that were still in play. A shaper that leaves it empty gives the
+    curriculum no regret signal — priority then reads learnability alone."""
 
     scalar: float
     components: Mapping[str, float] = field(default_factory=dict)
@@ -98,18 +102,30 @@ class Trajectory:
 def episode_reward(report: EpisodeReport) -> Reward:
     """Shape an ``EpisodeReport`` into a dense, trainer-agnostic ``Reward``.
 
-    ``components`` maps each subgoal to ``1.0`` / ``0.0``. ``scalar`` is ``1.0``
-    for a solved episode; otherwise the fraction of subgoals that passed (partial
-    credit), or ``0.0`` when the pack reports no subgoals.
+    ``components`` holds the subgoals still in play — every one the result's
+    ``baseline`` did not already grant, plus any precondition that regressed —
+    each ``1.0`` / ``0.0``. ``scalar`` is ``1.0`` for a solved episode, otherwise
+    the fraction of those earned, and ``0.0`` when nothing was in play or a
+    precondition regressed.
     """
-    subgoals = report.episode_result.subgoals
-    components = {str(k): (1.0 if v else 0.0) for k, v in subgoals.items()}
+    result = report.episode_result
+    baseline = result.baseline
+    # A precondition stays out of the vector only while it holds: drop it when
+    # it regressed and the loss becomes invisible to everything downstream.
+    components = {
+        str(k): (1.0 if v else 0.0)
+        for k, v in result.subgoals.items()
+        if not (baseline.get(k, False) and v)
+    }
     if report.passed:
-        scalar = 1.0
-    elif components:
-        scalar = sum(components.values()) / len(components)
-    else:
-        scalar = 0.0
+        return Reward(scalar=1.0, components=components)
+    regressed = any(
+        was_met and not result.subgoals.get(name, False)
+        for name, was_met in baseline.items()
+    )
+    if regressed or not components:
+        return Reward(scalar=0.0, components=components)
+    scalar = sum(components.values()) / len(components)
     return Reward(scalar=scalar, components=components)
 
 

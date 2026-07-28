@@ -98,6 +98,10 @@ class SweBuild(TaskFamily):
         all_ids = [*units, *integration]
 
         gold_report = run_tests({**base, **gold}, test_files, all_ids)
+        if gold_report.error:
+            return FeasibilityVerdict(
+                False, f"gold suite never reported: {gold_report.error}"
+            )
         if not gold_report.all_pass(all_ids):
             return FeasibilityVerdict(
                 False,
@@ -106,6 +110,12 @@ class SweBuild(TaskFamily):
             )
 
         base_report = run_tests(base, test_files, integration)
+        # An unreported suite is all-False, which *satisfies* all_fail — the world
+        # would admit with its gate never demonstrated. Admission fails closed.
+        if base_report.error:
+            return FeasibilityVerdict(
+                False, f"base suite never reported: {base_report.error}"
+            )
         if not base_report.all_fail(integration):
             return FeasibilityVerdict(
                 False,
@@ -136,6 +146,8 @@ class SweBuild(TaskFamily):
         test_files = str_map(target.suite.attrs.get("test_files"))
         all_ids = [*units, *integration]
         report = run_tests(tree, test_files, all_ids)
+        if report.error:
+            return EpisodeResult(success=False, reason=report.error, error=report.error)
         # Integration GATES success; units + integration both SHAPE the subgoal
         # vector the training seam turns into dense partial credit.
         composed = report.all_pass(integration)

@@ -42,9 +42,15 @@ _REPORT = "openrange_report.xml"
 
 @dataclass(frozen=True, slots=True)
 class TestReport:
-    """Per-test-id pass/fail from one suite run. ``True`` == the test passed."""
+    """Per-test-id pass/fail from one suite run. ``True`` == the test passed.
+
+    ``error`` is set when the suite never reported: a timeout, a missing or
+    unparseable report. Every id then reads as failed, which is right for a
+    gate and wrong as a grade — the caller separates the two.
+    """
 
     results: Mapping[str, bool]
+    error: str | None = None
 
     def all_pass(self, ids: Sequence[str]) -> bool:
         return bool(ids) and all(self.results.get(i, False) for i in ids)
@@ -95,27 +101,30 @@ def run_tests(
             root=root,
             timeout=timeout,
         )
-        results = _parse_report(report_path, test_ids, proc)
-    return TestReport(results=results)
+        results, error = _parse_report(report_path, test_ids, proc)
+    return TestReport(results=results, error=error)
 
 
 def _parse_report(
     report_path: Path,
     test_ids: Sequence[str],
     proc: SandboxResult,
-) -> dict[str, bool]:
+) -> tuple[dict[str, bool], str | None]:
     """Map each requested nodeid to pass/fail from the JUnit XML.
 
     A test passes iff it ran with no failure / error / skip. Ids missing from the
-    report (collection error, timeout, crash) are failures by construction.
+    report (collection error, timeout, crash) are failures by construction. The
+    second element names the reason the suite never reported at all.
     """
     outcomes: dict[str, bool] = dict.fromkeys(test_ids, False)
-    if proc.timed_out or not report_path.exists():
-        return outcomes
+    if proc.timed_out:
+        return outcomes, "suite timed out"
+    if not report_path.exists():
+        return outcomes, "suite produced no report"
     try:
         tree = ET.parse(report_path)
     except ET.ParseError:
-        return outcomes
+        return outcomes, "suite report is unparseable"
     by_id: dict[str, bool] = {}
     for case in tree.iter("testcase"):
         nodeid = _nodeid(case)
@@ -126,7 +135,7 @@ def _parse_report(
     for tid in test_ids:
         if tid in by_id:
             outcomes[tid] = by_id[tid]
-    return outcomes
+    return outcomes, None
 
 
 def _nodeid(case: ET.Element) -> str | None:

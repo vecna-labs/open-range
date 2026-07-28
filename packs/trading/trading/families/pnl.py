@@ -131,6 +131,10 @@ class TradePnl(TaskFamily):
                 "return_target_met": report.return_met,
                 "drawdown_ok": report.drawdown_ok,
             },
+            # Never trading leaves equity flat, so max_drawdown is 0 and the
+            # limit is met: staying out of the market must not read as half a
+            # solved task.
+            baseline={"drawdown_ok": True},
             reason=report.reason,
         )
 

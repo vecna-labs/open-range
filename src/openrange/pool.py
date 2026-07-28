@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from openrange_pack_sdk import Mutation, Pack, Snapshot
 
@@ -39,6 +39,32 @@ GateFactory = Callable[[Snapshot], EvolutionGate]
 
 _STALENESS_STEP = 0.1
 _MAX_PRIORITY = 2.0
+_HISTORY_LIMIT = 64
+
+
+@dataclass(frozen=True, slots=True)
+class RoundOutcome:
+    """What one round measured for one world in the pool.
+
+    Kept per member (the most recent :data:`_HISTORY_LIMIT` rounds) so a caller
+    can regress ``difficulty`` against observed solve rate instead of trusting
+    it, and so a scorer can read a world's trend rather than only the priority
+    that overwrote it.
+    """
+
+    round_index: int
+    difficulty: float
+    priority: float
+    rewards: tuple[float, ...]
+    passed: int
+
+    @property
+    def solve_rate(self) -> float:
+        return self.passed / len(self.rewards) if self.rewards else 0.0
+
+    @property
+    def mean_reward(self) -> float:
+        return sum(self.rewards) / len(self.rewards) if self.rewards else 0.0
 
 
 @dataclass
@@ -49,6 +75,7 @@ class _Member:
     family: str
     difficulty: float
     priority: float = 1.0
+    history: list[RoundOutcome] = field(default_factory=list)
 
     @property
     def key(self) -> tuple[str, str]:
@@ -136,18 +163,16 @@ def _mean_pass_rate(report_groups: Iterable[Sequence[EpisodeReport]]) -> float:
     return sum(rates) / len(rates) if rates else 0.0
 
 
-def _member_priority(
-    reports: Sequence[EpisodeReport], reward_fn: RewardFn = episode_reward
-) -> float:
-    scalars = [reward_fn(r).scalar for r in reports]
-    mean = sum(scalars) / len(scalars)
+def _member_priority(rewards: Sequence[Reward]) -> float:
+    mean = sum(r.scalar for r in rewards) / len(rewards)
     learnability = 1.0 - abs(2.0 * mean - 1.0)
-    gaps = []
-    for report in reports:
-        subgoals = report.episode_result.subgoals
-        if subgoals:
-            achieved = sum(1 for hit in subgoals.values() if hit)
-            gaps.append(1.0 - achieved / len(subgoals))
+    # Regret reads the shaped components, so a subgoal the world granted for free
+    # cannot masquerade as headroom the agent failed to reach.
+    gaps = [
+        1.0 - sum(r.components.values()) / len(r.components)
+        for r in rewards
+        if r.components
+    ]
     regret = sum(gaps) / len(gaps) if gaps else 0.0
     return learnability + regret
 
@@ -182,6 +207,7 @@ class WorldPool:
         self._max_size = max_size
         self._mix_floor = mix_floor
         self._last_difficulty_gain: float | None = None
+        self._round = 0
 
     @classmethod
     def seed(
@@ -216,6 +242,18 @@ class WorldPool:
 
     def snapshots(self) -> list[Snapshot]:
         return _snapshots_of(self._members.values())
+
+    def history(self) -> dict[tuple[str, str], tuple[RoundOutcome, ...]]:
+        """Per-member measured rounds, oldest first, for members that have run.
+
+        The join a caller needs to check ``difficulty`` against what agents
+        actually did with these worlds; the pool itself never reads it.
+        """
+        return {
+            key: tuple(member.history)
+            for key, member in self._members.items()
+            if member.history
+        }
 
     def round_rows(self, *, groups: int, num_generations: int) -> list[PromptRow]:
         return _rows_for(self._select(groups), num_generations)
@@ -259,14 +297,49 @@ class WorldPool:
         max_repairs: int = 2,
         reward_fn: RewardFn = episode_reward,
     ) -> bool:
+        self._round += 1
+        graded: dict[tuple[str, str], Sequence[EpisodeReport]] = {}
         for member in self._members.values():
-            ran = reports.get(member.key)
+            # An errored episode graded nothing, so it is not evidence about the
+            # world; a round of only those leaves the member unmeasured.
+            attempted = reports.get(member.key) or ()
+            ran = [
+                report for report in attempted if report.episode_result.error is None
+            ]
             if ran:
-                member.priority = _member_priority(ran, reward_fn)
+                graded[member.key] = ran
+                # One pass: reward_fn is caller-supplied and may be expensive.
+                rewards = [reward_fn(report) for report in ran]
+                member.priority = _member_priority(rewards)
+                member.history.append(
+                    RoundOutcome(
+                        round_index=self._round,
+                        difficulty=member.difficulty,
+                        priority=member.priority,
+                        rewards=tuple(reward.scalar for reward in rewards),
+                        passed=sum(1 for report in ran if report.passed),
+                    )
+                )
+                del member.history[:-_HISTORY_LIMIT]
+            elif attempted:
+                # Ran and graded nothing, so it taught nothing: sort it to the
+                # back. Holding priority steady is not neutral — priority is
+                # comparative, and the staleness arm below would still march a
+                # world nobody can grade to the front one skipped round at a
+                # time. Staleness is also how it recovers if the failure was
+                # transient.
+                member.priority = 0.0
+                _LOG.warning(
+                    "pool: %s graded nothing this round (%d errored episode(s))",
+                    member.key,
+                    len(attempted),
+                )
             else:
                 member.priority = min(member.priority + _STALENESS_STEP, _MAX_PRIORITY)
+        # Evolution reads the same graded subset: an ungraded round must not
+        # steer the frontier either.
         grown, capped, gain = self._grow(
-            reports, pack, policy, gate, gate_factory, evolve_top, max_repairs
+            graded, pack, policy, gate, gate_factory, evolve_top, max_repairs
         )
         self._last_difficulty_gain = gain
         self._bound(grown)

@@ -16,7 +16,7 @@ Three layers:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +58,8 @@ from openrange.core.curriculum import (
     auto_evolve,
     direction_from_reports,
 )
-from openrange.core.episode import EpisodeService
+from openrange.core.episode import EpisodeReport, EpisodeService
+from openrange.pool import _HISTORY_LIMIT, WorldPool
 
 
 @dataclass(frozen=True)
@@ -781,6 +782,9 @@ def test_stop_episode_records_a_failed_grade_when_the_grader_raises(
         report = svc.stop_episode(handle)
         assert report.passed is False
         assert "grader boom" in report.episode_result.reason
+        # The harness failed, not the agent: without this the curriculum reads
+        # a crashed grader as a world the agent could not solve.
+        assert report.episode_result.error == "RuntimeError: grader boom"
         # collect() ran before the grader raised, so its state survives in the report.
         assert dict(report.final_state) == collected
         assert handle.id not in svc._episodes
@@ -790,6 +794,127 @@ def test_stop_episode_records_a_failed_grade_when_the_grader_raises(
         )
     finally:
         svc.close()
+
+
+def test_an_unresolvable_success_check_is_an_error_not_a_grade(
+    tmp_path: Path,
+) -> None:
+    # admit() resolves feasibility_check but never success_check, so a task can
+    # be admitted and only fail at grading. That is the harness misconfigured,
+    # not the agent answering wrongly.
+    family = _StubFamily()
+    pack = _StubPack(family)
+    task = replace(_stub_task(), success_check="stub.missing")
+    pack.attach_build_result(BuildResult(graph=_build_stub_world(), tasks=[task]))
+    snap = admit(pack, manifest={"seed": 0, "runtime": {"tick": {"mode": "off"}}})
+    assert isinstance(snap, Snapshot), snap
+
+    svc = EpisodeService(pack, tmp_path)
+    try:
+        report = svc.stop_episode(svc.start_episode(snap, snap.tasks[0].id))
+        assert report.passed is False
+        assert report.episode_result.error == "unresolved success_check 'stub.missing'"
+    finally:
+        svc.close()
+
+
+class TestPoolHistory:
+    """A round's measurement outlives the priority that summarised it.
+
+    ``WorldPool.update`` used to collapse a round to one float, so nothing could
+    afterwards check ``difficulty`` against what agents did with the world.
+    """
+
+    @staticmethod
+    def _pool() -> tuple[WorldPool, _StubPack, tuple[str, str]]:
+        family = _StubFamily()
+        _, pack = _build_stub_snapshot(family)
+        pool = WorldPool.seed(
+            pack, [{"seed": 0}], difficulty_fn=lambda _s: 7.0, max_size=4
+        )
+        (key,) = pool.keys()
+        return pool, pack, key
+
+    @staticmethod
+    def _reports(key: tuple[str, str], *outcomes: bool) -> list[EpisodeReport]:
+        return [
+            EpisodeReport(
+                snapshot_id=key[0],
+                task_id=key[1],
+                episode_result=EpisodeResult(
+                    success=ok, subgoals={"a": ok, "b": False}
+                ),
+            )
+            for ok in outcomes
+        ]
+
+    @staticmethod
+    def _errored(key: tuple[str, str]) -> list[EpisodeReport]:
+        return [
+            EpisodeReport(
+                snapshot_id=key[0],
+                task_id=key[1],
+                episode_result=EpisodeResult(
+                    success=False, reason="grading failed", error="TimeoutExpired"
+                ),
+            )
+        ]
+
+    def test_an_errored_round_is_not_a_measurement(self) -> None:
+        # Grading crashed, so the round is not evidence: nothing is recorded.
+        # The world also sorts to the back — priority is comparative, so merely
+        # holding it steady while every other member moves would march a world
+        # nobody can grade to the front of the pool.
+        pool, pack, key = self._pool()
+        for _ in range(5):
+            pool.update({key: self._errored(key)}, pack=pack)
+        assert pool.history() == {}
+        assert pool._members[key].priority == 0.0
+
+    def test_a_member_nobody_ran_still_ages(self) -> None:
+        # The staleness bump is for waiting its turn, not for failing to grade.
+        pool, pack, key = self._pool()
+        before = pool._members[key].priority
+        pool.update({}, pack=pack)
+        assert pool._members[key].priority > before
+
+    def test_a_round_keeps_the_episodes_that_did_grade(self) -> None:
+        pool, pack, key = self._pool()
+        pool.update({key: [*self._errored(key), *self._reports(key, True)]}, pack=pack)
+        (outcome,) = pool.history()[key]
+        assert outcome.rewards == (1.0,)
+        assert outcome.solve_rate == 1.0
+
+    def test_a_measured_round_is_retained(self) -> None:
+        pool, pack, key = self._pool()
+        pool.update({key: self._reports(key, True, False)}, pack=pack)
+        (outcome,) = pool.history()[key]
+        assert outcome.round_index == 1
+        assert outcome.difficulty == 7.0
+        assert outcome.solve_rate == 0.5
+        assert outcome.rewards == (1.0, 0.0)
+        assert outcome.mean_reward == 0.5
+
+    def test_a_member_that_did_not_run_records_nothing(self) -> None:
+        pool, pack, _ = self._pool()
+        pool.update({}, pack=pack)
+        assert pool.history() == {}
+
+    def test_rounds_accumulate_in_order(self) -> None:
+        pool, pack, key = self._pool()
+        pool.update({key: self._reports(key, False)}, pack=pack)
+        pool.update({key: self._reports(key, True)}, pack=pack)
+        assert [o.round_index for o in pool.history()[key]] == [1, 2]
+        assert [o.solve_rate for o in pool.history()[key]] == [0.0, 1.0]
+
+    def test_history_is_bounded(self) -> None:
+        pool, pack, key = self._pool()
+        for _ in range(_HISTORY_LIMIT + 3):
+            pool.update({key: self._reports(key, False)}, pack=pack)
+        retained = pool.history()[key]
+        assert len(retained) == _HISTORY_LIMIT
+        # The oldest rounds are the ones dropped.
+        assert retained[-1].round_index == _HISTORY_LIMIT + 3
 
 
 # Lint shim — keep imported types from being flagged as unused. They

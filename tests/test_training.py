@@ -28,12 +28,16 @@ def _report(
     reason: str = "",
     snapshot_id: str = "sha256:world",
     task_id: str = "swe.fix.calc",
+    baseline: Mapping[str, bool] | None = None,
 ) -> EpisodeReport:
     return EpisodeReport(
         snapshot_id=snapshot_id,
         task_id=task_id,
         episode_result=EpisodeResult(
-            success=success, subgoals=dict(subgoals), reason=reason
+            success=success,
+            subgoals=dict(subgoals),
+            reason=reason,
+            baseline=dict(baseline or {}),
         ),
     )
 
@@ -62,6 +66,92 @@ class TestReward:
         # success is the gate: a pack may green an episode with no subgoals.
         reward = episode_reward(_report(success=True, subgoals={}))
         assert reward.scalar == 1.0
+
+
+class TestRewardBaseline:
+    """A subgoal the world hands over is not partial credit.
+
+    The shape is ``swe.fix``: ``pass_to_pass`` is green before the agent edits
+    anything, so uniform credit pays an agent that changes nothing.
+    """
+
+    def test_preconditions_are_not_credited(self) -> None:
+        reward = episode_reward(
+            _report(
+                success=False,
+                subgoals={"f2p": False, "p2p_a": True, "p2p_b": True},
+                baseline={"p2p_a": True, "p2p_b": True},
+            )
+        )
+        assert reward.scalar == 0.0
+        assert reward.components == {"f2p": 0.0}
+
+    def test_partial_credit_is_over_the_earnable_subgoals(self) -> None:
+        reward = episode_reward(
+            _report(
+                success=False,
+                subgoals={"f2p_a": True, "f2p_b": False, "p2p": True},
+                baseline={"p2p": True},
+            )
+        )
+        assert reward.scalar == 0.5
+        assert reward.components == {"f2p_a": 1.0, "f2p_b": 0.0}
+
+    def test_a_regressed_precondition_is_worth_nothing(self) -> None:
+        reward = episode_reward(
+            _report(
+                success=False,
+                subgoals={"f2p": True, "p2p": False},
+                baseline={"p2p": True},
+            )
+        )
+        assert reward.scalar == 0.0
+        # The broken precondition is back in the vector: dropped, the loss is
+        # invisible to every consumer that reads components rather than scalar.
+        assert reward.components == {"f2p": 1.0, "p2p": 0.0}
+
+    def test_nothing_earnable_is_zero(self) -> None:
+        reward = episode_reward(
+            _report(
+                success=False,
+                subgoals={"p2p": True},
+                baseline={"p2p": True},
+            )
+        )
+        assert reward.scalar == 0.0
+        assert reward.components == {}
+
+    def test_solved_still_scores_one_over_the_earnable_set(self) -> None:
+        reward = episode_reward(
+            _report(
+                success=True,
+                subgoals={"f2p": True, "p2p": True},
+                baseline={"p2p": True},
+            )
+        )
+        assert reward.scalar == 1.0
+        assert reward.components == {"f2p": 1.0}
+
+
+class TestRewardError:
+    """An episode that graded nothing still shapes to 0.0.
+
+    ``error`` does not change the scalar — a trainer reading a batch needs a
+    number for every rollout. It marks the episode as a non-measurement so the
+    consumers that *can* exclude it (the pool, a metrics pass) know to.
+    """
+
+    def test_an_errored_episode_still_scores_zero(self) -> None:
+        report = _report(success=False, subgoals={})
+        errored = EpisodeReport(
+            snapshot_id=report.snapshot_id,
+            task_id=report.task_id,
+            episode_result=EpisodeResult(
+                success=False, reason="grading failed", error="TimeoutExpired"
+            ),
+        )
+        assert episode_reward(errored).scalar == 0.0
+        assert episode_reward(errored).components == {}
 
 
 class TestTrajectory:

@@ -134,7 +134,9 @@ class EpisodeReport:
             "episode_result": {
                 "success": self.episode_result.success,
                 "subgoals": dict(self.episode_result.subgoals),
+                "baseline": dict(self.episode_result.baseline),
                 "reason": self.episode_result.reason,
+                "error": self.episode_result.error,
             },
             "final_state": dict(self.final_state),
             "agent_summary": self.agent_summary,
@@ -343,12 +345,15 @@ class EpisodeService:
             running.final_state = final_state
             episode_result = self._check_success(running, final_state)
         except Exception as exc:  # noqa: BLE001
-            # A grader/collect crash becomes a failed grade, not a propagated error.
+            # A grader/collect crash must not abort the batch, but it is the
+            # harness failing, not the agent answering wrongly — ``error`` is
+            # what keeps the curriculum from ranking the world on it.
             running.final_state = final_state
             episode_result = EpisodeResult(
                 success=False,
                 subgoals={},
                 reason=f"grading failed: {exc!r}",
+                error=f"{type(exc).__name__}: {exc}",
             )
             self._record_system(
                 running,
@@ -569,6 +574,7 @@ class EpisodeService:
                     f"pack {self.pack.id!r} has no TaskFamily "
                     f"{running.task.success_check!r}"
                 ),
+                error=f"unresolved success_check {running.task.success_check!r}",
             )
         return family.check_success(running.snapshot.graph, running.task, final_state)
 

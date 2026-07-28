@@ -768,7 +768,17 @@ class EpisodeResult:
     success: bool
     subgoals: Mapping[str, bool] = field(default_factory=dict)
     reason: str = ""
+    baseline: Mapping[str, bool] = field(default_factory=dict)
 ```
+
+`baseline` is what each subgoal was worth **before the agent acted**, for
+the subgoals a family can say that about; its keys must be a subset of
+`subgoals`. A subgoal already `True` there is a precondition the agent
+inherited, not an achievement — shapers credit only the rest, and one that
+comes back `False` is a regression. A family that reports subgoals the world
+satisfies on its own (`swe.fix` grades `pass_to_pass`, which is green at
+base) must declare them here, or a policy that changes nothing collects
+their credit. Leaving it empty keeps uniform credit over `subgoals`.
 
 `final_state` is the dict `RuntimeHandle.collect()` returned at
 episode end. Its keys are a pack/family convention (the cyber pack

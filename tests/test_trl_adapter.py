@@ -274,10 +274,10 @@ class TestEnvLifecycle:
         env._finalize()
         assert env.report is not None
         assert not env.report.passed
-        # The bug (FAIL_TO_PASS) stays red, but the trivially-passing
-        # PASS_TO_PASS test floors the dense reward at 0.5 — not zero, and
-        # strictly below the gold's 1.0, so the group still has spread.
-        assert env.reward == 0.5
+        # The bug (FAIL_TO_PASS) stays red. PASS_TO_PASS is green before the
+        # agent touches anything, so it is a precondition, not partial credit:
+        # an untouched workspace earns nothing.
+        assert env.reward == 0.0
 
     def test_build_partial_credit_is_dense(self, make_env: EnvMaker) -> None:
         # notes_app (swe.build): the bare skeleton fails every tier -> 0.0, but
@@ -362,10 +362,13 @@ class TestRewardSpread:
     ``apply_patch`` tool to each distinct grade ``calc_sum`` admits — proving the
     spread is real and, just as importantly, mapping the trap a weak policy falls
     into: ``return a - b`` appears in *both* ``add`` and ``subtract``, so the
-    naive replace-all fixes ``add`` but breaks ``subtract`` and nets right back to
-    the 0.5 floor. Only the *targeted* edit reaches 1.0, so "learn to target the
-    add block" is exactly the climb the gradient rewards. This is the
-    deterministic floor under the live signal the notebook demonstrates at scale.
+    naive replace-all fixes ``add`` but breaks ``subtract`` — a regression, worth
+    nothing, exactly like touching nothing at all. Only the *targeted* edit
+    reaches 1.0, so "learn to target the add block" is exactly the climb the
+    gradient rewards. ``calc_sum`` declares one ``fail_to_pass`` test, so its
+    earned signal is binary by construction; the dense case is ``notes_app``
+    above, whose tiers are all earnable. This is the deterministic floor under
+    the live signal the notebook demonstrates at scale.
     """
 
     def _reward_after(
@@ -400,9 +403,10 @@ class TestRewardSpread:
             snapshot,
             lambda e: e.apply_patch("calc/core.py", "return a - b", "return a + b"),
         )
-        # FAIL_TO_PASS test_add now greens, but PASS_TO_PASS test_subtract reds:
-        # one subgoal each way -> the same 0.5 an untouched workspace earns.
-        assert reward == 0.5
+        # FAIL_TO_PASS test_add now greens, but PASS_TO_PASS test_subtract reds.
+        # Regressing a precondition forfeits the fix, so the trap earns exactly
+        # what touching nothing earns — and strictly less than the targeted edit.
+        assert reward == 0.0
 
     def test_breaking_pass_to_pass_sinks_below_the_floor(
         self, make_env: EnvMaker
@@ -417,7 +421,7 @@ class TestRewardSpread:
                 "def subtract(a, b):\n    return a * b",
             ),
         )
-        # Both tests red now -> below the floor, the bottom of the spread.
+        # Both tests red: the bug unfixed and a precondition regressed.
         assert reward == 0.0
 
 
@@ -429,9 +433,10 @@ class TestRewardFunc:
         unsolved, snap2 = make_env("calc_sum")
         unsolved.reset(snapshot_id=snap2.snapshot_id)
         reward_func = make_reward_func()
-        # Solved earns the full 1.0; the untouched base floors at 0.5 (its
-        # PASS_TO_PASS test passes for free) — distinct, and in env order.
-        assert reward_func(environments=[solved, unsolved]) == [1.0, 0.5]
+        # Solved earns the full 1.0; the untouched base earns nothing, because
+        # its PASS_TO_PASS test was green before it started — distinct, and in
+        # env order.
+        assert reward_func(environments=[solved, unsolved]) == [1.0, 0.0]
 
     def test_reward_func_is_idempotent(self, make_env: EnvMaker) -> None:
         env, snap = make_env("calc_sum")

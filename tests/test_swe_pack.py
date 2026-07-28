@@ -18,7 +18,13 @@ from pathlib import Path
 
 import pytest
 from graphschema import Visibility, WorldGraph, validate
-from openrange_pack_sdk import Backing, BuildResult, TaskSpec, write_tree
+from openrange_pack_sdk import (
+    Backing,
+    BuildResult,
+    EpisodeResult,
+    TaskSpec,
+    write_tree,
+)
 from swe import SweFix, SwePack, repo_ontology
 from swe.builder import SweBuilder
 from swe.grading import _nodeid
@@ -26,6 +32,9 @@ from swe.instances import SweInstance, load_instance, to_graph
 from swe.realize import SweRuntime
 from swe.sandbox import _bwrap_wrap, run_sandboxed
 from swe.swebench import instance_from_row
+
+from openrange.core.episode import EpisodeReport
+from openrange.training import Reward, episode_reward
 
 _INSTANCE = "calc_sum"
 _MULTI = "shapes_area"
@@ -154,6 +163,51 @@ class TestGrading:
         result = SweFix().check_success(graph, task, {"result": {"done": True}})
         assert not result.success
         assert "no workspace" in result.reason
+
+
+class TestGradingCredit:
+    """``pass_to_pass`` is green at base, so it is not partial credit.
+
+    Uniform credit over the subgoal vector pays an agent that edits nothing —
+    here half the task, and on a real instance, where ``pass_to_pass``
+    outnumbers ``fail_to_pass``, very nearly all of it.
+    """
+
+    @staticmethod
+    def _reward(tree: dict[str, str]) -> tuple[EpisodeResult, Reward]:
+        graph, task = _graph_and_task()
+        result = SweFix().check_success(
+            graph, task, {"workspace_files": tree, "result": {"done": True}}
+        )
+        report = EpisodeReport(
+            snapshot_id="sha256:swe", task_id=task.id, episode_result=result
+        )
+        return result, episode_reward(report)
+
+    def test_an_untouched_tree_earns_nothing(self) -> None:
+        result, reward = self._reward(dict(load_instance(_INSTANCE).base_files))
+        assert result.subgoals["test_calc.py::test_subtract"] is True
+        assert reward.scalar == 0.0
+        assert reward.components == {"test_calc.py::test_add": 0.0}
+
+    def test_breaking_a_passing_test_forfeits_the_fix(self) -> None:
+        instance = load_instance(_INSTANCE)
+        tree = {
+            **instance.base_files,
+            "calc/core.py": "def add(a, b):\n    return a + b\n\n\n"
+            "def subtract(a, b):\n    return a + b\n",
+        }
+        result, reward = self._reward(tree)
+        assert result.subgoals["test_calc.py::test_add"] is True
+        assert result.subgoals["test_calc.py::test_subtract"] is False
+        assert reward.scalar == 0.0
+
+    def test_the_gold_tree_still_scores_one(self) -> None:
+        instance = load_instance(_INSTANCE)
+        result, reward = self._reward({**instance.base_files, **instance.gold_files})
+        assert result.success
+        assert reward.scalar == 1.0
+        assert reward.components == {"test_calc.py::test_add": 1.0}
 
 
 class TestRealizer:
