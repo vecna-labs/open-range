@@ -26,6 +26,6 @@ class _HTTPCadenceNPC(NPC):
         if http_get is None:
             return
         try:
-            cast(Any, http_get)(self._next_path())
+            cast(Any, http_get)(self._next_path(), "npc")
         except Exception:  # noqa: BLE001 — NPC failures are silent
             return

@@ -239,7 +239,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def respond(self, status, headers, body):
         leaked = _scan_leaks(body, self.server.state.get("guarded", {}))
-        self.server.log_access(self.command, self.path, status, leaked)
+        actor = self.headers.get("X-OpenRange-Actor") or "agent"
+        self.server.log_access(self.command, self.path, status, leaked, actor)
         content_type = headers.get("Content-Type", "application/octet-stream")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -261,8 +262,8 @@ class WebappServer(ThreadingHTTPServer):
         self.log_path = log_path
         self.state = state
 
-    def log_access(self, method, path, status, leaked=()):
-        row = {"method": method, "path": path, "status": status}
+    def log_access(self, method, path, status, leaked=(), actor="agent"):
+        row = {"method": method, "path": path, "status": status, "actor": actor}
         if leaked:
             row["leaked"] = list(leaked)
         with self.log_path.open("a", encoding="utf-8") as handle:
