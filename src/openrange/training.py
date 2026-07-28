@@ -132,6 +132,7 @@ def episode_reward(report: EpisodeReport) -> Reward:
 def episode_trajectory(
     report: EpisodeReport,
     turns: Sequence[AgentTurn] | None = None,
+    reward: Reward | None = None,
 ) -> Trajectory:
     """Assemble a ``Trajectory`` from a report and the turns the harness recorded.
 
@@ -139,6 +140,10 @@ def episode_trajectory(
     the per-step record is rebuilt from ``turns`` — the same ``AgentTurn`` objects
     the harness passed to ``record_turn``. With no turns the trajectory still
     carries the terminal reward + outcome (a degenerate zero-step episode).
+
+    ``reward`` is the already-graded scalar. A caller running its own objective
+    must pass it: the exported trajectory is what a trainer consumes, so leaving
+    it to default here writes a number the caller is not optimizing.
     """
     steps = tuple(
         TrajectoryStep(
@@ -154,7 +159,7 @@ def episode_trajectory(
         snapshot_id=report.snapshot_id,
         task_id=report.task_id,
         steps=steps,
-        reward=episode_reward(report),
+        reward=episode_reward(report) if reward is None else reward,
         success=report.passed,
         reason=report.episode_result.reason,
     )

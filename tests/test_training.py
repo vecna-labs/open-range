@@ -12,9 +12,11 @@ from collections.abc import Mapping
 
 from openrange_pack_sdk import EpisodeResult
 
+from openrange.agent import AgentRollout
 from openrange.core.episode import AgentTurn, EpisodeReport
 from openrange.training import (
     EpisodeRun,
+    Reward,
     episode_reward,
     episode_trajectory,
     to_jsonl,
@@ -191,6 +193,23 @@ class TestTrajectory:
         assert traj.steps == ()
         assert traj.reward.scalar == 0.0
         assert traj.success is False
+
+    def test_a_rollout_exports_the_reward_it_was_graded_with(self) -> None:
+        # The trajectory is what a trainer consumes, so it has to carry the
+        # objective the caller actually ran, not the built-in one.
+        report = _report(success=False, subgoals={"free": True, "earned": False})
+        only_earned = Reward(scalar=0.0, components={"earned": 0.0})
+        rollout = AgentRollout(
+            snapshot_id=report.snapshot_id,
+            task_id=report.task_id,
+            steps=(),
+            turns=(),
+            report=report,
+            reward=only_earned,
+            terminal_reason="done",
+        )
+        assert episode_reward(report).scalar == 0.5  # what the default would say
+        assert rollout.reward == rollout.trajectory.reward
 
     def test_as_dict_is_json_serializable(self) -> None:
         report = _report(

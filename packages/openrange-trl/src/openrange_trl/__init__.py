@@ -478,7 +478,7 @@ def env_trajectory(env: EpisodeEnv) -> Trajectory:
     env._finalize()
     if env.report is None:
         raise RuntimeError("no completed episode to export; call reset() first")
-    return episode_trajectory(env.report, env.turns)
+    return episode_trajectory(env.report, env.turns, env.reward_fn(env.report))
 
 
 def make_grpo_rounds(

@@ -502,6 +502,25 @@ class TestTrajectoryExport:
         with pytest.raises(RuntimeError, match="no completed episode"):
             env_trajectory(env)
 
+    def test_export_carries_the_envs_own_objective(self, tmp_path: Path) -> None:
+        # The env grades with `reward_fn`; the exported trajectory is what a
+        # trainer reads back. Disagreement means the JSONL teaches a different
+        # objective than the one being optimized.
+        snapshot = _admit("calc_sum")
+        service = EpisodeService(SwePack(), tmp_path / "objective")
+        try:
+            env = EpisodeEnv(
+                service=service,
+                snapshots={snapshot.snapshot_id: snapshot},
+                tools=FILE_TOOLS,
+                reward_fn=lambda report: Reward(scalar=0.25),
+            )
+            env.reset(snapshot_id=snapshot.snapshot_id)
+            _solve(env, "calc_sum")  # a solve the default would score 1.0
+            assert env_trajectory(env).reward.scalar == 0.25
+        finally:
+            service.close()
+
 
 class TestEnvFactory:
     def test_factory_isolates_concurrent_envs(self, tmp_path: Path) -> None:

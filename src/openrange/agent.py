@@ -113,7 +113,7 @@ class AgentRollout:
 
     @property
     def trajectory(self) -> Trajectory:
-        return episode_trajectory(self.report, self.turns)
+        return episode_trajectory(self.report, self.turns, self.reward)
 
 
 def agent_briefing(ctx: EpisodeContext) -> str:
