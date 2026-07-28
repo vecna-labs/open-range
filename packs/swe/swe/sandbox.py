@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-__all__ = ["SandboxResult", "run_sandboxed"]
+__all__ = ["SandboxResult", "run_sandboxed", "verify_backend_request"]
 
 _ENV_BACKEND = "OPENRANGE_SWE_SANDBOX"
 
@@ -132,14 +132,16 @@ def _select_backend(override: str, usable: bool) -> str:
     return "bwrap" if usable else "none"
 
 
-def _verify_backend_request() -> None:
-    """Refuse at import if the operator asked for isolation we cannot give.
+def verify_backend_request() -> None:
+    """Refuse if the operator asked for isolation this host cannot give.
 
     Silently downgrading hands untrusted code weaker isolation than was asked
-    for and reports success. The refusal belongs to *setup*: raised later from
-    inside a feasibility check, admission would correctly read it as "this task
-    is infeasible" and a seeding pass would yield an empty pool with nothing
-    logged — a worse failure than the one being prevented.
+    for and reports success. Where this is called from matters as much as the
+    check: from inside a feasibility check, admission correctly reads the raise
+    as "this task is infeasible" and a seeding pass yields an empty pool with
+    nothing logged; from module import, it fails the pack's entry point and
+    takes every *other* pack's discovery down with it. So the pack calls it from
+    ``make_builder`` — a setup call admission leaves bare on purpose.
     """
     override = os.environ.get(_ENV_BACKEND, "auto").strip().lower()
     if override == "bwrap" and not _bwrap_usable():
@@ -294,6 +296,3 @@ def _set_rlimits(timeout: float):  # type: ignore[no-untyped-def]
                 resource.setrlimit(getattr(resource, name), (limit, limit))
 
     return apply
-
-
-_verify_backend_request()

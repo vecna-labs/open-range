@@ -34,8 +34,8 @@ from swe.sandbox import (
     _bwrap_usable,
     _bwrap_wrap,
     _select_backend,
-    _verify_backend_request,
     run_sandboxed,
+    verify_backend_request,
 )
 from swe.swebench import instance_from_row
 
@@ -440,13 +440,13 @@ class TestSandbox:
         if _bwrap_usable():
             pytest.skip("bwrap is usable here, so the request is honourable")
         with pytest.raises(RuntimeError, match="not usable"):
-            _verify_backend_request()
+            verify_backend_request()
 
     def test_the_default_request_is_always_honourable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("OPENRANGE_SWE_SANDBOX", raising=False)
-        _verify_backend_request()  # must not raise on any host
+        verify_backend_request()  # must not raise on any host
 
     def test_bwrap_argv_isolates_net_only_when_disabled(self) -> None:
         with_net = _bwrap_wrap(["x"], root=Path("/w"), network=True)

@@ -321,6 +321,18 @@ def test_one_failure_does_not_cancel_its_siblings(tmp_path: Path) -> None:
         service.close()
 
 
+def test_the_shipped_packs_all_resolve() -> None:
+    # A pack that refuses to import takes the whole sweep down with it, and the
+    # sweep is correctly never marked complete — so one pack's setup failure
+    # would make every *other* pack permanently unreachable in this process.
+    # PACKS is a module singleton; nothing recovers without a restart.
+    from openrange.core.pack import PACKS
+
+    ids = PACKS.ids()
+    assert {"swe", "trading", "webapp"} <= set(ids), ids
+    assert PACKS.ids() == ids  # and again — discovery is not one-shot-poisoned
+
+
 def _install_broken_entry_point(root: Path, group: str, name: str) -> None:
     """Put a real distribution on ``sys.path`` whose entry point cannot load."""
     dist = root / "brokenpack-1.0.dist-info"
