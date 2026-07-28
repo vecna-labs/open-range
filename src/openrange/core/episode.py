@@ -351,9 +351,8 @@ class EpisodeService:
             running.final_state = final_state
             episode_result = self._check_success(running, final_state)
         except Exception as exc:  # noqa: BLE001
-            # A grader/collect crash must not abort the batch, but it is the
-            # harness failing, not the agent answering wrongly — ``error`` is
-            # what keeps the curriculum from ranking the world on it.
+            # A grader/collect crash becomes a failed grade, not a propagated
+            # error — and `error` marks it a non-measurement.
             running.final_state = final_state
             episode_result = EpisodeResult(
                 success=False,

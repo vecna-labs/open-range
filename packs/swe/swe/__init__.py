@@ -37,9 +37,6 @@ class SwePack(Pack):
         return [repo_has_base_files, suite_well_formed, solution_present]
 
     def make_builder(self, prior: PackPrior | None) -> Builder:
-        # Setup is where an unhonourable isolation request has to fail: late
-        # enough that it does not break discovery for every other pack, early
-        # enough that admission does not mistake it for an infeasible task.
         verify_backend_request()
         return SweBuilder(prior)
 

@@ -113,9 +113,7 @@ def run_sandboxed(
     """
     inner = [sys.executable, *args]
     env = _child_env(root)
-    override = os.environ.get(_ENV_BACKEND, "auto").strip().lower()
-    backend = _select_backend(override, _bwrap_usable())
-    if backend == "bwrap":
+    if _use_bwrap():
         cmd = _bwrap_wrap(inner, root=root, network=network)
         isolation = "bwrap" if network else "bwrap+netns"
     else:
@@ -124,24 +122,18 @@ def run_sandboxed(
     return _exec(cmd, cwd=root, timeout=timeout, env=env, isolation=isolation)
 
 
-def _select_backend(override: str, usable: bool) -> str:
-    """Pick ``"bwrap"`` or ``"none"``. Pure and total, so both arms are drivable
-    in-process; an unhonourable request is refused once at import, below."""
-    if override in {"none", "subprocess"}:
-        return "none"
-    return "bwrap" if usable else "none"
+def _use_bwrap() -> bool:
+    if os.environ.get(_ENV_BACKEND, "auto").strip().lower() in {"none", "subprocess"}:
+        return False
+    return _bwrap_usable()
 
 
 def verify_backend_request() -> None:
     """Refuse if the operator asked for isolation this host cannot give.
 
-    Silently downgrading hands untrusted code weaker isolation than was asked
-    for and reports success. Where this is called from matters as much as the
-    check: from inside a feasibility check, admission correctly reads the raise
-    as "this task is infeasible" and a seeding pass yields an empty pool with
-    nothing logged; from module import, it fails the pack's entry point and
-    takes every *other* pack's discovery down with it. So the pack calls it from
-    ``make_builder`` — a setup call admission leaves bare on purpose.
+    Called from ``SwePack.make_builder``: raising from a feasibility check would
+    read to admission as an infeasible task, and raising at import would take
+    every other pack's discovery down with this one.
     """
     override = os.environ.get(_ENV_BACKEND, "auto").strip().lower()
     if override == "bwrap" and not _bwrap_usable():

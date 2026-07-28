@@ -33,7 +33,6 @@ from swe.realize import SweRuntime
 from swe.sandbox import (
     _bwrap_usable,
     _bwrap_wrap,
-    _select_backend,
     run_sandboxed,
     verify_backend_request,
 )
@@ -422,12 +421,6 @@ class TestSandbox:
             timeout=10,
         )
         assert "True" in res.stdout
-
-    def test_backend_selection_is_pure_and_total(self) -> None:
-        assert _select_backend("bwrap", usable=True) == "bwrap"
-        assert _select_backend("auto", usable=True) == "bwrap"
-        assert _select_backend("auto", usable=False) == "none"
-        assert _select_backend("none", usable=True) == "none"
 
     def test_an_unhonourable_isolation_request_is_refused_at_setup(
         self, monkeypatch: pytest.MonkeyPatch
