@@ -819,6 +819,14 @@ def test_an_unresolvable_success_check_is_an_error_not_a_grade(
         svc.close()
 
 
+def _pool_warnings(caplog: pytest.LogCaptureFixture) -> str:
+    # caplog.text spans every logger, so it can go green on text the pool never
+    # emitted — which is the exact failure these two tests exist to catch.
+    records = [r for r in caplog.records if r.name == "openrange.pool"]
+    assert records, "the pool logged nothing at all"
+    return "\n".join(r.getMessage() for r in records)
+
+
 def test_seeding_says_why_a_manifest_was_rejected(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -835,7 +843,7 @@ def test_seeding_says_why_a_manifest_was_rejected(
         )
 
     assert not pool.keys()
-    assert "entrypoint" in caplog.text, caplog.text
+    assert "entrypoint" in _pool_warnings(caplog)
 
 
 def test_seeding_reports_a_check_that_raised(
@@ -858,7 +866,7 @@ def test_seeding_reports_a_check_that_raised(
     with caplog.at_level(logging.WARNING, logger="openrange.pool"):
         WorldPool.seed(pack, [{"seed": 0}], difficulty_fn=lambda _s: 1.0, max_size=4)
 
-    assert "cannot honour the isolation" in caplog.text, caplog.text
+    assert "cannot honour the isolation" in _pool_warnings(caplog)
 
 
 class TestPoolPricesOnlyWhatGraded:

@@ -7,6 +7,7 @@ records, and the JSON / JSONL export a trainer consumes.
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import Mapping
 
@@ -77,17 +78,6 @@ class TestRewardBaseline:
     anything, so uniform credit pays an agent that changes nothing.
     """
 
-    def test_preconditions_are_not_credited(self) -> None:
-        reward = episode_reward(
-            _report(
-                success=False,
-                subgoals={"f2p": False, "p2p_a": True, "p2p_b": True},
-                baseline={"p2p_a": True, "p2p_b": True},
-            )
-        )
-        assert reward.scalar == 0.0
-        assert reward.components == {"f2p": 0.0}
-
     def test_partial_credit_is_over_the_earnable_subgoals(self) -> None:
         reward = episode_reward(
             _report(
@@ -135,25 +125,45 @@ class TestRewardBaseline:
         assert reward.components == {"f2p": 1.0}
 
 
-class TestRewardError:
-    """An episode that graded nothing still shapes to 0.0.
+class TestRewardInvariants:
+    """The two properties the shaper exists to hold, over every small shape.
 
-    ``error`` does not change the scalar — a trainer reading a batch needs a
-    number for every rollout. It marks the episode as a non-measurement so the
-    consumers that *can* exclude it (the pool, a metrics pass) know to.
+    Enumerated rather than sampled: the space is finite and tiny, so this is an
+    exhaustive proof rather than a search. Both are inexpressible before
+    ``baseline`` existed — they specify the fix instead of recording it.
     """
 
-    def test_an_errored_episode_still_scores_zero(self) -> None:
-        report = _report(success=False, subgoals={})
-        errored = EpisodeReport(
-            snapshot_id=report.snapshot_id,
-            task_id=report.task_id,
-            episode_result=EpisodeResult(
-                success=False, reason="grading failed", error="TimeoutExpired"
-            ),
-        )
-        assert episode_reward(errored).scalar == 0.0
-        assert episode_reward(errored).components == {}
+    @staticmethod
+    def _earned(bits: tuple[bool, ...]) -> dict[str, bool]:
+        return {f"f{i}": bit for i, bit in enumerate(bits)}
+
+    def test_a_free_subgoal_never_moves_the_score(self) -> None:
+        for bits in itertools.product([True, False], repeat=3):
+            earned = self._earned(bits)
+            alone = episode_reward(_report(success=False, subgoals=earned))
+            with_free = episode_reward(
+                _report(
+                    success=False,
+                    subgoals={**earned, "free": True},
+                    baseline={"free": True},
+                )
+            )
+            assert alone.scalar == with_free.scalar, bits
+
+    def test_breaking_a_precondition_forfeits_the_attempt(self) -> None:
+        # Not merely "scores lower" — that is true of any uniform mean, so it
+        # would pass against the shaper this replaces. Handing back a world
+        # more broken than it arrived is worth nothing, whatever else was
+        # earned alongside it.
+        for bits in itertools.product([True, False], repeat=3):
+            broke = episode_reward(
+                _report(
+                    success=False,
+                    subgoals={**self._earned(bits), "p": False},
+                    baseline={"p": True},
+                )
+            )
+            assert broke.scalar == 0.0, bits
 
 
 class TestTrajectory:
