@@ -163,7 +163,7 @@ class TestFeasibility:
         task = SweBuild().generate(graph, {}, None)[0]
         verdict = SweBuild().check_feasibility(graph, task)
         assert not verdict.feasible
-        assert "skeleton already passes an integration test" in verdict.reason
+        assert "skeleton already passes part of its own suite" in verdict.reason
 
     def test_non_composing_gold_is_infeasible(self) -> None:
         # A gold overlay that passes units but fails integration doesn't prove
