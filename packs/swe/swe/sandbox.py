@@ -109,8 +109,11 @@ def run_sandboxed(
     knob: the grading run leaves it ``False`` (isolated where possible); an
     editable install passes ``True``. The call never raises for a non-zero exit
     or a timeout — those are reported in the result, because a failed test run is
-    data, not an error.
+    data, not an error. It *does* raise if the operator demanded isolation this
+    host cannot give: this is the only place that knows what the child actually
+    got, so it is the only place that can keep the promise.
     """
+    verify_backend_request()
     inner = [sys.executable, *args]
     env = _child_env(root)
     if _use_bwrap():
@@ -131,9 +134,11 @@ def _use_bwrap() -> bool:
 def verify_backend_request() -> None:
     """Refuse if the operator asked for isolation this host cannot give.
 
-    Called from ``SwePack.make_builder``: raising from a feasibility check would
-    read to admission as an infeasible task, and raising at import would take
-    every other pack's discovery down with this one.
+    Enforced in ``run_sandboxed``, which is where the guarantee is either kept
+    or not. ``SwePack.make_builder`` calls it too, so the ordinary path fails at
+    setup with the right category rather than surfacing later as an infeasible
+    task; the check in ``run_sandboxed`` is what still holds when a world is
+    built in one process and graded in another.
     """
     override = os.environ.get(_ENV_BACKEND, "auto").strip().lower()
     if override == "bwrap" and not _bwrap_usable():

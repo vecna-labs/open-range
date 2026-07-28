@@ -110,18 +110,22 @@ class SweBuild(TaskFamily):
                 f"{len(all_ids)} pass): {dict(gold_report.results)}",
             )
 
-        base_report = run_tests(base, test_files, integration)
+        base_report = run_tests(base, test_files, all_ids)
         # An unreported suite is all-False, which *satisfies* all_fail — the world
         # would admit with its gate never demonstrated. Admission fails closed.
         if base_report.error:
             return FeasibilityVerdict(
                 False, f"base suite never reported: {base_report.error}"
             )
-        if not base_report.all_fail(integration):
+        # Units as well as the integration gate: a skeleton that already greens
+        # a unit test hands the agent that subgoal for nothing, and unlike
+        # ``swe.fix``'s pass_to_pass there is no precondition worth preserving
+        # here — the whole project is meant to be unbuilt.
+        if not base_report.all_fail(all_ids):
             return FeasibilityVerdict(
                 False,
-                "skeleton already passes an integration test — the gate is not "
-                f"real or the project is pre-composed: {dict(base_report.results)}",
+                "skeleton already passes part of its own suite — the task would "
+                f"pay for work it did not do: {dict(base_report.results)}",
             )
         return FeasibilityVerdict(True)
 
