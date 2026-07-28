@@ -67,20 +67,18 @@ def test_solve_rate_excludes_the_episodes_that_never_graded() -> None:
         task_id="t",
         episode_result=EpisodeResult(success=False, error="TimeoutExpired"),
     )
-    rate, members = _mean_pass_rate([[*graded, errored, errored]])
-    assert rate == 0.5
-    assert members == 1
+    assert _mean_pass_rate([[*graded, errored, errored]]) == 0.5
 
 
-def test_a_round_that_graded_nothing_is_not_a_round_that_solved_nothing() -> None:
+def test_a_group_that_graded_nothing_leaves_the_mean_alone() -> None:
+    # Not just excluded from its own group's denominator — a group where every
+    # episode errored is not a zero to average against the groups that ran.
     errored = EpisodeReport(
         snapshot_id="s",
         task_id="t",
         episode_result=EpisodeResult(success=False, error="TimeoutExpired"),
     )
-    rate, members = _mean_pass_rate([[errored]])
-    assert rate == 0.0
-    assert members == 0  # the count is what tells the two apart
+    assert _mean_pass_rate([[_report(True, {"a": True})], [errored]]) == 1.0
 
 
 def test_priority_without_components_is_learnability_only() -> None:

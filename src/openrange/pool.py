@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from openrange_pack_sdk import Mutation, Pack, Snapshot
 
@@ -39,32 +39,6 @@ GateFactory = Callable[[Snapshot], EvolutionGate]
 
 _STALENESS_STEP = 0.1
 _MAX_PRIORITY = 2.0
-_HISTORY_LIMIT = 64
-
-
-@dataclass(frozen=True, slots=True)
-class RoundOutcome:
-    """What one round measured for one world in the pool.
-
-    Kept per member (the most recent :data:`_HISTORY_LIMIT` rounds) so a caller
-    can regress ``difficulty`` against observed solve rate instead of trusting
-    it, and so a scorer can read a world's trend rather than only the priority
-    that overwrote it.
-    """
-
-    round_index: int
-    difficulty: float
-    priority: float
-    rewards: tuple[float, ...]
-    passed: int
-
-    @property
-    def solve_rate(self) -> float:
-        return self.passed / len(self.rewards) if self.rewards else 0.0
-
-    @property
-    def mean_reward(self) -> float:
-        return sum(self.rewards) / len(self.rewards) if self.rewards else 0.0
 
 
 @dataclass
@@ -75,7 +49,6 @@ class _Member:
     family: str
     difficulty: float
     priority: float = 1.0
-    history: list[RoundOutcome] = field(default_factory=list)
 
     @property
     def key(self) -> tuple[str, str]:
@@ -125,11 +98,15 @@ def _gated_members(
     for manifest in manifests:
         result = admit(pack, dict(manifest), max_repairs=max_repairs)
         if isinstance(result, AdmissionFailure):
+            # The build history, not just the issues: a check that *raised*
+            # produces no Issue, and its exception text is recorded only there.
             _LOG.warning(
                 "manifest rejected after %d attempt(s): %s",
                 result.attempts,
-                "; ".join([i.message for i in result.issues] + result.infeasible_tasks)
-                or "no issue reported",
+                "; ".join(
+                    [i.message for i in result.issues]
+                    + [event.detail for event in result.history]
+                ),
             )
             continue
         if seed_gate is not None and not seed_gate(result):
@@ -166,20 +143,16 @@ def _snapshots_of(members: Iterable[_Member]) -> list[Snapshot]:
 
 def _mean_pass_rate(
     report_groups: Iterable[Sequence[EpisodeReport]],
-) -> tuple[float, int]:
-    """Mean solve rate over the episodes that graded, and how many groups did.
-
-    An errored episode measured nothing. Leaving it in the denominator deflates
-    the only number a trainer reads by however much the infrastructure flaked,
-    and the count is what separates "solved none of them" from "graded none of
-    them" — which are the same ``0.0`` otherwise.
-    """
+) -> float:
+    # An errored episode measured nothing; leaving it in the denominator
+    # deflates the only number a trainer reads by however much the
+    # infrastructure flaked.
     rates: list[float] = []
     for group in report_groups:
         graded = [r for r in group if r.episode_result.error is None]
         if graded:
             rates.append(sum(1 for r in graded if r.passed) / len(graded))
-    return (sum(rates) / len(rates) if rates else 0.0), len(rates)
+    return sum(rates) / len(rates) if rates else 0.0
 
 
 def _member_priority(rewards: Sequence[Reward]) -> float:
@@ -226,7 +199,6 @@ class WorldPool:
         self._max_size = max_size
         self._mix_floor = mix_floor
         self._last_difficulty_gain: float | None = None
-        self._round = 0
 
     @classmethod
     def seed(
@@ -261,18 +233,6 @@ class WorldPool:
 
     def snapshots(self) -> list[Snapshot]:
         return _snapshots_of(self._members.values())
-
-    def history(self) -> dict[tuple[str, str], tuple[RoundOutcome, ...]]:
-        """Per-member measured rounds, oldest first, for members that have run.
-
-        The join a caller needs to check ``difficulty`` against what agents
-        actually did with these worlds; the pool itself never reads it.
-        """
-        return {
-            key: tuple(member.history)
-            for key, member in self._members.items()
-            if member.history
-        }
 
     def round_rows(self, *, groups: int, num_generations: int) -> list[PromptRow]:
         return _rows_for(self._select(groups), num_generations)
@@ -316,7 +276,6 @@ class WorldPool:
         max_repairs: int = 2,
         reward_fn: RewardFn = episode_reward,
     ) -> bool:
-        self._round += 1
         graded: dict[tuple[str, str], Sequence[EpisodeReport]] = {}
         for member in self._members.values():
             # An errored episode graded nothing, so it is not evidence about the
@@ -328,18 +287,9 @@ class WorldPool:
             if ran:
                 graded[member.key] = ran
                 # One pass: reward_fn is caller-supplied and may be expensive.
-                rewards = [reward_fn(report) for report in ran]
-                member.priority = _member_priority(rewards)
-                member.history.append(
-                    RoundOutcome(
-                        round_index=self._round,
-                        difficulty=member.difficulty,
-                        priority=member.priority,
-                        rewards=tuple(reward.scalar for reward in rewards),
-                        passed=sum(1 for report in ran if report.passed),
-                    )
+                member.priority = _member_priority(
+                    [reward_fn(report) for report in ran]
                 )
-                del member.history[:-_HISTORY_LIMIT]
             elif attempted:
                 # Ran and graded nothing, so it taught nothing: sort it to the
                 # back. Holding priority steady is not neutral — priority is
@@ -428,12 +378,6 @@ class RoundMetrics:
     held_out_solve_rate: float | None = None
     frontier_capped: bool = False
     difficulty_gain: float | None = None
-    graded_members: int = 0
-    """How many pool members actually produced a grade this round.
-
-    ``train_solve_rate`` is a mean over these; at zero the round measured
-    nothing and the rate is not evidence of anything.
-    """
 
     @property
     def generalization_gap(self) -> float | None:
@@ -485,10 +429,9 @@ class EvalPool:
         return _rows_for(self._members, num_generations)
 
     def solve_rate(self, reports: RoundReports) -> float:
-        rate, _graded = _mean_pass_rate(
+        return _mean_pass_rate(
             reports[m.key] for m in self._members if m.key in reports
         )
-        return rate
 
 
 def run_pool_curriculum(
@@ -541,11 +484,9 @@ def run_pool_curriculum(
             evolve_top=evolve_top,
             reward_fn=reward_fn,
         )
-        train_rate, graded = _mean_pass_rate(reports.values())
         metrics.append(
             RoundMetrics(
-                train_solve_rate=train_rate,
-                graded_members=graded,
+                train_solve_rate=_mean_pass_rate(reports.values()),
                 held_out_solve_rate=held_out,
                 frontier_capped=capped,
                 difficulty_gain=pool._last_difficulty_gain,

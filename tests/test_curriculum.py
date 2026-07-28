@@ -60,7 +60,7 @@ from openrange.core.curriculum import (
     direction_from_reports,
 )
 from openrange.core.episode import EpisodeReport, EpisodeService
-from openrange.pool import _HISTORY_LIMIT, WorldPool
+from openrange.pool import WorldPool
 
 
 @dataclass(frozen=True)
@@ -838,12 +838,31 @@ def test_seeding_says_why_a_manifest_was_rejected(
     assert "entrypoint" in caplog.text, caplog.text
 
 
-class TestPoolHistory:
-    """A round's measurement outlives the priority that summarised it.
+def test_seeding_reports_a_check_that_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A raising check produces no Issue — admission records the exception text
+    # in the build history and nowhere else, so reading only `issues` names the
+    # task that failed and never says why.
+    class _Raising(_StubFamily):
+        def check_feasibility(
+            self, graph: WorldGraph, task: TaskSpec
+        ) -> FeasibilityVerdict:
+            raise RuntimeError("cannot honour the isolation this host was asked for")
 
-    ``WorldPool.update`` used to collapse a round to one float, so nothing could
-    afterwards check ``difficulty`` against what agents did with the world.
-    """
+    pack = _StubPack(_Raising())
+    pack.attach_build_result(
+        BuildResult(graph=_build_stub_world(), tasks=[_stub_task()])
+    )
+
+    with caplog.at_level(logging.WARNING, logger="openrange.pool"):
+        WorldPool.seed(pack, [{"seed": 0}], difficulty_fn=lambda _s: 1.0, max_size=4)
+
+    assert "cannot honour the isolation" in caplog.text, caplog.text
+
+
+class TestPoolPricesOnlyWhatGraded:
+    """An errored episode is not evidence about the world it ran in."""
 
     @staticmethod
     def _pool() -> tuple[WorldPool, _StubPack, tuple[str, str]]:
@@ -888,7 +907,6 @@ class TestPoolHistory:
         pool, pack, key = self._pool()
         for _ in range(5):
             pool.update({key: self._errored(key)}, pack=pack)
-        assert pool.history() == {}
         assert pool._members[key].priority == 0.0
 
     def test_a_member_nobody_ran_still_ages(self) -> None:
@@ -898,43 +916,13 @@ class TestPoolHistory:
         pool.update({}, pack=pack)
         assert pool._members[key].priority > before
 
-    def test_a_round_keeps_the_episodes_that_did_grade(self) -> None:
+    def test_a_mixed_round_is_priced_on_the_episodes_that_graded(self) -> None:
         pool, pack, key = self._pool()
         pool.update({key: [*self._errored(key), *self._reports(key, True)]}, pack=pack)
-        (outcome,) = pool.history()[key]
-        assert outcome.rewards == (1.0,)
-        assert outcome.solve_rate == 1.0
-
-    def test_a_measured_round_is_retained(self) -> None:
-        pool, pack, key = self._pool()
-        pool.update({key: self._reports(key, True, False)}, pack=pack)
-        (outcome,) = pool.history()[key]
-        assert outcome.round_index == 1
-        assert outcome.difficulty == 7.0
-        assert outcome.solve_rate == 0.5
-        assert outcome.rewards == (1.0, 0.0)
-        assert outcome.mean_reward == 0.5
-
-    def test_a_member_that_did_not_run_records_nothing(self) -> None:
-        pool, pack, _ = self._pool()
-        pool.update({}, pack=pack)
-        assert pool.history() == {}
-
-    def test_rounds_accumulate_in_order(self) -> None:
-        pool, pack, key = self._pool()
-        pool.update({key: self._reports(key, False)}, pack=pack)
-        pool.update({key: self._reports(key, True)}, pack=pack)
-        assert [o.round_index for o in pool.history()[key]] == [1, 2]
-        assert [o.solve_rate for o in pool.history()[key]] == [0.0, 1.0]
-
-    def test_history_is_bounded(self) -> None:
-        pool, pack, key = self._pool()
-        for _ in range(_HISTORY_LIMIT + 3):
-            pool.update({key: self._reports(key, False)}, pack=pack)
-        retained = pool.history()[key]
-        assert len(retained) == _HISTORY_LIMIT
-        # The oldest rounds are the ones dropped.
-        assert retained[-1].round_index == _HISTORY_LIMIT + 3
+        # The one solve alone: fully learnable-out (0.0) plus its unmet subgoal
+        # (0.5). Counting the errored episode as a loss would read as a half-solved
+        # world and price it 1.5 — the most attractive thing in the pool.
+        assert pool._members[key].priority == 0.5
 
 
 # Lint shim — keep imported types from being flagged as unused. They
