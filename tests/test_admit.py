@@ -526,8 +526,37 @@ def test_a_builder_that_does_not_repair_fails_admission_normally() -> None:
     assert isinstance(out, AdmissionFailure)
     assert out.attempts == 1  # the one attempt it actually made, not the budget
     assert any(
-        e.phase == "repair" and "did not repair" in e.detail for e in out.history
+        e.phase == "repair" and "did not implement repair()" in e.detail
+        for e in out.history
     )
+
+
+def test_a_repair_that_crashes_is_not_recorded_as_the_opt_out() -> None:
+    # A builder that implements repair() and blows up inside it has told us
+    # nothing about its capabilities. Filing that under the opt-out throws away
+    # the only trace of the crash, and `ProceduralBuilder.repair` — the one
+    # every procedural pack inherits — is `self.build(...)`, so this is the
+    # ordinary path, not an exotic one.
+    class _CrashingRepair(Builder):
+        def build(self, manifest: Manifest) -> BuildResult:
+            del manifest
+            return _bad_build_result()
+
+        def repair(
+            self,
+            result: BuildResult,
+            errors: list[Issue],
+            infeasible: list[tuple[str, str]],
+        ) -> BuildResult:
+            del result, errors, infeasible
+            raise KeyError("chain_target")
+
+    pack = _TestPack(_CrashingRepair(), families=[_PentestFamily()])
+    out = admit(pack, manifest={}, max_repairs=1)
+    assert isinstance(out, AdmissionFailure)
+    (event,) = [e for e in out.history if e.phase == "repair"]
+    assert "repair raised KeyError" in event.detail
+    assert "chain_target" in event.detail
 
 
 def test_a_raising_feasibility_check_rejects_only_its_task() -> None:

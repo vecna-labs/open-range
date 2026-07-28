@@ -174,15 +174,19 @@ def admit(
         try:
             result = builder.repair(result, errors, infeasible)
         except Exception as exc:  # noqa: BLE001 — pack-supplied code is untrusted
-            # Not overriding repair() is the SDK's sanctioned opt-out, so the
-            # raise it answers with is a capability signal, not a crash: the
-            # candidate simply gets no retries and fails admission normally.
+            # Not overriding repair() is the SDK's sanctioned opt-out; anything
+            # else is a crash, and calling it the opt-out discards the only
+            # record of it.
+            reason = (
+                "builder did not implement repair()"
+                if isinstance(exc, NotImplementedError)
+                else f"repair raised {type(exc).__name__}: {exc}"
+            )
             history.append(
                 BuildEvent(
                     len(history),
                     "repair",
-                    f"builder did not repair ({type(exc).__name__}); "
-                    f"admission stops after attempt {attempt + 1}",
+                    f"{reason}; admission stops after attempt {attempt + 1}",
                 )
             )
             break

@@ -276,6 +276,13 @@ class WorldPool:
         max_repairs: int = 2,
         reward_fn: RewardFn = episode_reward,
     ) -> bool:
+        """Re-price the pool from a round's reports and evolve its frontier.
+
+        ``reports`` must carry a key for every member ``round_rows`` offered,
+        even when all of its episodes errored: a missing key is indistinguishable
+        from "never selected" and takes the staleness bump meant for a world
+        still waiting its turn.
+        """
         graded: dict[tuple[str, str], Sequence[EpisodeReport]] = {}
         for member in self._members.values():
             # An errored episode graded nothing, so it is not evidence about the
