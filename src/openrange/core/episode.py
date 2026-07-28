@@ -308,8 +308,14 @@ class EpisodeService:
         if not _is_poolable(running.runtime):
             return False
         snapshot_id = running.snapshot.snapshot_id
+        # Overwrite would drop whatever is already parked under this key without
+        # stopping it — and since the dict does not grow, the eviction below
+        # never fires to reclaim it either.
+        displaced = self._warm.pop(snapshot_id, None)
+        if displaced is not None:
+            with contextlib.suppress(Exception):
+                displaced.stop()
         self._warm[snapshot_id] = running.runtime
-        self._warm.move_to_end(snapshot_id)
         while len(self._warm) > self._warm_capacity:
             _, evicted = self._warm.popitem(last=False)
             with contextlib.suppress(Exception):

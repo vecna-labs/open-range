@@ -56,7 +56,6 @@ class NPCRegistry:
             return
         if self._discovered and not force:
             return
-        self._discovered = True
         from openrange.core._registry import iter_entry_points
 
         for name, value in iter_entry_points(
@@ -71,6 +70,8 @@ class NPCRegistry:
                     f"entry point {name!r} did not yield a callable",
                 )
             self._factories[name] = value
+        # Only once the sweep completed — see PackRegistry._ensure_discovered.
+        self._discovered = True
 
 
 NPCS = NPCRegistry(autodiscover=True)
