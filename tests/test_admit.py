@@ -546,7 +546,7 @@ def test_a_repair_that_crashes_is_not_recorded_as_the_opt_out() -> None:
             self,
             result: BuildResult,
             errors: list[Issue],
-            infeasible: list[tuple[str, str]],
+            infeasible: list[str],
         ) -> BuildResult:
             del result, errors, infeasible
             raise KeyError("chain_target")

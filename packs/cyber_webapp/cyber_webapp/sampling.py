@@ -749,7 +749,8 @@ def _sample_vulnerabilities(
     oracle_shapes: frozenset[str] = frozenset({"response_leak"}),
 ) -> None:
     count = _sample_int(rng, prior, "vuln_count")
-    vuln_pin = [str(k) for k in (prior.topology.get("vuln_pin") or [])]
+    pinned = prior.topology.get("vuln_pin") if prior is not None else None
+    vuln_pin = [str(k) for k in pinned or []]
     pool = vuln_pin or _weighted_pool(prior, "vuln_kinds", exclude=_INTERNAL_ONLY_KINDS)
     if not pool:
         return
