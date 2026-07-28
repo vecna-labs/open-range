@@ -125,6 +125,12 @@ def _gated_members(
     for manifest in manifests:
         result = admit(pack, dict(manifest), max_repairs=max_repairs)
         if isinstance(result, AdmissionFailure):
+            _LOG.warning(
+                "manifest rejected after %d attempt(s): %s",
+                result.attempts,
+                "; ".join([i.message for i in result.issues] + result.infeasible_tasks)
+                or "no issue reported",
+            )
             continue
         if seed_gate is not None and not seed_gate(result):
             _LOG.warning(

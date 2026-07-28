@@ -15,6 +15,7 @@ Three layers:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -816,6 +817,25 @@ def test_an_unresolvable_success_check_is_an_error_not_a_grade(
         assert report.episode_result.error == "unresolved success_check 'stub.missing'"
     finally:
         svc.close()
+
+
+def test_seeding_says_why_a_manifest_was_rejected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An empty pool is the same object whether nothing was offered or
+    # everything was refused, so a silent skip leaves an operator with a
+    # seeding run that produced nothing and no way to find out why.
+    pack = _StubPack(_StubFamily())
+    task = replace(_stub_task(), entrypoints=())  # unbindable, so admission refuses
+    pack.attach_build_result(BuildResult(graph=_build_stub_world(), tasks=[task]))
+
+    with caplog.at_level(logging.WARNING, logger="openrange.pool"):
+        pool = WorldPool.seed(
+            pack, [{"seed": 0}], difficulty_fn=lambda _s: 1.0, max_size=4
+        )
+
+    assert not pool.keys()
+    assert "entrypoint" in caplog.text, caplog.text
 
 
 class TestPoolHistory:
