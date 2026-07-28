@@ -80,3 +80,21 @@ def str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(v) for v in value]
+
+
+def grading_tree(target: Target, workspace: Mapping[str, object]) -> dict[str, str]:
+    """The agent's edits to the files this world declared, and nothing else.
+
+    The grader runs pytest over what it is given, and pytest loads whatever it
+    finds: a ``conftest.py`` or ``pytest.ini`` the agent invented is collected
+    like any other file. That is a route to the grade that does not go through
+    the source — to a plugin hook that passes every test, or to a hang that
+    makes the run report nothing at all. Only declared paths are graded, so a
+    file the world never asked for cannot influence the result.
+    """
+    declared = str_map(target.repo.attrs.get("base_files"))
+    return {
+        str(path): str(content)
+        for path, content in workspace.items()
+        if str(path) in declared
+    }

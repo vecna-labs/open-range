@@ -26,6 +26,7 @@ from openrange_pack_sdk import (
 
 from swe.families._target import (
     Target,
+    grading_tree,
     pick_target,
     resolve_target,
     str_list,
@@ -133,7 +134,7 @@ class SweFix(TaskFamily):
             return EpisodeResult(
                 success=False, reason="agent produced no workspace files"
             )
-        tree = {str(k): str(v) for k, v in workspace.items()}
+        tree = grading_tree(target, workspace)
         f2p = str_list(target.suite.attrs.get("fail_to_pass"))
         p2p = str_list(target.suite.attrs.get("pass_to_pass"))
         test_files = str_map(target.suite.attrs.get("test_files"))

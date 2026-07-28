@@ -207,6 +207,34 @@ class TestGradingCredit:
         assert result.subgoals["test_calc.py::test_subtract"] is False
         assert reward.scalar == 0.0
 
+    def test_a_plugin_the_world_never_declared_is_not_graded(self) -> None:
+        # pytest collects whatever it finds, so a conftest.py or pytest.ini the
+        # agent invents is a route to the grade that never touches the source:
+        # a tryfirst hook greens every test, and a sleep makes the run report
+        # nothing at all — which reads as an ungraded episode and is excluded
+        # from the solve rate rather than counted as the failure it is.
+        instance = load_instance(_INSTANCE)
+        greened, _ = self._reward(
+            {
+                **instance.base_files,
+                "pytest.ini": "[pytest]\naddopts = -p pwn\n",
+                "pwn.py": (
+                    "import pytest\n\n\n"
+                    "@pytest.hookimpl(tryfirst=True)\n"
+                    "def pytest_pyfunc_call(pyfuncitem):\n"
+                    "    return True\n"
+                ),
+            }
+        )
+        assert greened.success is False
+        assert greened.subgoals["test_calc.py::test_add"] is False
+
+        hung, _ = self._reward(
+            {**instance.base_files, "conftest.py": "import os\n\nos._exit(0)\n"}
+        )
+        assert hung.error is None, "the agent must not be able to author an error"
+        assert hung.success is False
+
     def test_the_gold_tree_still_scores_one(self) -> None:
         instance = load_instance(_INSTANCE)
         result, reward = self._reward({**instance.base_files, **instance.gold_files})
