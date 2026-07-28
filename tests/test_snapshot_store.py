@@ -383,11 +383,34 @@ def test_store_load_non_mapping_raises_store_error(tmp_path: Path) -> None:
         store.load("sha256:listy")
 
 
+def test_store_load_rejects_a_graph_edited_under_its_own_id(tmp_path: Path) -> None:
+    # A snapshot id is a content hash, so it is only worth anything if loading
+    # recomputes it. Edit a node attribute and leave both the filename and the
+    # stored id field alone: every name still agrees, and only the content has
+    # moved.
+    snap = _admit_one()
+    store = SnapshotStore(tmp_path)
+    path = store.save(snap)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    node = next(n for n in payload["graph"]["nodes"] if n["id"] == "repo.a")
+    node["attrs"]["name"] = "tampered"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    # The tampered file is well-formed and still self-consistent by name, so a
+    # rejection below can only have come from rehashing the graph.
+    edited = snapshot_from_dict(payload)
+    assert edited.snapshot_id == snap.snapshot_id
+    assert edited.graph.nodes["repo.a"].attrs["name"] == "tampered"
+
+    with pytest.raises(StoreError, match="does not hash to its id"):
+        store.load(snap.snapshot_id)
+
+
 def test_store_load_mismatched_id_raises_store_error(tmp_path: Path) -> None:
     """A file whose stored snapshot_id != its filename is rejected.
 
-    Catches accidental rename / tampering — the content hash must agree
-    with the storage key.
+    Catches an accidental rename; content edits are caught by the rehash.
     """
     snap = _admit_one()
     store = SnapshotStore(tmp_path)

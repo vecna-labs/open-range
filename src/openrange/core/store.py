@@ -31,8 +31,8 @@ class SnapshotStore:
         return path
 
     def load(self, snapshot_id: str) -> Snapshot:
-        """Raises `StoreError` if the file is missing, malformed, or its
-        stored `snapshot_id` does not match `<root>/<snapshot_id>.json`."""
+        """Raises `StoreError` if the file is missing, malformed, or its graph
+        does not hash to `snapshot_id`."""
         path = self.root / f"{snapshot_id}.json"
         try:
             raw = path.read_text(encoding="utf-8")
@@ -49,6 +49,11 @@ class SnapshotStore:
             raise StoreError(
                 f"snapshot id mismatch: file {snapshot_id!r} carries id "
                 f"{snap.snapshot_id!r}"
+            )
+        if snap.graph.content_hash() != snapshot_id:
+            raise StoreError(
+                f"snapshot {snapshot_id!r} does not hash to its id; the stored "
+                "graph was modified after it was written"
             )
         return snap
 
