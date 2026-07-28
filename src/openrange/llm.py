@@ -396,6 +396,14 @@ def _openai_compatible_result(raw: str, request: LLMRequest) -> LLMResult:
     content = message.get("content")
     if not isinstance(content, str):
         raise LLMBackendError("OpenAI-compatible message content was not text")
+    if not content:
+        # A refusal or a content filter answers 200 with empty text. Passing it
+        # on makes the caller grade "the provider returned nothing" as
+        # "the model said nothing worth acting on".
+        raise LLMBackendError(
+            "OpenAI-compatible message content was empty "
+            f"(finish_reason={first.get('finish_reason')!r})"
+        )
 
     if request.json_schema is None:
         return LLMResult(content)

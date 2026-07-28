@@ -249,15 +249,17 @@ def test_arun_rollouts_overlaps_concurrent_episodes(tmp_path: Path) -> None:
     assert all(r.terminal_reason == "finished" for r in rollouts)
 
 
-def test_parse_action_reads_blocks_and_falls_back_to_finish() -> None:
+def test_parse_action_reads_blocks_and_terminates_on_an_unrecognized_reply() -> None:
     shell = parse_action("intro\n```bash\ncurl -s http://x/\n```\noutro")
     assert shell.tool == "run_shell"
     assert shell.command == "curl -s http://x/"
     done = parse_action("```finish\nthe answer\n```")
     assert done.tool == "finish"
     assert done.command == "the answer"
+    # Still terminates — a model ignoring the protocol must not loop — but it is
+    # not the same outcome as choosing to stop, and the caller can tell.
     bare = parse_action("just prose, no block")
-    assert bare.tool == "finish"
+    assert bare.tool == "no_action"
     assert bare.command == "just prose, no block"
 
 

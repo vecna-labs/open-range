@@ -146,11 +146,14 @@ def parse_action(text: str) -> AgentAction:
     tool token it only ever sees in our prompt and routinely forgets. The *last*
     recognized block wins, so an illustrative snippet earlier in the reply is not
     executed in place of the action the model actually settled on. A reply with
-    no recognized block becomes a ``finish`` carrying the whole text, so a model
-    that ignores the protocol terminates rather than loops."""
+    no recognized block still terminates the episode, so a model that ignores
+    the protocol does not loop — but it is reported as ``no_action`` rather than
+    ``finish``, because "never produced an action" and "chose to stop" are
+    different outcomes and a trainer that cannot tell them apart learns from the
+    difference as if it were signal."""
     matches = list(_ACTION_BLOCK.finditer(text))
     if not matches:
-        return AgentAction(tool="finish", command=text.strip())
+        return AgentAction(tool="no_action", command=text.strip())
     match = matches[-1]
     lang = match.group(1).lower()
     tool = "finish" if lang == "finish" else "run_shell"
@@ -211,17 +214,17 @@ async def arun_agent(
                 sampler.complete, prompt, system=system_prompt
             )
             action = parse_action(sample.text)
-            if action.tool == "finish":
+            if action.tool in {"finish", "no_action"}:
                 turn = AgentTurn(
                     message=action.command or sample.text,
                     tool_calls=(
-                        {"tool": "finish", "args": {"answer": action.command}},
+                        {"tool": action.tool, "args": {"answer": action.command}},
                     ),
                 )
                 service.record_turn(handle, turn)
                 turns.append(turn)
                 steps.append(RolloutStep(prompt, sample, None, None))
-                terminal_reason = "finished"
+                terminal_reason = "finished" if action.tool == "finish" else "no_action"
                 break
             output = await asyncio.to_thread(run_shell, bound, action.command)
             turn = AgentTurn(
