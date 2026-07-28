@@ -30,7 +30,13 @@ from swe.builder import SweBuilder
 from swe.grading import _nodeid
 from swe.instances import SweInstance, load_instance, to_graph
 from swe.realize import SweRuntime
-from swe.sandbox import _bwrap_wrap, run_sandboxed
+from swe.sandbox import (
+    _bwrap_usable,
+    _bwrap_wrap,
+    _select_backend,
+    _verify_backend_request,
+    run_sandboxed,
+)
 from swe.swebench import instance_from_row
 
 from openrange.core.episode import EpisodeReport
@@ -393,6 +399,54 @@ class TestSandbox:
             ["-c", "import time; time.sleep(10)"], root=tmp_path, timeout=2
         )
         assert res.timed_out
+
+    def test_a_secret_in_the_environment_does_not_reach_the_child(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The child runs repo-supplied test code. A canary standing in for the
+        # API keys and CI tokens a real operator has exported must not be
+        # readable from it.
+        monkeypatch.setenv("OPENRANGE_CANARY_TOKEN", "sk-do-not-leak")
+        read_canary = (
+            "import os; print(os.environ.get('OPENRANGE_CANARY_TOKEN', 'ABSENT'))"
+        )
+        res = run_sandboxed(["-c", read_canary], root=tmp_path, timeout=10)
+        assert res.ok
+        assert "sk-do-not-leak" not in res.stdout
+        assert "ABSENT" in res.stdout
+
+    def test_the_child_keeps_what_a_test_run_needs(self, tmp_path: Path) -> None:
+        res = run_sandboxed(
+            ["-c", "import os; print(bool(os.environ.get('PATH')))"],
+            root=tmp_path,
+            timeout=10,
+        )
+        assert "True" in res.stdout
+
+    def test_backend_selection_is_pure_and_total(self) -> None:
+        assert _select_backend("bwrap", usable=True) == "bwrap"
+        assert _select_backend("auto", usable=True) == "bwrap"
+        assert _select_backend("auto", usable=False) == "none"
+        assert _select_backend("none", usable=True) == "none"
+
+    def test_an_unhonourable_isolation_request_is_refused_at_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Silently downgrading reports success while running untrusted code less
+        # isolated than asked. The refusal has to happen at setup: raised from
+        # inside a feasibility check it reads as "this task is infeasible", and a
+        # seeding pass then yields an empty pool with nothing logged.
+        monkeypatch.setenv("OPENRANGE_SWE_SANDBOX", "bwrap")
+        if _bwrap_usable():
+            pytest.skip("bwrap is usable here, so the request is honourable")
+        with pytest.raises(RuntimeError, match="not usable"):
+            _verify_backend_request()
+
+    def test_the_default_request_is_always_honourable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENRANGE_SWE_SANDBOX", raising=False)
+        _verify_backend_request()  # must not raise on any host
 
     def test_bwrap_argv_isolates_net_only_when_disabled(self) -> None:
         with_net = _bwrap_wrap(["x"], root=Path("/w"), network=True)

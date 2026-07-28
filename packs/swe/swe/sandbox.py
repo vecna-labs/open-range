@@ -48,6 +48,20 @@ from pathlib import Path
 __all__ = ["SandboxResult", "run_sandboxed"]
 
 _ENV_BACKEND = "OPENRANGE_SWE_SANDBOX"
+
+# What a Python test run genuinely needs from the ambient environment. Anything
+# absent here — cloud credentials, API keys, CI tokens — never reaches the
+# repo's own test code.
+_PASSTHROUGH_ENV = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TZ",
+    "SYSTEMROOT",  # Windows: the interpreter will not start without it
+)
 _FSIZE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GiB — guard a test that fills the disk.
 _CPU_HEADROOM = 60  # CPU-seconds of slack over the wall-clock budget.
 _KILL_GRACE = 5.0
@@ -99,7 +113,8 @@ def run_sandboxed(
     """
     inner = [sys.executable, *args]
     env = _child_env(root)
-    backend = _select_backend(network)
+    override = os.environ.get(_ENV_BACKEND, "auto").strip().lower()
+    backend = _select_backend(override, _bwrap_usable())
     if backend == "bwrap":
         cmd = _bwrap_wrap(inner, root=root, network=network)
         isolation = "bwrap" if network else "bwrap+netns"
@@ -109,15 +124,29 @@ def run_sandboxed(
     return _exec(cmd, cwd=root, timeout=timeout, env=env, isolation=isolation)
 
 
-def _select_backend(network: bool) -> str:
-    """Pick ``"bwrap"`` or ``"none"`` from the env override and a live probe."""
-    override = os.environ.get(_ENV_BACKEND, "auto").strip().lower()
+def _select_backend(override: str, usable: bool) -> str:
+    """Pick ``"bwrap"`` or ``"none"``. Pure and total, so both arms are drivable
+    in-process; an unhonourable request is refused once at import, below."""
     if override in {"none", "subprocess"}:
         return "none"
-    if override == "bwrap":
-        return "bwrap" if _bwrap_usable() else "none"
-    # auto
-    return "bwrap" if _bwrap_usable() else "none"
+    return "bwrap" if usable else "none"
+
+
+def _verify_backend_request() -> None:
+    """Refuse at import if the operator asked for isolation we cannot give.
+
+    Silently downgrading hands untrusted code weaker isolation than was asked
+    for and reports success. The refusal belongs to *setup*: raised later from
+    inside a feasibility check, admission would correctly read it as "this task
+    is infeasible" and a seeding pass would yield an empty pool with nothing
+    logged — a worse failure than the one being prevented.
+    """
+    override = os.environ.get(_ENV_BACKEND, "auto").strip().lower()
+    if override == "bwrap" and not _bwrap_usable():
+        raise RuntimeError(
+            f"{_ENV_BACKEND}=bwrap was requested but bwrap is not usable here; "
+            "refusing to run untrusted code less isolated than asked"
+        )
 
 
 @lru_cache(maxsize=1)
@@ -188,7 +217,10 @@ def _child_env(root: Path) -> dict[str, str]:
     package layout and a ``src/`` layout importable *before* any editable
     install, so the no-build-file repos (the calc fixture) still resolve.
     """
-    env = dict(os.environ)
+    # The child runs repo-supplied test code, so it gets an allowlist rather
+    # than this process's environment: inheriting it hands whatever credentials
+    # the operator exported straight to the code under test.
+    env = {k: os.environ[k] for k in _PASSTHROUGH_ENV if k in os.environ}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     parts = [str(root), str(root / "src")]
@@ -262,3 +294,6 @@ def _set_rlimits(timeout: float):  # type: ignore[no-untyped-def]
                 resource.setrlimit(getattr(resource, name), (limit, limit))
 
     return apply
+
+
+_verify_backend_request()
