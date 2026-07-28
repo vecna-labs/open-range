@@ -14,6 +14,7 @@ the same path the SWE pack's own tests take.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -437,6 +438,37 @@ class TestRewardFunc:
         # its PASS_TO_PASS test was green before it started — distinct, and in
         # env order.
         assert reward_func(environments=[solved, unsolved]) == [1.0, 0.0]
+
+    def test_an_ungraded_rollout_takes_the_group_mean(self, tmp_path: Path) -> None:
+        # GRPO learns from the spread within a group, so a crashed grader's 0.0
+        # is a penalty for whatever the policy happened to do. The group mean
+        # carries zero advantage, which is what "measured nothing" deserves.
+        snapshot = _admit("calc_sum")
+        broken = replace(
+            snapshot,
+            tasks=(replace(snapshot.tasks[0], success_check="swe.no_such_family"),),
+        )
+        service = EpisodeService(SwePack(), tmp_path / "grp")
+        try:
+            solved = EpisodeEnv(
+                service=service,
+                snapshots={snapshot.snapshot_id: snapshot},
+                tools=FILE_TOOLS,
+            )
+            solved.reset(snapshot_id=snapshot.snapshot_id)
+            _solve(solved, "calc_sum")
+            ungraded = EpisodeEnv(
+                service=service, snapshots={broken.snapshot_id: broken}
+            )
+            ungraded.reset(snapshot_id=broken.snapshot_id)
+
+            rewards = make_reward_func()(environments=[solved, ungraded])
+            assert ungraded.report is not None
+            assert ungraded.report.episode_result.error is not None
+            # Only the solved rollout graded, so the mean is its own reward.
+            assert rewards == [1.0, 1.0]
+        finally:
+            service.close()
 
     def test_reward_func_is_idempotent(self, make_env: EnvMaker) -> None:
         env, snap = make_env("calc_sum")

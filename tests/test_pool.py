@@ -12,7 +12,7 @@ from __future__ import annotations
 from openrange_pack_sdk import EpisodeResult
 
 from openrange.core.episode import EpisodeReport
-from openrange.pool import _member_priority
+from openrange.pool import _mean_pass_rate, _member_priority
 from openrange.training import Reward, episode_reward
 
 
@@ -56,6 +56,31 @@ def test_a_world_the_agent_almost_solved_outranks_a_solved_one() -> None:
     idle = episode_reward(_report(False, {"f2p": False, "p2p": True}, {"p2p": True}))
     assert _member_priority([solved]) < _member_priority([trap])
     assert _member_priority([trap]) < _member_priority([idle])
+
+
+def test_solve_rate_excludes_the_episodes_that_never_graded() -> None:
+    # Counting an infra failure as a miss deflates the only number a trainer
+    # reads by however much the grader flaked.
+    graded = [_report(True, {"a": True}), _report(False, {"a": False})]
+    errored = EpisodeReport(
+        snapshot_id="s",
+        task_id="t",
+        episode_result=EpisodeResult(success=False, error="TimeoutExpired"),
+    )
+    rate, members = _mean_pass_rate([[*graded, errored, errored]])
+    assert rate == 0.5
+    assert members == 1
+
+
+def test_a_round_that_graded_nothing_is_not_a_round_that_solved_nothing() -> None:
+    errored = EpisodeReport(
+        snapshot_id="s",
+        task_id="t",
+        episode_result=EpisodeResult(success=False, error="TimeoutExpired"),
+    )
+    rate, members = _mean_pass_rate([[errored]])
+    assert rate == 0.0
+    assert members == 0  # the count is what tells the two apart
 
 
 def test_priority_without_components_is_learnability_only() -> None:

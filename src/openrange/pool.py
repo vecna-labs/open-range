@@ -158,9 +158,22 @@ def _snapshots_of(members: Iterable[_Member]) -> list[Snapshot]:
     return list(by_id.values())
 
 
-def _mean_pass_rate(report_groups: Iterable[Sequence[EpisodeReport]]) -> float:
-    rates = [sum(1 for r in g if r.passed) / len(g) for g in report_groups if g]
-    return sum(rates) / len(rates) if rates else 0.0
+def _mean_pass_rate(
+    report_groups: Iterable[Sequence[EpisodeReport]],
+) -> tuple[float, int]:
+    """Mean solve rate over the episodes that graded, and how many groups did.
+
+    An errored episode measured nothing. Leaving it in the denominator deflates
+    the only number a trainer reads by however much the infrastructure flaked,
+    and the count is what separates "solved none of them" from "graded none of
+    them" — which are the same ``0.0`` otherwise.
+    """
+    rates: list[float] = []
+    for group in report_groups:
+        graded = [r for r in group if r.episode_result.error is None]
+        if graded:
+            rates.append(sum(1 for r in graded if r.passed) / len(graded))
+    return (sum(rates) / len(rates) if rates else 0.0), len(rates)
 
 
 def _member_priority(rewards: Sequence[Reward]) -> float:
@@ -409,6 +422,12 @@ class RoundMetrics:
     held_out_solve_rate: float | None = None
     frontier_capped: bool = False
     difficulty_gain: float | None = None
+    graded_members: int = 0
+    """How many pool members actually produced a grade this round.
+
+    ``train_solve_rate`` is a mean over these; at zero the round measured
+    nothing and the rate is not evidence of anything.
+    """
 
     @property
     def generalization_gap(self) -> float | None:
@@ -460,9 +479,10 @@ class EvalPool:
         return _rows_for(self._members, num_generations)
 
     def solve_rate(self, reports: RoundReports) -> float:
-        return _mean_pass_rate(
+        rate, _graded = _mean_pass_rate(
             reports[m.key] for m in self._members if m.key in reports
         )
+        return rate
 
 
 def run_pool_curriculum(
@@ -515,9 +535,11 @@ def run_pool_curriculum(
             evolve_top=evolve_top,
             reward_fn=reward_fn,
         )
+        train_rate, graded = _mean_pass_rate(reports.values())
         metrics.append(
             RoundMetrics(
-                train_solve_rate=_mean_pass_rate(reports.values()),
+                train_solve_rate=train_rate,
+                graded_members=graded,
                 held_out_solve_rate=held_out,
                 frontier_capped=capped,
                 difficulty_gain=pool._last_difficulty_gain,

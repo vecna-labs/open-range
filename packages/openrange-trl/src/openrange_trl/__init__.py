@@ -395,12 +395,26 @@ def make_reward_func(
         **kwargs: object,
     ) -> list[float]:
         rewards: list[float] = []
+        graded: list[float] = []
+        ungraded: list[int] = []
         for env in environments or ():
             env._finalize()
             if collector is not None and env.report is not None:
                 key = (env.report.snapshot_id, env.report.task_id)
                 collector.setdefault(key, []).append(env.report)
-            rewards.append(float(env.reward))
+            value = float(env.reward)
+            if env.report is not None and env.report.episode_result.error is not None:
+                ungraded.append(len(rewards))
+            else:
+                graded.append(value)
+            rewards.append(value)
+        # GRPO reads the spread of a group, so a 0.0 from a crashed grader is a
+        # penalty for whatever the policy happened to do. The group mean carries
+        # zero advantage, which is what "this rollout measured nothing" deserves.
+        if ungraded and graded:
+            mean = sum(graded) / len(graded)
+            for index in ungraded:
+                rewards[index] = mean
         return rewards
 
     return reward_func
