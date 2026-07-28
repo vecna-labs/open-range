@@ -235,13 +235,18 @@ class TestTrajectory:
 class TestEpisodeRun:
     def test_bundles_report_turns_and_shapes_trajectory(self) -> None:
         report = _report(success=True, subgoals={"t1": True}, reason="green")
-        run = EpisodeRun(report=report, turns=(AgentTurn(message="done"),))
+        run = EpisodeRun(
+            report=report,
+            reward=episode_reward(report),
+            turns=(AgentTurn(message="done"),),
+        )
         assert run.success is True
         assert run.reward.scalar == 1.0
         assert [s.message for s in run.trajectory.steps] == ["done"]
 
     def test_defaults_to_zero_step_trajectory(self) -> None:
-        run = EpisodeRun(report=_report(success=False, subgoals={"t1": False}))
+        report = _report(success=False, subgoals={"t1": False})
+        run = EpisodeRun(report=report, reward=episode_reward(report))
         assert run.success is False
         assert run.reward.scalar == 0.0
         assert run.trajectory.steps == ()

@@ -18,7 +18,12 @@ from openrange_pack_sdk import (
 )
 
 from openrange.core.admit import AdmissionFailure, admit
-from openrange.core.episode import AgentTurn, EpisodeError, EpisodeService
+from openrange.core.episode import (
+    AgentTurn,
+    EpisodeError,
+    EpisodeReport,
+    EpisodeService,
+)
 from openrange.core.errors import EpisodeRuntimeError as EpisodeRuntimeError
 from openrange.core.pack import PACKS
 from openrange.dashboard import (
@@ -26,7 +31,7 @@ from openrange.dashboard import (
     DashboardHTTPServer,
     DashboardView,
 )
-from openrange.training import EpisodeRun
+from openrange.training import EpisodeRun, Reward, episode_reward
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +198,7 @@ class OpenRangeRun:
         solver: Solver,
         *,
         task_id: str | None = None,
+        reward_fn: Callable[[EpisodeReport], Reward] = episode_reward,
     ) -> EpisodeRun:
         """Run one episode end to end and return the graded result.
 
@@ -219,7 +225,7 @@ class OpenRangeRun:
             report = svc.stop_episode(handle)
         finally:
             svc.close()
-        return EpisodeRun(report=report, turns=tuple(turns))
+        return EpisodeRun(report=report, reward=reward_fn(report), turns=tuple(turns))
 
     def serve_dashboard(
         self,

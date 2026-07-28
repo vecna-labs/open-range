@@ -174,15 +174,12 @@ class EpisodeRun:
     """
 
     report: EpisodeReport
+    reward: Reward
     turns: tuple[AgentTurn, ...] = ()
 
     @property
     def trajectory(self) -> Trajectory:
-        return episode_trajectory(self.report, self.turns)
-
-    @property
-    def reward(self) -> Reward:
-        return self.trajectory.reward
+        return episode_trajectory(self.report, self.turns, self.reward)
 
     @property
     def success(self) -> bool:
