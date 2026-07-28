@@ -1,7 +1,8 @@
 """The pool ranks worlds by the reward the trainer optimizes, not always the default.
 
-``reward_fn`` threads into world priority (``_member_priority``); a custom reward
-must change the ranking, or the pool evolves on a different objective than GRPO.
+``_member_priority`` reads shaped ``Reward``s, so the ``reward_fn`` handed to
+``WorldPool.update`` is the objective the ranking follows, and a subgoal the world
+granted for free cannot inflate the regret term into headroom that is not there.
 The threading through ``WorldPool.update`` / ``run_pool_curriculum`` is covered as
 an integration test in ``test_curriculum`` (against a real admitted world).
 """
@@ -11,24 +12,76 @@ from __future__ import annotations
 from openrange_pack_sdk import EpisodeResult
 
 from openrange.core.episode import EpisodeReport
-from openrange.pool import _member_priority
+from openrange.pool import _mean_pass_rate, _member_priority
 from openrange.training import Reward, episode_reward
 
 
-def _report(success: bool, subgoals: dict[str, bool]) -> EpisodeReport:
+def _report(
+    success: bool,
+    subgoals: dict[str, bool],
+    baseline: dict[str, bool] | None = None,
+) -> EpisodeReport:
     return EpisodeReport(
         snapshot_id="s",
         task_id="t",
-        episode_result=EpisodeResult(success=success, subgoals=subgoals),
+        episode_result=EpisodeResult(
+            success=success, subgoals=subgoals, baseline=baseline or {}
+        ),
     )
 
 
-def test_member_priority_defaults_to_episode_reward() -> None:
+def test_priority_follows_the_shaped_reward() -> None:
     reports = [_report(False, {"a": True, "b": False, "c": False})]
-    assert _member_priority(reports) == _member_priority(reports, episode_reward)
+    shaped = _member_priority([episode_reward(r) for r in reports])
+    flat = _member_priority([Reward(scalar=0.5) for _ in reports])
+    assert shaped != flat
 
 
-def test_member_priority_uses_a_custom_reward_fn() -> None:
-    reports = [_report(False, {"a": True, "b": False, "c": False})]
-    custom = _member_priority(reports, lambda _r: Reward(scalar=0.5))
-    assert custom != _member_priority(reports)
+def test_regret_ignores_subgoals_the_world_granted() -> None:
+    # Identical observed subgoals; the second world handed "a" over unearned, so
+    # it offers one third less to learn and must not rank as if it offered more.
+    earned = episode_reward(_report(False, {"a": True, "b": False, "c": False}))
+    granted = episode_reward(
+        _report(False, {"a": True, "b": False, "c": False}, {"a": True})
+    )
+    assert _member_priority([earned]) > _member_priority([granted])
+
+
+def test_a_world_the_agent_almost_solved_outranks_a_solved_one() -> None:
+    # The instructive world: everything earnable won, one precondition broken.
+    # It must not sort with the solved world, or the pool evicts exactly the
+    # world with the most left to learn.
+    trap = episode_reward(_report(False, {"f2p": True, "p2p": False}, {"p2p": True}))
+    solved = episode_reward(_report(True, {"f2p": True, "p2p": True}, {"p2p": True}))
+    idle = episode_reward(_report(False, {"f2p": False, "p2p": True}, {"p2p": True}))
+    assert _member_priority([solved]) < _member_priority([trap])
+    assert _member_priority([trap]) < _member_priority([idle])
+
+
+def test_solve_rate_excludes_the_episodes_that_never_graded() -> None:
+    # Counting an infra failure as a miss deflates the only number a trainer
+    # reads by however much the grader flaked.
+    graded = [_report(True, {"a": True}), _report(False, {"a": False})]
+    errored = EpisodeReport(
+        snapshot_id="s",
+        task_id="t",
+        episode_result=EpisodeResult(success=False, error="TimeoutExpired"),
+    )
+    assert _mean_pass_rate([[*graded, errored, errored]]) == 0.5
+
+
+def test_a_group_that_graded_nothing_leaves_the_mean_alone() -> None:
+    # Not just excluded from its own group's denominator — a group where every
+    # episode errored is not a zero to average against the groups that ran.
+    errored = EpisodeReport(
+        snapshot_id="s",
+        task_id="t",
+        episode_result=EpisodeResult(success=False, error="TimeoutExpired"),
+    )
+    assert _mean_pass_rate([[_report(True, {"a": True})], [errored]]) == 1.0
+
+
+def test_priority_without_components_is_learnability_only() -> None:
+    # No subgoals at all: regret has nothing to read, so priority is the
+    # learnability term alone rather than an accidental zero.
+    assert _member_priority([episode_reward(_report(True, {}))]) == 0.0

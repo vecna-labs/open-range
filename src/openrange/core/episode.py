@@ -134,7 +134,9 @@ class EpisodeReport:
             "episode_result": {
                 "success": self.episode_result.success,
                 "subgoals": dict(self.episode_result.subgoals),
+                "baseline": dict(self.episode_result.baseline),
                 "reason": self.episode_result.reason,
+                "error": self.episode_result.error,
             },
             "final_state": dict(self.final_state),
             "agent_summary": self.agent_summary,
@@ -306,8 +308,14 @@ class EpisodeService:
         if not _is_poolable(running.runtime):
             return False
         snapshot_id = running.snapshot.snapshot_id
+        # Overwrite would drop whatever is already parked under this key without
+        # stopping it — and since the dict does not grow, the eviction below
+        # never fires to reclaim it either.
+        displaced = self._warm.pop(snapshot_id, None)
+        if displaced is not None:
+            with contextlib.suppress(Exception):
+                displaced.stop()
         self._warm[snapshot_id] = running.runtime
-        self._warm.move_to_end(snapshot_id)
         while len(self._warm) > self._warm_capacity:
             _, evicted = self._warm.popitem(last=False)
             with contextlib.suppress(Exception):
@@ -343,12 +351,14 @@ class EpisodeService:
             running.final_state = final_state
             episode_result = self._check_success(running, final_state)
         except Exception as exc:  # noqa: BLE001
-            # A grader/collect crash becomes a failed grade, not a propagated error.
+            # A grader/collect crash becomes a failed grade, not a propagated
+            # error — and `error` marks it a non-measurement.
             running.final_state = final_state
             episode_result = EpisodeResult(
                 success=False,
                 subgoals={},
                 reason=f"grading failed: {exc!r}",
+                error=f"{type(exc).__name__}: {exc}",
             )
             self._record_system(
                 running,
@@ -569,6 +579,7 @@ class EpisodeService:
                     f"pack {self.pack.id!r} has no TaskFamily "
                     f"{running.task.success_check!r}"
                 ),
+                error=f"unresolved success_check {running.task.success_check!r}",
             )
         return family.check_success(running.snapshot.graph, running.task, final_state)
 

@@ -144,7 +144,16 @@ testpaths = [
 
 [tool.coverage.run]
 branch = true
-source = ["openrange", "openrange_pack_sdk", "cyber_webapp", "openrange_trl"]
+source = [
+    "openrange",
+    "openrange_pack_sdk",
+    "graphschema",
+    "cyber_webapp",
+    "swe",
+    "trading",
+    "openrange_trl",
+    "openrange_rllm",
+]
 omit = [
     "src/openrange/__main__.py",
 ]

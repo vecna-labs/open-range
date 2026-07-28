@@ -15,9 +15,12 @@ Covers:
 
 from __future__ import annotations
 
+import random
+
 import pytest
 from cyber_webapp import WebappBuilder, WebappPack
 from cyber_webapp.priors import default_prior
+from cyber_webapp.sampling import sample_graph
 from openrange_pack_sdk import BuildResult, PackError, PackPrior, Snapshot
 
 from openrange.core.admit import admit
@@ -270,3 +273,12 @@ def test_admission_snapshot_id_is_deterministic() -> None:
     assert isinstance(snap_a, Snapshot)
     assert isinstance(snap_b, Snapshot)
     assert snap_a.snapshot_id == snap_b.snapshot_id
+
+
+def test_sample_graph_honours_its_optional_prior() -> None:
+    # `sample_graph` advertises `prior: PackPrior | None = None` and every
+    # helper it calls guards for None — except the vuln-pin read, which made
+    # the advertised default an AttributeError. No in-tree caller passes None
+    # (WebappBuilder always injects default_prior()), so nothing caught it.
+    graph = sample_graph(random.Random(0))
+    assert graph.nodes

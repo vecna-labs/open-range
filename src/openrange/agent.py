@@ -19,6 +19,7 @@ ships no per-verb tools.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -35,6 +36,8 @@ from openrange.training import (
     episode_reward,
     episode_trajectory,
 )
+
+_LOG = logging.getLogger(__name__)
 
 
 class AgentError(RuntimeError):
@@ -110,7 +113,7 @@ class AgentRollout:
 
     @property
     def trajectory(self) -> Trajectory:
-        return episode_trajectory(self.report, self.turns)
+        return episode_trajectory(self.report, self.turns, self.reward)
 
 
 def agent_briefing(ctx: EpisodeContext) -> str:
@@ -146,11 +149,14 @@ def parse_action(text: str) -> AgentAction:
     tool token it only ever sees in our prompt and routinely forgets. The *last*
     recognized block wins, so an illustrative snippet earlier in the reply is not
     executed in place of the action the model actually settled on. A reply with
-    no recognized block becomes a ``finish`` carrying the whole text, so a model
-    that ignores the protocol terminates rather than loops."""
+    no recognized block still terminates the episode, so a model that ignores
+    the protocol does not loop — but it is reported as ``no_action`` rather than
+    ``finish``, because "never produced an action" and "chose to stop" are
+    different outcomes and a trainer that cannot tell them apart learns from the
+    difference as if it were signal."""
     matches = list(_ACTION_BLOCK.finditer(text))
     if not matches:
-        return AgentAction(tool="finish", command=text.strip())
+        return AgentAction(tool="no_action", command=text.strip())
     match = matches[-1]
     lang = match.group(1).lower()
     tool = "finish" if lang == "finish" else "run_shell"
@@ -197,12 +203,16 @@ async def arun_agent(
     rollouts — the caller closes it.
     """
     handle = service.start_episode(snapshot, task_id)
-    surface = service.surface(handle)
-    capability = await asyncio.to_thread(bind_run, surface)
+    capability: RunCapability | None = None
     steps: list[RolloutStep] = []
     turns: list[AgentTurn] = []
     terminal_reason = "max_turns"
     try:
+        # Inside the guard: binding the shell is the caller's code attaching to a
+        # live world — for a container that is the docker exec, the most
+        # failure-prone step here — and the episode is already registered.
+        surface = service.surface(handle)
+        capability = await asyncio.to_thread(bind_run, surface)
         task = next(t for t in snapshot.tasks if t.id == handle.task_id)
         bound = {**surface, "run": capability.run}
         prompt = agent_briefing(EpisodeContext(task=task, surface=bound))
@@ -211,17 +221,17 @@ async def arun_agent(
                 sampler.complete, prompt, system=system_prompt
             )
             action = parse_action(sample.text)
-            if action.tool == "finish":
+            if action.tool in {"finish", "no_action"}:
                 turn = AgentTurn(
                     message=action.command or sample.text,
                     tool_calls=(
-                        {"tool": "finish", "args": {"answer": action.command}},
+                        {"tool": action.tool, "args": {"answer": action.command}},
                     ),
                 )
                 service.record_turn(handle, turn)
                 turns.append(turn)
                 steps.append(RolloutStep(prompt, sample, None, None))
-                terminal_reason = "finished"
+                terminal_reason = "finished" if action.tool == "finish" else "no_action"
                 break
             output = await asyncio.to_thread(run_shell, bound, action.command)
             turn = AgentTurn(
@@ -246,7 +256,15 @@ async def arun_agent(
             terminal_reason=terminal_reason,
         )
     finally:
-        await asyncio.to_thread(capability.close)
+        # Cleanup must not mask the failure it is cleaning up after, nor let one
+        # failing step skip the next. `stop_episode` reaches pack code
+        # (`poolable()`) and the dashboard write, both of which can raise.
+        try:
+            service.stop_episode(handle)
+        except Exception:
+            _LOG.exception("stopping episode %s failed", handle.id)
+        if capability is not None:
+            await asyncio.to_thread(capability.close)
 
 
 def run_agent(
@@ -303,7 +321,16 @@ async def arun_rollouts(
                 **kwargs,
             )
 
-    return list(await asyncio.gather(*(_one(tid) for tid in ids)))
+    # Settle every rollout before surfacing a failure: a bare gather propagates
+    # the first exception out of the event loop, cancelling its siblings
+    # mid-episode so their worlds are never stopped and their grades are lost.
+    settled = await asyncio.gather(*(_one(tid) for tid in ids), return_exceptions=True)
+    rollouts: list[AgentRollout] = []
+    for outcome in settled:
+        if isinstance(outcome, BaseException):
+            raise outcome
+        rollouts.append(outcome)
+    return rollouts
 
 
 def run_rollouts(

@@ -15,8 +15,9 @@ Three layers:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +59,8 @@ from openrange.core.curriculum import (
     auto_evolve,
     direction_from_reports,
 )
-from openrange.core.episode import EpisodeService
+from openrange.core.episode import EpisodeReport, EpisodeService
+from openrange.pool import WorldPool
 
 
 @dataclass(frozen=True)
@@ -781,6 +783,9 @@ def test_stop_episode_records_a_failed_grade_when_the_grader_raises(
         report = svc.stop_episode(handle)
         assert report.passed is False
         assert "grader boom" in report.episode_result.reason
+        # The harness failed, not the agent: without this the curriculum reads
+        # a crashed grader as a world the agent could not solve.
+        assert report.episode_result.error == "RuntimeError: grader boom"
         # collect() ran before the grader raised, so its state survives in the report.
         assert dict(report.final_state) == collected
         assert handle.id not in svc._episodes
@@ -790,6 +795,142 @@ def test_stop_episode_records_a_failed_grade_when_the_grader_raises(
         )
     finally:
         svc.close()
+
+
+def test_an_unresolvable_success_check_is_an_error_not_a_grade(
+    tmp_path: Path,
+) -> None:
+    # admit() resolves feasibility_check but never success_check, so a task can
+    # be admitted and only fail at grading. That is the harness misconfigured,
+    # not the agent answering wrongly.
+    family = _StubFamily()
+    pack = _StubPack(family)
+    task = replace(_stub_task(), success_check="stub.missing")
+    pack.attach_build_result(BuildResult(graph=_build_stub_world(), tasks=[task]))
+    snap = admit(pack, manifest={"seed": 0, "runtime": {"tick": {"mode": "off"}}})
+    assert isinstance(snap, Snapshot), snap
+
+    svc = EpisodeService(pack, tmp_path)
+    try:
+        report = svc.stop_episode(svc.start_episode(snap, snap.tasks[0].id))
+        assert report.passed is False
+        assert report.episode_result.error == "unresolved success_check 'stub.missing'"
+    finally:
+        svc.close()
+
+
+def _pool_warnings(caplog: pytest.LogCaptureFixture) -> str:
+    # caplog.text spans every logger, so it can go green on text the pool never
+    # emitted — which is the exact failure these two tests exist to catch.
+    records = [r for r in caplog.records if r.name == "openrange.pool"]
+    assert records, "the pool logged nothing at all"
+    return "\n".join(r.getMessage() for r in records)
+
+
+def test_seeding_says_why_a_manifest_was_rejected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An empty pool is the same object whether nothing was offered or
+    # everything was refused, so a silent skip leaves an operator with a
+    # seeding run that produced nothing and no way to find out why.
+    pack = _StubPack(_StubFamily())
+    task = replace(_stub_task(), entrypoints=())  # unbindable, so admission refuses
+    pack.attach_build_result(BuildResult(graph=_build_stub_world(), tasks=[task]))
+
+    with caplog.at_level(logging.WARNING, logger="openrange.pool"):
+        pool = WorldPool.seed(
+            pack, [{"seed": 0}], difficulty_fn=lambda _s: 1.0, max_size=4
+        )
+
+    assert not pool.keys()
+    assert "entrypoint" in _pool_warnings(caplog)
+
+
+def test_seeding_reports_a_check_that_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A raising check produces no Issue — admission records the exception text
+    # in the build history and nowhere else, so reading only `issues` names the
+    # task that failed and never says why.
+    class _Raising(_StubFamily):
+        def check_feasibility(
+            self, graph: WorldGraph, task: TaskSpec
+        ) -> FeasibilityVerdict:
+            raise RuntimeError("cannot honour the isolation this host was asked for")
+
+    pack = _StubPack(_Raising())
+    pack.attach_build_result(
+        BuildResult(graph=_build_stub_world(), tasks=[_stub_task()])
+    )
+
+    with caplog.at_level(logging.WARNING, logger="openrange.pool"):
+        WorldPool.seed(pack, [{"seed": 0}], difficulty_fn=lambda _s: 1.0, max_size=4)
+
+    assert "cannot honour the isolation" in _pool_warnings(caplog)
+
+
+class TestPoolPricesOnlyWhatGraded:
+    """An errored episode is not evidence about the world it ran in."""
+
+    @staticmethod
+    def _pool() -> tuple[WorldPool, _StubPack, tuple[str, str]]:
+        family = _StubFamily()
+        _, pack = _build_stub_snapshot(family)
+        pool = WorldPool.seed(
+            pack, [{"seed": 0}], difficulty_fn=lambda _s: 7.0, max_size=4
+        )
+        (key,) = pool.keys()
+        return pool, pack, key
+
+    @staticmethod
+    def _reports(key: tuple[str, str], *outcomes: bool) -> list[EpisodeReport]:
+        return [
+            EpisodeReport(
+                snapshot_id=key[0],
+                task_id=key[1],
+                episode_result=EpisodeResult(
+                    success=ok, subgoals={"a": ok, "b": False}
+                ),
+            )
+            for ok in outcomes
+        ]
+
+    @staticmethod
+    def _errored(key: tuple[str, str]) -> list[EpisodeReport]:
+        return [
+            EpisodeReport(
+                snapshot_id=key[0],
+                task_id=key[1],
+                episode_result=EpisodeResult(
+                    success=False, reason="grading failed", error="TimeoutExpired"
+                ),
+            )
+        ]
+
+    def test_an_errored_round_is_not_a_measurement(self) -> None:
+        # Grading crashed, so the round is not evidence: nothing is recorded.
+        # The world also sorts to the back — priority is comparative, so merely
+        # holding it steady while every other member moves would march a world
+        # nobody can grade to the front of the pool.
+        pool, pack, key = self._pool()
+        for _ in range(5):
+            pool.update({key: self._errored(key)}, pack=pack)
+        assert pool._members[key].priority == 0.0
+
+    def test_a_member_nobody_ran_still_ages(self) -> None:
+        # The staleness bump is for waiting its turn, not for failing to grade.
+        pool, pack, key = self._pool()
+        before = pool._members[key].priority
+        pool.update({}, pack=pack)
+        assert pool._members[key].priority > before
+
+    def test_a_mixed_round_is_priced_on_the_episodes_that_graded(self) -> None:
+        pool, pack, key = self._pool()
+        pool.update({key: [*self._errored(key), *self._reports(key, True)]}, pack=pack)
+        # The one solve alone: fully learnable-out (0.0) plus its unmet subgoal
+        # (0.5). Counting the errored episode as a loss would read as a half-solved
+        # world and price it 1.5 — the most attractive thing in the pool.
+        assert pool._members[key].priority == 0.5
 
 
 # Lint shim — keep imported types from being flagged as unused. They

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import pytest
 from graphschema import (
     AttrSpec,
     AttrType,
@@ -512,15 +511,72 @@ def test_admit_repair_exhausts_budget() -> None:
     assert builder.repair_calls == 2
 
 
-def test_admit_default_repair_raises_when_called() -> None:
+def test_a_builder_that_does_not_repair_fails_admission_normally() -> None:
+    # Not overriding repair() is the SDK's sanctioned opt-out, so a pack that
+    # takes it must still get the documented AdmissionFailure — otherwise that
+    # failure is unreachable for it at the shipped max_repairs, and every
+    # caller of admit() has to guard a NotImplementedError instead.
     class _Bare(Builder):
         def build(self, manifest: Manifest) -> BuildResult:
             del manifest
             return _bad_build_result()
 
     pack = _TestPack(_Bare(), families=[_PentestFamily()])
-    with pytest.raises(NotImplementedError):
-        admit(pack, manifest={}, max_repairs=1)
+    out = admit(pack, manifest={}, max_repairs=1)
+    assert isinstance(out, AdmissionFailure)
+    assert out.attempts == 1  # the one attempt it actually made, not the budget
+    assert any(
+        e.phase == "repair" and "did not implement repair()" in e.detail
+        for e in out.history
+    )
+
+
+def test_a_repair_that_crashes_is_not_recorded_as_the_opt_out() -> None:
+    # A builder that implements repair() and blows up inside it has told us
+    # nothing about its capabilities. Filing that under the opt-out throws away
+    # the only trace of the crash, and `ProceduralBuilder.repair` — the one
+    # every procedural pack inherits — is `self.build(...)`, so this is the
+    # ordinary path, not an exotic one.
+    class _CrashingRepair(Builder):
+        def build(self, manifest: Manifest) -> BuildResult:
+            del manifest
+            return _bad_build_result()
+
+        def repair(
+            self,
+            result: BuildResult,
+            errors: list[Issue],
+            infeasible: list[str],
+        ) -> BuildResult:
+            del result, errors, infeasible
+            raise KeyError("chain_target")
+
+    pack = _TestPack(_CrashingRepair(), families=[_PentestFamily()])
+    out = admit(pack, manifest={}, max_repairs=1)
+    assert isinstance(out, AdmissionFailure)
+    (event,) = [e for e in out.history if e.phase == "repair"]
+    assert "repair raised KeyError" in event.detail
+    assert "chain_target" in event.detail
+
+
+def test_a_raising_feasibility_check_rejects_only_its_task() -> None:
+    # A check that cannot answer has not shown the task solvable. Rejecting the
+    # task keeps admission fail-closed; letting the exception out would abort a
+    # whole seeding pass over one bad family.
+    class _Raising(_PentestFamily):
+        def check_feasibility(
+            self, graph: WorldGraph, task: TaskSpec
+        ) -> FeasibilityVerdict:
+            del graph, task
+            raise RuntimeError("feasibility boom")
+
+    pack = _TestPack(
+        _StaticBuilder(_good_build_result("test.pentest")), families=[_Raising()]
+    )
+    out = admit(pack, manifest={}, max_repairs=0)
+    assert isinstance(out, AdmissionFailure)
+    assert out.infeasible_tasks
+    assert any("feasibility boom" in e.detail for e in out.history)
 
 
 def test_validate_task_bindings_returns_empty_for_clean_tasks() -> None:

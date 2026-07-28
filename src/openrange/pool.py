@@ -98,6 +98,16 @@ def _gated_members(
     for manifest in manifests:
         result = admit(pack, dict(manifest), max_repairs=max_repairs)
         if isinstance(result, AdmissionFailure):
+            # The build history, not just the issues: a check that *raised*
+            # produces no Issue, and its exception text is recorded only there.
+            _LOG.warning(
+                "manifest rejected after %d attempt(s): %s",
+                result.attempts,
+                "; ".join(
+                    [i.message for i in result.issues]
+                    + [event.detail for event in result.history]
+                ),
+            )
             continue
         if seed_gate is not None and not seed_gate(result):
             _LOG.warning(
@@ -131,23 +141,30 @@ def _snapshots_of(members: Iterable[_Member]) -> list[Snapshot]:
     return list(by_id.values())
 
 
-def _mean_pass_rate(report_groups: Iterable[Sequence[EpisodeReport]]) -> float:
-    rates = [sum(1 for r in g if r.passed) / len(g) for g in report_groups if g]
+def _mean_pass_rate(
+    report_groups: Iterable[Sequence[EpisodeReport]],
+) -> float:
+    # An errored episode measured nothing; leaving it in the denominator
+    # deflates the only number a trainer reads by however much the
+    # infrastructure flaked.
+    rates: list[float] = []
+    for group in report_groups:
+        graded = [r for r in group if r.episode_result.error is None]
+        if graded:
+            rates.append(sum(1 for r in graded if r.passed) / len(graded))
     return sum(rates) / len(rates) if rates else 0.0
 
 
-def _member_priority(
-    reports: Sequence[EpisodeReport], reward_fn: RewardFn = episode_reward
-) -> float:
-    scalars = [reward_fn(r).scalar for r in reports]
-    mean = sum(scalars) / len(scalars)
+def _member_priority(rewards: Sequence[Reward]) -> float:
+    mean = sum(r.scalar for r in rewards) / len(rewards)
     learnability = 1.0 - abs(2.0 * mean - 1.0)
-    gaps = []
-    for report in reports:
-        subgoals = report.episode_result.subgoals
-        if subgoals:
-            achieved = sum(1 for hit in subgoals.values() if hit)
-            gaps.append(1.0 - achieved / len(subgoals))
+    # Regret reads the shaped components, so a subgoal the world granted for free
+    # cannot masquerade as headroom the agent failed to reach.
+    gaps = [
+        1.0 - sum(r.components.values()) / len(r.components)
+        for r in rewards
+        if r.components
+    ]
     regret = sum(gaps) / len(gaps) if gaps else 0.0
     return learnability + regret
 
@@ -259,14 +276,46 @@ class WorldPool:
         max_repairs: int = 2,
         reward_fn: RewardFn = episode_reward,
     ) -> bool:
+        """Re-price the pool from a round's reports and evolve its frontier.
+
+        ``reports`` must carry a key for every member ``round_rows`` offered,
+        even when all of its episodes errored: a missing key is indistinguishable
+        from "never selected" and takes the staleness bump meant for a world
+        still waiting its turn.
+        """
+        graded: dict[tuple[str, str], Sequence[EpisodeReport]] = {}
         for member in self._members.values():
-            ran = reports.get(member.key)
+            # An errored episode graded nothing, so it is not evidence about the
+            # world; a round of only those leaves the member unmeasured.
+            attempted = reports.get(member.key) or ()
+            ran = [
+                report for report in attempted if report.episode_result.error is None
+            ]
             if ran:
-                member.priority = _member_priority(ran, reward_fn)
+                graded[member.key] = ran
+                # One pass: reward_fn is caller-supplied and may be expensive.
+                member.priority = _member_priority(
+                    [reward_fn(report) for report in ran]
+                )
+            elif attempted:
+                # Ran and graded nothing, so it taught nothing: sort it to the
+                # back. Holding priority steady is not neutral — priority is
+                # comparative, and the staleness arm below would still march a
+                # world nobody can grade to the front one skipped round at a
+                # time. Staleness is also how it recovers if the failure was
+                # transient.
+                member.priority = 0.0
+                _LOG.warning(
+                    "pool: %s graded nothing this round (%d errored episode(s))",
+                    member.key,
+                    len(attempted),
+                )
             else:
                 member.priority = min(member.priority + _STALENESS_STEP, _MAX_PRIORITY)
+        # Evolution reads the same graded subset: an ungraded round must not
+        # steer the frontier either.
         grown, capped, gain = self._grow(
-            reports, pack, policy, gate, gate_factory, evolve_top, max_repairs
+            graded, pack, policy, gate, gate_factory, evolve_top, max_repairs
         )
         self._last_difficulty_gain = gain
         self._bound(grown)

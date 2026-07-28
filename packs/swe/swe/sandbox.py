@@ -45,9 +45,23 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-__all__ = ["SandboxResult", "run_sandboxed"]
+__all__ = ["SandboxResult", "run_sandboxed", "verify_backend_request"]
 
 _ENV_BACKEND = "OPENRANGE_SWE_SANDBOX"
+
+# What a Python test run genuinely needs from the ambient environment. Anything
+# absent here — cloud credentials, API keys, CI tokens — never reaches the
+# repo's own test code.
+_PASSTHROUGH_ENV = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TZ",
+    "SYSTEMROOT",  # Windows: the interpreter will not start without it
+)
 _FSIZE_LIMIT = 2 * 1024 * 1024 * 1024  # 2 GiB — guard a test that fills the disk.
 _CPU_HEADROOM = 60  # CPU-seconds of slack over the wall-clock budget.
 _KILL_GRACE = 5.0
@@ -95,12 +109,14 @@ def run_sandboxed(
     knob: the grading run leaves it ``False`` (isolated where possible); an
     editable install passes ``True``. The call never raises for a non-zero exit
     or a timeout — those are reported in the result, because a failed test run is
-    data, not an error.
+    data, not an error. It *does* raise if the operator demanded isolation this
+    host cannot give: this is the only place that knows what the child actually
+    got, so it is the only place that can keep the promise.
     """
+    verify_backend_request()
     inner = [sys.executable, *args]
     env = _child_env(root)
-    backend = _select_backend(network)
-    if backend == "bwrap":
+    if _use_bwrap():
         cmd = _bwrap_wrap(inner, root=root, network=network)
         isolation = "bwrap" if network else "bwrap+netns"
     else:
@@ -109,15 +125,27 @@ def run_sandboxed(
     return _exec(cmd, cwd=root, timeout=timeout, env=env, isolation=isolation)
 
 
-def _select_backend(network: bool) -> str:
-    """Pick ``"bwrap"`` or ``"none"`` from the env override and a live probe."""
+def _use_bwrap() -> bool:
+    if os.environ.get(_ENV_BACKEND, "auto").strip().lower() in {"none", "subprocess"}:
+        return False
+    return _bwrap_usable()
+
+
+def verify_backend_request() -> None:
+    """Refuse if the operator asked for isolation this host cannot give.
+
+    Enforced in ``run_sandboxed``, which is where the guarantee is either kept
+    or not. ``SwePack.make_builder`` calls it too, so the ordinary path fails at
+    setup with the right category rather than surfacing later as an infeasible
+    task; the check in ``run_sandboxed`` is what still holds when a world is
+    built in one process and graded in another.
+    """
     override = os.environ.get(_ENV_BACKEND, "auto").strip().lower()
-    if override in {"none", "subprocess"}:
-        return "none"
-    if override == "bwrap":
-        return "bwrap" if _bwrap_usable() else "none"
-    # auto
-    return "bwrap" if _bwrap_usable() else "none"
+    if override == "bwrap" and not _bwrap_usable():
+        raise RuntimeError(
+            f"{_ENV_BACKEND}=bwrap was requested but bwrap is not usable here; "
+            "refusing to run untrusted code less isolated than asked"
+        )
 
 
 @lru_cache(maxsize=1)
@@ -188,7 +216,10 @@ def _child_env(root: Path) -> dict[str, str]:
     package layout and a ``src/`` layout importable *before* any editable
     install, so the no-build-file repos (the calc fixture) still resolve.
     """
-    env = dict(os.environ)
+    # The child runs repo-supplied test code, so it gets an allowlist rather
+    # than this process's environment: inheriting it hands whatever credentials
+    # the operator exported straight to the code under test.
+    env = {k: os.environ[k] for k in _PASSTHROUGH_ENV if k in os.environ}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     parts = [str(root), str(root / "src")]

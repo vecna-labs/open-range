@@ -27,7 +27,7 @@ class CuriousEmployee(AgentNPC):
         if http_get is None:
             return ()
 
-        @tool
+        @tool  # type: ignore[untyped-decorator]
         def visit_url(path: str) -> str:
             """Visit a path on the company webapp and return a short snippet.
 

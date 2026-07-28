@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import random
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from openrange_pack_sdk import (
     BuildResult,
@@ -43,7 +43,7 @@ def _as_int(value: object, ctx: str) -> int:
     return value
 
 
-def _validate_vuln_kinds(kinds: object) -> None:
+def _validate_vuln_kinds(kinds: Iterable[str]) -> None:
     for kind in kinds:
         if kind not in VULN_CATALOG:
             raise PackError(f"unknown vuln kind {kind!r}; not in the catalog")
@@ -56,9 +56,9 @@ def _validate_vuln_kinds(kinds: object) -> None:
 
 def _apply_vuln_knob(
     vuln: object,
-    topology: dict,
-    kind_weights: dict,
-    count_ranges: dict,
+    topology: dict[str, object],
+    kind_weights: dict[str, object],
+    count_ranges: dict[str, object],
 ) -> None:
     if not isinstance(vuln, Mapping):
         raise PackError("vuln must be a mapping with 'weights' or 'pin'")

@@ -115,11 +115,28 @@ class FeasibilityVerdict:
 @dataclass(frozen=True)
 class EpisodeResult:
     """Structured outcome — never a scalar reward. Harness-side
-    training adapters do the shaping."""
+    training adapters do the shaping.
+
+    ``baseline`` is what each subgoal was worth *before the agent acted*, for
+    the subgoals a pack can say that about. A subgoal that is already ``True``
+    there is a precondition the agent inherited, not an achievement: shapers
+    credit only the rest, and a precondition that comes back ``False`` is a
+    regression. Its keys must be a subset of ``subgoals`` — one this episode
+    does not report reads as regressed. Packs that leave it empty keep uniform
+    credit over ``subgoals``.
+
+    ``error`` marks an episode that produced no gradeable answer — the grader
+    crashed, the suite timed out, the world never came up. It is not a wrong
+    answer, and a curriculum that scores it as one learns that the world is
+    hard. Set it and the episode is a non-measurement: shapers still report
+    ``0.0``, but the pool excludes it rather than ranking on it.
+    """
 
     success: bool
     subgoals: Mapping[str, bool] = field(default_factory=dict)
     reason: str = ""
+    baseline: Mapping[str, bool] = field(default_factory=dict)
+    error: str | None = None
 
 
 @dataclass(frozen=True)

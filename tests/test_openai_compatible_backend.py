@@ -311,3 +311,30 @@ def test_openai_compatible_backend_omits_sampling_knobs_by_default() -> None:
     payload = cast(dict[str, Any], requests[0]["payload"])
     assert "temperature" not in payload
     assert "max_tokens" not in payload
+
+
+def test_an_empty_completion_is_an_error_not_an_empty_answer() -> None:
+    # A refusal or content filter answers 200 with empty text. Handing that back
+    # as a valid completion makes the caller grade "the provider returned
+    # nothing" as "the model said nothing worth acting on".
+    def handler(
+        _payload: Mapping[str, object],
+        _headers: Mapping[str, str],
+        _path: str,
+    ) -> ServerResponse:
+        body = {
+            "id": "cmpl-empty",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": "content_filter",
+                }
+            ],
+        }
+        return 200, body, 0
+
+    with running_openai_server(handler) as (base_url, _requests):
+        backend = OR.OpenAICompatibleBackend(model="m", base_url=f"{base_url}/v1")
+        with pytest.raises(LLMBackendError, match="content_filter"):
+            backend.complete(LLMRequest("hello"))

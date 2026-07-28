@@ -46,7 +46,6 @@ class PackRegistry:
             return
         if self._discovered and not force:
             return
-        self._discovered = True
         from openrange.core._registry import iter_entry_points
 
         for name, value in iter_entry_points(
@@ -66,6 +65,10 @@ class PackRegistry:
                     f"entry point name {name!r} does not match pack.id {pack.id!r}",
                 )
             self._packs[pack.id] = pack
+        # Only once the sweep completed. Marking it before the loop makes a
+        # single malformed entry point raise once and then return a partial
+        # registry, silently, for the rest of the process.
+        self._discovered = True
 
 
 PACKS = PackRegistry(autodiscover=True)

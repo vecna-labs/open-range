@@ -131,10 +131,16 @@ The rule is: lineage is provenance, not behavior. Anything core
 *branches on* must come from the ontology or the protocols, never
 from lineage.
 
-Second: the `Manifest` is also `Mapping[str, Any]`. Same rule —
-core never reads a manifest key. The episode layer reads two
-runtime-knob keys (`runtime.tick.mode`, `runtime.tick.rate_hz`); those
-are generic infrastructure knobs, not domain knowledge.
+Second: the `Manifest` is also `Mapping[str, Any]`. Same rule — core
+reads no *domain* key. It does read generic run knobs: `runtime.tick.*`
+and `runtime.backing` (`core/episode.py`, `runtime.py`), plus the `npc`
+roster it starts an episode with.
+
+That last one is the exception that proves the rule, and it is worth
+knowing about: `npc` is world content, not an infrastructure knob, and
+it lives outside the graph. Since `snapshot_id` is a hash of the graph
+alone, two worlds whose manifests differ only in a key core reads share
+one id — and one store filename, one pool member, one dataset row.
 
 ---
 

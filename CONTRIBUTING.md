@@ -51,8 +51,8 @@ Before opening a pull request, run the checks relevant to your change.
 
 ```bash
 uv run ruff check .
-uv run mypy src tests examples main.py
-uv run coverage run -m pytest tests
+uv run mypy src tests examples main.py packages packs
+uv run coverage run -m pytest
 uv run coverage report
 ```
 

@@ -35,6 +35,7 @@ from openrange_pack_sdk import (
 
 from swe.families._target import (
     Target,
+    grading_tree,
     pick_target,
     resolve_target,
     str_list,
@@ -98,6 +99,10 @@ class SweBuild(TaskFamily):
         all_ids = [*units, *integration]
 
         gold_report = run_tests({**base, **gold}, test_files, all_ids)
+        if gold_report.error:
+            return FeasibilityVerdict(
+                False, f"gold suite never reported: {gold_report.error}"
+            )
         if not gold_report.all_pass(all_ids):
             return FeasibilityVerdict(
                 False,
@@ -105,12 +110,22 @@ class SweBuild(TaskFamily):
                 f"{len(all_ids)} pass): {dict(gold_report.results)}",
             )
 
-        base_report = run_tests(base, test_files, integration)
-        if not base_report.all_fail(integration):
+        base_report = run_tests(base, test_files, all_ids)
+        # An unreported suite is all-False, which *satisfies* all_fail — the world
+        # would admit with its gate never demonstrated. Admission fails closed.
+        if base_report.error:
+            return FeasibilityVerdict(
+                False, f"base suite never reported: {base_report.error}"
+            )
+        # Units as well as the integration gate: a skeleton that already greens
+        # a unit test hands the agent that subgoal for nothing, and unlike
+        # ``swe.fix``'s pass_to_pass there is no precondition worth preserving
+        # here — the whole project is meant to be unbuilt.
+        if not base_report.all_fail(all_ids):
             return FeasibilityVerdict(
                 False,
-                "skeleton already passes an integration test — the gate is not "
-                f"real or the project is pre-composed: {dict(base_report.results)}",
+                "skeleton already passes part of its own suite — the task would "
+                f"pay for work it did not do: {dict(base_report.results)}",
             )
         return FeasibilityVerdict(True)
 
@@ -130,12 +145,14 @@ class SweBuild(TaskFamily):
             return EpisodeResult(
                 success=False, reason="agent produced no workspace files"
             )
-        tree = {str(k): str(v) for k, v in workspace.items()}
+        tree = grading_tree(target, workspace)
         units = str_list(target.suite.attrs.get("unit_tests"))
         integration = str_list(target.suite.attrs.get("integration_tests"))
         test_files = str_map(target.suite.attrs.get("test_files"))
         all_ids = [*units, *integration]
         report = run_tests(tree, test_files, all_ids)
+        if report.error:
+            return EpisodeResult(success=False, reason=report.error, error=report.error)
         # Integration GATES success; units + integration both SHAPE the subgoal
         # vector the training seam turns into dense partial credit.
         composed = report.all_pass(integration)

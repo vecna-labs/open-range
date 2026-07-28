@@ -18,6 +18,7 @@ from swe.families import SweBuild, SweFix
 from swe.invariants import repo_has_base_files, solution_present, suite_well_formed
 from swe.ontology import ONTOLOGY_ID, repo_ontology
 from swe.realize import SweRuntime
+from swe.sandbox import verify_backend_request
 
 
 class SwePack(Pack):
@@ -36,6 +37,7 @@ class SwePack(Pack):
         return [repo_has_base_files, suite_well_formed, solution_present]
 
     def make_builder(self, prior: PackPrior | None) -> Builder:
+        verify_backend_request()
         return SweBuilder(prior)
 
     def realize(self, graph: WorldGraph, backing: Backing) -> RuntimeHandle:

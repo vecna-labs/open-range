@@ -23,6 +23,9 @@ from trading.families.backtest import perfect_foresight_return, run_backtest
 from trading.invariants import account_can_trade, bars_contiguous, ohlc_sane
 from trading.sampling import _select_window
 
+from openrange.core.episode import EpisodeReport
+from openrange.training import episode_reward
+
 _DEFAULT_SEED = 7
 _DEFAULT_WINDOW_DAYS = 180
 _DEFAULT_PRODUCT = "BTC-USD"
@@ -309,6 +312,25 @@ class TestBacktestGrader:
         assert not outcome.success
         assert "pnl=" in outcome.reason
         assert set(outcome.subgoals) == {"return_target_met", "drawdown_ok"}
+
+    def test_staying_out_of_the_market_earns_nothing(self, tmp_path: Path) -> None:
+        # Flat equity draws down nothing, so uniform credit over the subgoal
+        # vector would pay an all-cash strategy half of this task.
+        result = _build(tmp_path)
+        task = result.tasks[0]
+        outcome = TradePnl().check_success(
+            result.graph,
+            task,
+            {"result": {"strategy": "def decide(history):\n    return 0.0\n"}},
+        )
+        reward = episode_reward(
+            EpisodeReport(
+                snapshot_id="sha256:trading", task_id=task.id, episode_result=outcome
+            )
+        )
+        assert outcome.subgoals["drawdown_ok"] is True
+        assert reward.scalar == 0.0
+        assert reward.components == {"return_target_met": 0.0}
 
     def test_missing_strategy_field_fails_cleanly(self, tmp_path: Path) -> None:
         result = _build(tmp_path)

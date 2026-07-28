@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -33,6 +34,8 @@ from openrange.core.episode import EpisodeService
 
 if TYPE_CHECKING:
     from openrange_pack_sdk import Snapshot
+
+_LOG = logging.getLogger(__name__)
 
 
 Direction = Literal["harden", "soften", "diversify"]
@@ -150,7 +153,12 @@ def auto_evolve(
     for chosen in _patch_candidates(pack, snapshot, reports, direction, llm=llm):
         try:
             evolved = _evolve_snapshot(snapshot, pack, chosen, max_repairs=max_repairs)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — pack-supplied code is untrusted
+            _LOG.warning(
+                "evolving %s failed; the frontier does not move for it",
+                snapshot.snapshot_id,
+                exc_info=True,
+            )
             continue
         if evolved is None or evolved.snapshot_id == snapshot.snapshot_id:
             continue
@@ -158,7 +166,13 @@ def auto_evolve(
             try:
                 if not gate(evolved, chosen):
                     continue
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — caller-supplied gate
+                _LOG.warning(
+                    "evolution gate raised on a candidate from %s; treating it "
+                    "as rejected",
+                    snapshot.snapshot_id,
+                    exc_info=True,
+                )
                 continue
         return evolved
 
@@ -167,6 +181,11 @@ def auto_evolve(
     try:
         return _grow_snapshot(snapshot, pack, direction, max_repairs=max_repairs)
     except Exception:  # noqa: BLE001 — pack-supplied code is untrusted
+        _LOG.warning(
+            "growing %s failed; the frontier stays where it is",
+            snapshot.snapshot_id,
+            exc_info=True,
+        )
         return None
 
 

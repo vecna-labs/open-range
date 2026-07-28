@@ -18,14 +18,28 @@ from pathlib import Path
 
 import pytest
 from graphschema import Visibility, WorldGraph, validate
-from openrange_pack_sdk import Backing, BuildResult, TaskSpec, write_tree
+from openrange_pack_sdk import (
+    Backing,
+    BuildResult,
+    EpisodeResult,
+    TaskSpec,
+    write_tree,
+)
 from swe import SweFix, SwePack, repo_ontology
 from swe.builder import SweBuilder
 from swe.grading import _nodeid
 from swe.instances import SweInstance, load_instance, to_graph
 from swe.realize import SweRuntime
-from swe.sandbox import _bwrap_wrap, run_sandboxed
+from swe.sandbox import (
+    _bwrap_usable,
+    _bwrap_wrap,
+    run_sandboxed,
+    verify_backend_request,
+)
 from swe.swebench import instance_from_row
+
+from openrange.core.episode import EpisodeReport
+from openrange.training import Reward, episode_reward
 
 _INSTANCE = "calc_sum"
 _MULTI = "shapes_area"
@@ -154,6 +168,79 @@ class TestGrading:
         result = SweFix().check_success(graph, task, {"result": {"done": True}})
         assert not result.success
         assert "no workspace" in result.reason
+
+
+class TestGradingCredit:
+    """``pass_to_pass`` is green at base, so it is not partial credit.
+
+    Uniform credit over the subgoal vector pays an agent that edits nothing —
+    here half the task, and on a real instance, where ``pass_to_pass``
+    outnumbers ``fail_to_pass``, very nearly all of it.
+    """
+
+    @staticmethod
+    def _reward(tree: dict[str, str]) -> tuple[EpisodeResult, Reward]:
+        graph, task = _graph_and_task()
+        result = SweFix().check_success(
+            graph, task, {"workspace_files": tree, "result": {"done": True}}
+        )
+        report = EpisodeReport(
+            snapshot_id="sha256:swe", task_id=task.id, episode_result=result
+        )
+        return result, episode_reward(report)
+
+    def test_an_untouched_tree_earns_nothing(self) -> None:
+        result, reward = self._reward(dict(load_instance(_INSTANCE).base_files))
+        assert result.subgoals["test_calc.py::test_subtract"] is True
+        assert reward.scalar == 0.0
+        assert reward.components == {"test_calc.py::test_add": 0.0}
+
+    def test_breaking_a_passing_test_forfeits_the_fix(self) -> None:
+        instance = load_instance(_INSTANCE)
+        tree = {
+            **instance.base_files,
+            "calc/core.py": "def add(a, b):\n    return a + b\n\n\n"
+            "def subtract(a, b):\n    return a + b\n",
+        }
+        result, reward = self._reward(tree)
+        assert result.subgoals["test_calc.py::test_add"] is True
+        assert result.subgoals["test_calc.py::test_subtract"] is False
+        assert reward.scalar == 0.0
+
+    def test_a_plugin_the_world_never_declared_is_not_graded(self) -> None:
+        # pytest collects whatever it finds, so a conftest.py or pytest.ini the
+        # agent invents is a route to the grade that never touches the source:
+        # a tryfirst hook greens every test, and a sleep makes the run report
+        # nothing at all — which reads as an ungraded episode and is excluded
+        # from the solve rate rather than counted as the failure it is.
+        instance = load_instance(_INSTANCE)
+        greened, _ = self._reward(
+            {
+                **instance.base_files,
+                "pytest.ini": "[pytest]\naddopts = -p pwn\n",
+                "pwn.py": (
+                    "import pytest\n\n\n"
+                    "@pytest.hookimpl(tryfirst=True)\n"
+                    "def pytest_pyfunc_call(pyfuncitem):\n"
+                    "    return True\n"
+                ),
+            }
+        )
+        assert greened.success is False
+        assert greened.subgoals["test_calc.py::test_add"] is False
+
+        hung, _ = self._reward(
+            {**instance.base_files, "conftest.py": "import os\n\nos._exit(0)\n"}
+        )
+        assert hung.error is None, "the agent must not be able to author an error"
+        assert hung.success is False
+
+    def test_the_gold_tree_still_scores_one(self) -> None:
+        instance = load_instance(_INSTANCE)
+        result, reward = self._reward({**instance.base_files, **instance.gold_files})
+        assert result.success
+        assert reward.scalar == 1.0
+        assert reward.components == {"test_calc.py::test_add": 1.0}
 
 
 class TestRealizer:
@@ -339,6 +426,48 @@ class TestSandbox:
             ["-c", "import time; time.sleep(10)"], root=tmp_path, timeout=2
         )
         assert res.timed_out
+
+    def test_a_secret_in_the_environment_does_not_reach_the_child(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The child runs repo-supplied test code. A canary standing in for the
+        # API keys and CI tokens a real operator has exported must not be
+        # readable from it.
+        monkeypatch.setenv("OPENRANGE_CANARY_TOKEN", "sk-do-not-leak")
+        read_canary = (
+            "import os; print(os.environ.get('OPENRANGE_CANARY_TOKEN', 'ABSENT'))"
+        )
+        res = run_sandboxed(["-c", read_canary], root=tmp_path, timeout=10)
+        assert res.ok
+        assert "sk-do-not-leak" not in res.stdout
+        assert "ABSENT" in res.stdout
+
+    def test_the_child_keeps_what_a_test_run_needs(self, tmp_path: Path) -> None:
+        res = run_sandboxed(
+            ["-c", "import os; print(bool(os.environ.get('PATH')))"],
+            root=tmp_path,
+            timeout=10,
+        )
+        assert "True" in res.stdout
+
+    def test_an_unhonourable_isolation_request_is_refused_at_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Silently downgrading reports success while running untrusted code less
+        # isolated than asked. The refusal has to happen at setup: raised from
+        # inside a feasibility check it reads as "this task is infeasible", and a
+        # seeding pass then yields an empty pool with nothing logged.
+        monkeypatch.setenv("OPENRANGE_SWE_SANDBOX", "bwrap")
+        if _bwrap_usable():
+            pytest.skip("bwrap is usable here, so the request is honourable")
+        with pytest.raises(RuntimeError, match="not usable"):
+            verify_backend_request()
+
+    def test_the_default_request_is_always_honourable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENRANGE_SWE_SANDBOX", raising=False)
+        verify_backend_request()  # must not raise on any host
 
     def test_bwrap_argv_isolates_net_only_when_disabled(self) -> None:
         with_net = _bwrap_wrap(["x"], root=Path("/w"), network=True)

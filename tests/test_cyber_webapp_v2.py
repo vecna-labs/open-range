@@ -16,9 +16,12 @@ entrypoint kinds — "one pack, many TaskFamilies" applied to this pack.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
+from cyber_webapp import WebappPack
 from cyber_webapp.families.build import WebappBuild
 from cyber_webapp.families.pentest import WebappPentest
 from cyber_webapp.invariants import (
@@ -52,6 +55,7 @@ from openrange_pack_sdk import (
 )
 
 from openrange.core.admit import admit
+from openrange.core.episode import EpisodeService
 
 
 def _build_cyber_world() -> WorldGraph:
@@ -864,3 +868,33 @@ def test_sampler_never_places_sqli_on_non_db_backed_service() -> None:
                     f"seed={seed}: SQLi vuln {vuln.id} targets {target.id} "
                     f"on service {svc_id} which has no backed_by data_store"
                 )
+
+
+def test_npc_traffic_is_not_credited_to_the_agent(tmp_path: Path) -> None:
+    # NPCs browse the app while the episode runs. Counting their requests pays
+    # `reached_endpoint` to a policy that turned up and did nothing, which is
+    # the same free-subgoal defect the reward shaper exists to remove.
+    pack = WebappPack()
+    snapshot = admit(
+        pack,
+        {
+            "world": {"goal": "npc credit"},
+            "pack": {"id": "webapp"},
+            "runtime": {"tick": {"mode": "auto", "rate_hz": 20}},
+            "npc": [{"type": "cyber.browsing_user", "count": 1}],
+        },
+        max_repairs=2,
+    )
+    assert isinstance(snapshot, Snapshot), snapshot
+    task = next(t for t in snapshot.tasks if t.meta.get("family") == "webapp.pentest")
+
+    service = EpisodeService(pack, tmp_path)
+    try:
+        handle = service.start_episode(snapshot, task.id)
+        time.sleep(2.0)  # long enough for the NPC's cadence to fire
+        report = service.stop_episode(handle)
+    finally:
+        service.close()
+
+    assert report.episode_result.subgoals["reached_endpoint"] is False
+    assert report.final_state["requests_made"] == []

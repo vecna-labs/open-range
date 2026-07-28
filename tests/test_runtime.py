@@ -22,6 +22,7 @@ from openrange_pack_sdk import Backing, Snapshot, TaskSpec
 from openrange.core.episode import AgentTurn, EpisodeError
 from openrange.core.errors import EpisodeRuntimeError
 from openrange.runtime import EpisodeContext, OpenRangeRun, RunConfig
+from openrange.training import Reward
 
 MANIFEST = {
     "world": {"goal": "run_episode end to end"},
@@ -121,6 +122,28 @@ class TestRunEpisode:
         assert ep.success is False
         assert ep.reward.scalar == 0.0
         assert ep.trajectory.steps == ()
+
+    def test_a_custom_objective_reaches_the_exported_trajectory(
+        self, snapshot: Snapshot, tmp_path: Path
+    ) -> None:
+        # `run_episode` is the documented one-call API and `.trajectory` is what
+        # `to_jsonl` writes, so a caller's own objective has to survive the trip
+        # or the trainer reads a number nobody is optimizing.
+        run = OpenRangeRun(RunConfig(tmp_path, dashboard=False))
+
+        def solve(ctx: EpisodeContext) -> AgentTurn:
+            _write_reference(ctx)
+            return AgentTurn(message="submitted reference handler")
+
+        ep = run.run_episode(
+            snapshot,
+            solve,
+            task_id=_build_task_id(snapshot),
+            reward_fn=lambda report: Reward(scalar=0.25),
+        )
+        assert ep.success is True, ep.report.episode_result.reason
+        assert ep.reward.scalar == 0.25  # the default would score this solve 1.0
+        assert ep.trajectory.reward.scalar == 0.25
 
     def test_multi_turn_solver_records_each_turn(
         self, snapshot: Snapshot, tmp_path: Path

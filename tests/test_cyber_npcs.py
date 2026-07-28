@@ -2,7 +2,9 @@
 
 The NPCs receive an ``interface`` mapping matching the shape produced
 by ``WebappRuntime.surface()``:
-``{base_url, http_get, http_get_json, solver_root}``. Tests use a fake
+``{base_url, http_get, http_get_json, solver_root}``, where ``http_get`` takes
+the caller's actor so the world can tell its own traffic from the agent's.
+Tests use a fake
 interface that records GET calls so we can assert on cadence,
 rotation, and graceful error handling — no real subprocess needed.
 """
@@ -31,9 +33,11 @@ class _RuntimeSurface(dict[str, Any]):
     def __init__(self) -> None:
         super().__init__()
         self.calls: list[str] = []
+        self.actors: list[str] = []
 
-        def http_get(path: object) -> bytes:
+        def http_get(path: object, actor: str = "agent") -> bytes:
             self.calls.append(str(path))
+            self.actors.append(actor)
             return b""
 
         def http_get_json(path: object) -> object:
@@ -407,3 +411,17 @@ def test_office_chatter_registered_via_entry_point() -> None:
     from openrange.npc import NPCS
 
     assert "cyber.office_chatter" in NPCS.ids()
+
+
+def test_every_shipped_npc_identifies_its_traffic_as_the_world() -> None:
+    # The pentest grade reads the request log to decide whether the agent
+    # reached the endpoint. An NPC that does not say who it is gets counted as
+    # the agent, and a policy that did nothing is paid for turning up.
+    for npc in (
+        BrowsingUser(cadence_ticks=1, paths=("/a",)),
+        AdminAudit(cadence_ticks=1),
+    ):
+        iface = _RuntimeSurface()
+        npc.step(iface)
+        assert iface.calls, f"{type(npc).__name__} made no request"
+        assert iface.actors == ["npc"] * len(iface.calls), type(npc).__name__
