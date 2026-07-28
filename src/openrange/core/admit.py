@@ -110,8 +110,10 @@ def admit(
 
     errors: list[Issue] = []
     infeasible: list[str] = []
+    attempted = 0
 
     for attempt in range(max_repairs + 1):
+        attempted = attempt + 1
         issues = validate(result.graph, ontology, pack.invariants())
         issues += validate_task_bindings(result.graph, result.tasks)
         errors = [i for i in issues if i.severity == "error"]
@@ -124,7 +126,7 @@ def admit(
             )
         )
 
-        infeasible = _run_feasibility(families, result.graph, result.tasks)
+        infeasible, crashed = _run_feasibility(families, result.graph, result.tasks)
         history.append(
             BuildEvent(
                 len(history),
@@ -133,6 +135,15 @@ def admit(
                 tuple(infeasible),
             )
         )
+        if crashed:
+            history.append(
+                BuildEvent(
+                    len(history),
+                    "feasibility",
+                    "; ".join(f"{task_id}: {why}" for task_id, why in crashed),
+                    tuple(task_id for task_id, _ in crashed),
+                )
+            )
 
         if not errors and not infeasible:
             history.append(
@@ -160,7 +171,21 @@ def admit(
         if attempt == max_repairs:
             break
 
-        result = builder.repair(result, errors, infeasible)
+        try:
+            result = builder.repair(result, errors, infeasible)
+        except Exception as exc:  # noqa: BLE001 — pack-supplied code is untrusted
+            # Not overriding repair() is the SDK's sanctioned opt-out, so the
+            # raise it answers with is a capability signal, not a crash: the
+            # candidate simply gets no retries and fails admission normally.
+            history.append(
+                BuildEvent(
+                    len(history),
+                    "repair",
+                    f"builder did not repair ({type(exc).__name__}); "
+                    f"admission stops after attempt {attempt + 1}",
+                )
+            )
+            break
         history.append(
             BuildEvent(
                 len(history),
@@ -172,7 +197,7 @@ def admit(
     return AdmissionFailure(
         issues=errors,
         infeasible_tasks=infeasible,
-        attempts=max_repairs + 1,
+        attempts=attempted,
         history=tuple(history),
     )
 
@@ -181,8 +206,10 @@ def _run_feasibility(
     families: Mapping[str, TaskFamily],
     graph: WorldGraph,
     tasks: list[TaskSpec],
-) -> list[str]:
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Infeasible task ids, plus (id, why) for the checks that raised."""
     infeasible: list[str] = []
+    crashed: list[tuple[str, str]] = []
     for t in tasks:
         # An empty-entrypoint task is structurally rejected upstream
         # (``validate_task_bindings``); skipping feasibility here keeps
@@ -195,10 +222,17 @@ def _run_feasibility(
         if family is None:
             infeasible.append(t.id)
             continue
-        verdict: FeasibilityVerdict = family.check_feasibility(graph, t)
+        try:
+            verdict: FeasibilityVerdict = family.check_feasibility(graph, t)
+        except Exception as exc:  # noqa: BLE001 — pack-supplied code is untrusted
+            # A check that cannot answer has not shown the task solvable, and
+            # admission is the gate: reject the task rather than the build.
+            infeasible.append(t.id)
+            crashed.append((t.id, f"{type(exc).__name__}: {exc}"))
+            continue
         if not verdict.feasible:
             infeasible.append(t.id)
-    return infeasible
+    return infeasible, crashed
 
 
 def snapshot_to_dict(snap: Snapshot) -> dict[str, Any]:
