@@ -127,9 +127,21 @@ class _Builder(Builder):
         return BuildResult(graph=graph, tasks=_Family().generate(graph, {}, None))
 
 
+class _DisposableHandle(_PoolableHandle):
+    """A runtime that cannot be reused, so ending its episode must stop it.
+
+    The strand tests use this so the oracle is a public observable: with a
+    poolable runtime, correct cleanup parks it warm and ``stopped`` stays False.
+    """
+
+    def poolable(self) -> bool:
+        return False
+
+
 class _Pack(Pack):
     id = "lifetime"
     version = "0.1.0"
+    handle_cls: type[_PoolableHandle] = _PoolableHandle
 
     def __init__(self) -> None:
         self.handles: list[_PoolableHandle] = []
@@ -146,12 +158,16 @@ class _Pack(Pack):
 
     def realize(self, graph: WorldGraph, backing: Backing) -> RuntimeHandle:
         del graph, backing
-        handle = _PoolableHandle()
+        handle = self.handle_cls()
         self.handles.append(handle)
         return handle
 
     def task_families(self) -> list[TaskFamily]:
         return [_Family()]
+
+
+class _Disposable(_Pack):
+    handle_cls = _DisposableHandle
 
 
 def _snapshot(pack: _Pack) -> Snapshot:
@@ -205,7 +221,7 @@ def _capability(surface: Mapping[str, Any]) -> Any:
 
 
 def test_a_raising_sampler_does_not_strand_the_episode(tmp_path: Path) -> None:
-    pack = _Pack()
+    pack = _Disposable()
     snap = _snapshot(pack)
     service = EpisodeService(pack, tmp_path)
     try:
@@ -219,7 +235,8 @@ def test_a_raising_sampler_does_not_strand_the_episode(tmp_path: Path) -> None:
                     task_ids=[snap.tasks[0].id],
                 )
             )
-        assert not service._episodes, "the episode outlived the failure"
+        assert pack.handles, "the episode never started, so nothing was proved"
+        assert all(h.stopped for h in pack.handles), "a runtime outlived the failure"
     finally:
         service.close()
 
@@ -228,7 +245,7 @@ def test_a_raising_bind_run_does_not_strand_the_episode(tmp_path: Path) -> None:
     # Binding the shell is the caller attaching to an already-realized world —
     # for a container, the docker exec. It is the most failure-prone step in the
     # loop and the episode is registered before it runs.
-    pack = _Pack()
+    pack = _Disposable()
     snap = _snapshot(pack)
     service = EpisodeService(pack, tmp_path)
 
@@ -247,7 +264,8 @@ def test_a_raising_bind_run_does_not_strand_the_episode(tmp_path: Path) -> None:
                     task_ids=[snap.tasks[0].id],
                 )
             )
-        assert not service._episodes, "the episode outlived the bind failure"
+        assert pack.handles, "the world was never realized, so nothing was proved"
+        assert all(h.stopped for h in pack.handles), "a runtime outlived the failure"
     finally:
         service.close()
 
@@ -288,7 +306,7 @@ def test_a_raising_stop_does_not_mask_the_real_failure(tmp_path: Path) -> None:
 def test_one_failure_does_not_cancel_its_siblings(tmp_path: Path) -> None:
     # A bare gather propagates the first exception out of the loop, cancelling
     # every sibling mid-episode so none of them is ever stopped.
-    pack = _Pack()
+    pack = _Disposable()
     snap = _snapshot(pack)
     service = EpisodeService(pack, tmp_path)
     task_id = snap.tasks[0].id
@@ -316,7 +334,10 @@ def test_one_failure_does_not_cancel_its_siblings(tmp_path: Path) -> None:
                     max_concurrency=4,
                 )
             )
-        assert not service._episodes, "siblings were cancelled before stopping"
+        assert len(pack.handles) == 4, pack.handles
+        assert all(h.stopped for h in pack.handles), (
+            "a sibling was cancelled mid-episode"
+        )
     finally:
         service.close()
 
